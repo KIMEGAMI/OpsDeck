@@ -102,7 +102,7 @@ class AdminAnnouncementControllerTest extends TestCase
         config(['opsdeck.pagination.per_page' => 1]);
         $admin = User::factory()->create(['email' => 'platform-pagination-'.Str::uuid().'@example.test']);
         config(['opsdeck.platform_admin_emails' => [$admin->email]]);
-        $this->travelTo('2999-10-01 12:00:00');
+        $this->travelTo('2030-10-01 12:00:00');
         Announcement::query()->create(['title' => '同時刻のお知らせ1', 'body' => '本文', 'created_by' => $admin->id, 'published_at' => now(), 'recipients_count' => 0]);
         Announcement::query()->create(['title' => '同時刻のお知らせ2', 'body' => '本文', 'created_by' => $admin->id, 'published_at' => now(), 'recipients_count' => 0]);
 

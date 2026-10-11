@@ -15,7 +15,7 @@ class SupportRequestControllerTest extends TestCase
         config(['opsdeck.pagination.per_page' => 1]);
         $admin = User::factory()->create(['email' => 'support-pagination-'.Str::uuid().'@example.test']);
         config(['opsdeck.platform_admin_emails' => [$admin->email]]);
-        $this->travelTo('2999-10-01 12:00:00');
+        $this->travelTo('2030-10-01 12:00:00');
         $firstRequest = SupportRequest::query()->create(['category' => 'usage', 'message' => '本文1', 'reference_code' => 'SUP-11111111-1111-4111-8111-111111111111']);
         $secondRequest = SupportRequest::query()->create(['category' => 'billing', 'message' => '本文2', 'reference_code' => 'SUP-22222222-2222-4222-8222-222222222222']);
 

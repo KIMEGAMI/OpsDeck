@@ -130,6 +130,8 @@ jobs:
         run: |
           mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_app'@'%' IDENTIFIED BY ''"
           mysql --host=127.0.0.1 --port=3306 --user=root --execute="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON opsdeck.* TO 'opsdeck_app'@'%'"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_test'@'%' IDENTIFIED BY ''"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="GRANT ALL PRIVILEGES ON opsdeck.* TO 'opsdeck_test'@'%'"
           mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE DATABASE opsdeck_restore_test_ci"
           mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_restore_ci'@'%' IDENTIFIED BY ''"
           mysql --host=127.0.0.1 --port=3306 --user=root --execute="GRANT ALL PRIVILEGES ON opsdeck_restore_test_ci.* TO 'opsdeck_restore_ci'@'%'"
@@ -175,7 +177,11 @@ jobs:
           test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
 
       - name: Run tests against MySQL
-        run: php artisan test --compact
+        env:
+          DB_USERNAME: opsdeck_test
+        run: |
+          DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite php artisan test --compact --group=sqlite-only
+          php artisan test --compact --exclude-group=sqlite-only
 
   test-mariadb:
     runs-on: ubuntu-latest
@@ -234,6 +240,8 @@ jobs:
         run: |
           mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_app'@'%' IDENTIFIED BY ''"
           mariadb --host=127.0.0.1 --port=3306 --user=root --execute="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON opsdeck.* TO 'opsdeck_app'@'%'"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_test'@'%' IDENTIFIED BY ''"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="GRANT ALL PRIVILEGES ON opsdeck.* TO 'opsdeck_test'@'%'"
           mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE DATABASE opsdeck_restore_test_ci"
           mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_restore_ci'@'%' IDENTIFIED BY ''"
           mariadb --host=127.0.0.1 --port=3306 --user=root --execute="GRANT ALL PRIVILEGES ON opsdeck_restore_test_ci.* TO 'opsdeck_restore_ci'@'%'"
@@ -279,7 +287,11 @@ jobs:
           test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
 
       - name: Run tests against MariaDB
-        run: php artisan test --compact
+        env:
+          DB_USERNAME: opsdeck_test
+        run: |
+          DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite php artisan test --compact --group=sqlite-only
+          php artisan test --compact --exclude-group=sqlite-only
 
   frontend:
     runs-on: ubuntu-latest

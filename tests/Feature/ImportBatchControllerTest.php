@@ -219,7 +219,7 @@ class ImportBatchControllerTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config(['opsdeck.pagination.per_page' => 1]);
         [$user, $organization] = $this->member(MembershipRole::Operator);
-        $this->travelTo('2999-10-01 12:00:00');
+        $this->travelTo('2030-10-01 12:00:00');
         $firstBatch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => '同時刻の取込1', 'status' => 'preview']);
         $secondBatch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => '同時刻の取込2', 'status' => 'preview']);
         $session = ['current_organization_id' => $organization->id];

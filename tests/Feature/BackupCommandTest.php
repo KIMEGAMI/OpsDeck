@@ -7,8 +7,10 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use PDO;
+use PHPUnit\Framework\Attributes\Group;
 use Tests\TestCase;
 
+#[Group('sqlite-only')]
 class BackupCommandTest extends TestCase
 {
     public function test_backup_verification_rejects_evidence_files_that_were_changed_after_backup(): void

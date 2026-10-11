@@ -52,7 +52,7 @@ class OrganizationInvitationTest extends TestCase
     {
         config(['opsdeck.pagination.per_page' => 1]);
         [$owner, $organization] = $this->owner();
-        $this->travelTo('2999-10-01 12:00:00');
+        $this->travelTo('2030-10-01 12:00:00');
         $firstInvitation = $this->invitation($owner, $organization, 'page-one-'.Str::uuid().'@example.test');
         $secondInvitation = $this->invitation($owner, $organization, 'page-two-'.Str::uuid().'@example.test');
         $session = ['current_organization_id' => $organization->id];
