@@ -73,6 +73,35 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(0);
     }
 
+    #[DataProvider('invalidProductionApplicationUrls')]
+    public function test_it_fails_readiness_for_an_invalid_production_application_url(string $applicationUrl): void
+    {
+        $this->configureReadyDeployment();
+        config(['app.url' => $applicationUrl]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"https_url":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public static function invalidProductionApplicationUrls(): array
+    {
+        return [
+            'localhost hostname' => ['https://localhost'],
+            'localhost subdomain' => ['https://admin.localhost'],
+            'IPv4 loopback' => ['https://127.0.0.1'],
+            'IPv6 loopback' => ['https://[::1]'],
+            'private IPv4 address' => ['https://192.168.1.20'],
+            'URL credentials' => ['https://admin:secret@opsdeck.example.test'],
+            'query string' => ['https://opsdeck.example.test/?next=%2Fdashboard'],
+            'fragment' => ['https://opsdeck.example.test/#dashboard'],
+        ];
+    }
+
     public function test_it_returns_ready_when_production_mail_uses_a_configured_failover_mailer(): void
     {
         $this->configureReadyDeployment();

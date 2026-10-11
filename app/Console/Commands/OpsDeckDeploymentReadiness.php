@@ -165,10 +165,26 @@ class OpsDeckDeploymentReadiness extends Command
     private function hasHttpsApplicationUrl(): bool
     {
         $url = parse_url((string) config('app.url'));
+        if (! is_array($url)
+            || strtolower((string) ($url['scheme'] ?? '')) !== 'https'
+            || ! filled($url['host'] ?? null)
+            || array_key_exists('user', $url)
+            || array_key_exists('pass', $url)
+            || array_key_exists('query', $url)
+            || array_key_exists('fragment', $url)) {
+            return false;
+        }
 
-        return is_array($url)
-            && strtolower((string) ($url['scheme'] ?? '')) === 'https'
-            && filled($url['host'] ?? null);
+        $host = strtolower(trim((string) $url['host'], '[]'));
+        if ($host === 'localhost' || str_ends_with($host, '.localhost')) {
+            return false;
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+        }
+
+        return true;
     }
 
     private function hasSecureSessionCookies(): bool
