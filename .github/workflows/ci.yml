@@ -1,0 +1,299 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check secrets are not committed
+        run: |
+          if git ls-files --error-unmatch .env .env.production >/dev/null 2>&1; then
+            echo "Environment files must not be committed"
+            exit 1
+          fi
+          if git grep -nE 'sk_(live|test)_[A-Za-z0-9]{16,}|rk_(live|test)_[A-Za-z0-9]{16,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|github_pat_[A-Za-z0-9_]{22,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{20,}|-----BEGIN (ENCRYPTED |RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----' -- .; then
+            echo "Potential production secret found in application sources"
+            exit 1
+          fi
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, bcmath, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Audit PHP dependencies
+        run: composer audit --locked --no-interaction
+
+      - name: Prepare test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+          mkdir -p database
+          touch database/database.sqlite
+          sed -i 's#C:/MyDeveloper/OpsDeck/database/database.sqlite#database/database.sqlite#g' phpunit.xml
+          php artisan migrate --force
+
+      - name: Run formatter check
+        run: vendor/bin/pint --format agent
+
+      - name: Check PHP syntax
+        run: find app config routes tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Verify application routes and commands
+        run: |
+          php artisan route:list --except-vendor
+          php artisan list | grep -E 'opsdeck:(backup|backup:verify|health|impact:snapshots|scheduler:heartbeat)'
+          php artisan schedule:list | grep -E 'opsdeck:backup|opsdeck:impact:snapshots|opsdeck:scheduler:heartbeat'
+          php artisan opsdeck:scheduler:heartbeat
+          php artisan opsdeck:backup
+          php artisan queue:work database --sleep=1 --tries=1 --timeout=60 > /tmp/opsdeck-queue-worker.log 2>&1 &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
+            sleep 1
+          done
+          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+
+      - name: Run tests
+        run: php artisan test --compact
+
+  test-mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          # Disposable database isolated to this CI run; never use this for deployments.
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_DATABASE: opsdeck
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      APP_ENV: testing
+      APP_DEBUG: 'false'
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: opsdeck
+      DB_USERNAME: opsdeck_app
+      DB_PASSWORD: ''
+      DB_URL: ''
+      OPSDECK_BACKUP_RESTORE_DB_DRIVER: mysql
+      OPSDECK_BACKUP_RESTORE_DB_HOST: 127.0.0.1
+      OPSDECK_BACKUP_RESTORE_DB_PORT: 3306
+      OPSDECK_BACKUP_RESTORE_DB_DATABASE: opsdeck_restore_test_ci
+      OPSDECK_BACKUP_RESTORE_DB_USERNAME: opsdeck_restore_ci
+      OPSDECK_BACKUP_RESTORE_DB_PASSWORD: ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, bcmath, pdo_mysql
+          coverage: none
+          tools: composer:v2
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install MySQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-mysql-client
+
+      - name: Create least-privilege application DB user
+        run: |
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_app'@'%' IDENTIFIED BY ''"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON opsdeck.* TO 'opsdeck_app'@'%'"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE DATABASE opsdeck_restore_test_ci"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_restore_ci'@'%' IDENTIFIED BY ''"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute="GRANT ALL PRIVILEGES ON opsdeck_restore_test_ci.* TO 'opsdeck_restore_ci'@'%'"
+
+      - name: Prepare MySQL test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+          php artisan migrate --force
+          php artisan opsdeck:scheduler:heartbeat
+          php artisan opsdeck:backup
+          php artisan opsdeck:backup:restore-test
+          test "$(mysql --host=127.0.0.1 --port=3306 --user=opsdeck_app --database=opsdeck --batch --skip-column-names --execute='SELECT status FROM backup_restore_checks ORDER BY id DESC LIMIT 1')" = 'passed'
+
+      - name: Verify MySQL backup can be restored
+        run: |
+          backup_sql="$(find storage/app/backups -type f -name database.sql -print -quit)"
+          test -n "$backup_sql"
+          mysql --host=127.0.0.1 --port=3306 --user=root --execute='CREATE DATABASE opsdeck_restore'
+          mysql --host=127.0.0.1 --port=3306 --user=root opsdeck_restore < "$backup_sql"
+          source_table_count="$(mysql --host=127.0.0.1 --port=3306 --user=root --batch --skip-column-names --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'opsdeck' AND table_type = 'BASE TABLE'")"
+          restored_table_count="$(mysql --host=127.0.0.1 --port=3306 --user=root --batch --skip-column-names --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'opsdeck_restore' AND table_type = 'BASE TABLE'")"
+          source_migration_count="$(mysql --host=127.0.0.1 --port=3306 --user=root --database=opsdeck --batch --skip-column-names --execute='SELECT COUNT(*) FROM migrations')"
+          restored_migration_count="$(mysql --host=127.0.0.1 --port=3306 --user=root --database=opsdeck_restore --batch --skip-column-names --execute='SELECT COUNT(*) FROM migrations')"
+          test "$source_table_count" -gt 0
+          test "$source_table_count" = "$restored_table_count"
+          test "$source_migration_count" -gt 0
+          test "$source_migration_count" = "$restored_migration_count"
+          source_scheduler_heartbeat="$(mysql --host=127.0.0.1 --port=3306 --user=root --database=opsdeck --batch --skip-column-names --execute="SELECT last_seen_at FROM scheduler_heartbeats WHERE name = 'scheduler'")"
+          restored_scheduler_heartbeat="$(mysql --host=127.0.0.1 --port=3306 --user=root --database=opsdeck_restore --batch --skip-column-names --execute="SELECT last_seen_at FROM scheduler_heartbeats WHERE name = 'scheduler'")"
+          test -n "$source_scheduler_heartbeat"
+          test "$source_scheduler_heartbeat" = "$restored_scheduler_heartbeat"
+
+      - name: Verify MySQL health command
+        run: |
+          php artisan queue:work database --sleep=1 --tries=1 --timeout=60 > /tmp/opsdeck-queue-worker.log 2>&1 &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
+            sleep 1
+          done
+          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+
+      - name: Run tests against MySQL
+        run: php artisan test --compact
+
+  test-mariadb:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          # Disposable database isolated to this CI run; never use this for deployments.
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 'yes'
+          MARIADB_ROOT_HOST: '%'
+          MARIADB_DATABASE: opsdeck
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      APP_ENV: testing
+      APP_DEBUG: 'false'
+      DB_CONNECTION: mariadb
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: opsdeck
+      DB_USERNAME: opsdeck_app
+      DB_PASSWORD: ''
+      DB_URL: ''
+      OPSDECK_BACKUP_RESTORE_DB_DRIVER: mariadb
+      OPSDECK_BACKUP_RESTORE_DB_HOST: 127.0.0.1
+      OPSDECK_BACKUP_RESTORE_DB_PORT: 3306
+      OPSDECK_BACKUP_RESTORE_DB_DATABASE: opsdeck_restore_test_ci
+      OPSDECK_BACKUP_RESTORE_DB_USERNAME: opsdeck_restore_ci
+      OPSDECK_BACKUP_RESTORE_DB_PASSWORD: ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, bcmath, pdo_mysql
+          coverage: none
+          tools: composer:v2
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install MariaDB client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+
+      - name: Create least-privilege application DB user
+        run: |
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_app'@'%' IDENTIFIED BY ''"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON opsdeck.* TO 'opsdeck_app'@'%'"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE DATABASE opsdeck_restore_test_ci"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="CREATE USER 'opsdeck_restore_ci'@'%' IDENTIFIED BY ''"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute="GRANT ALL PRIVILEGES ON opsdeck_restore_test_ci.* TO 'opsdeck_restore_ci'@'%'"
+
+      - name: Prepare MariaDB test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+          php artisan migrate --force
+          php artisan opsdeck:scheduler:heartbeat
+          php artisan opsdeck:backup
+          php artisan opsdeck:backup:restore-test
+          test "$(mariadb --host=127.0.0.1 --port=3306 --user=opsdeck_app --database=opsdeck --batch --skip-column-names --execute='SELECT status FROM backup_restore_checks ORDER BY id DESC LIMIT 1')" = 'passed'
+
+      - name: Verify MariaDB backup can be restored
+        run: |
+          backup_sql="$(find storage/app/backups -type f -name database.sql -print -quit)"
+          test -n "$backup_sql"
+          mariadb --host=127.0.0.1 --port=3306 --user=root --execute='CREATE DATABASE opsdeck_restore'
+          mariadb --host=127.0.0.1 --port=3306 --user=root opsdeck_restore < "$backup_sql"
+          source_table_count="$(mariadb --host=127.0.0.1 --port=3306 --user=root --batch --skip-column-names --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'opsdeck' AND table_type = 'BASE TABLE'")"
+          restored_table_count="$(mariadb --host=127.0.0.1 --port=3306 --user=root --batch --skip-column-names --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'opsdeck_restore' AND table_type = 'BASE TABLE'")"
+          source_migration_count="$(mariadb --host=127.0.0.1 --port=3306 --user=root --database=opsdeck --batch --skip-column-names --execute='SELECT COUNT(*) FROM migrations')"
+          restored_migration_count="$(mariadb --host=127.0.0.1 --port=3306 --user=root --database=opsdeck_restore --batch --skip-column-names --execute='SELECT COUNT(*) FROM migrations')"
+          test "$source_table_count" -gt 0
+          test "$source_table_count" = "$restored_table_count"
+          test "$source_migration_count" -gt 0
+          test "$source_migration_count" = "$restored_migration_count"
+          source_scheduler_heartbeat="$(mariadb --host=127.0.0.1 --port=3306 --user=root --database=opsdeck --batch --skip-column-names --execute="SELECT last_seen_at FROM scheduler_heartbeats WHERE name = 'scheduler'")"
+          restored_scheduler_heartbeat="$(mariadb --host=127.0.0.1 --port=3306 --user=root --database=opsdeck_restore --batch --skip-column-names --execute="SELECT last_seen_at FROM scheduler_heartbeats WHERE name = 'scheduler'")"
+          test -n "$source_scheduler_heartbeat"
+          test "$source_scheduler_heartbeat" = "$restored_scheduler_heartbeat"
+
+      - name: Verify MariaDB health command
+        run: |
+          php artisan queue:work database --sleep=1 --tries=1 --timeout=60 > /tmp/opsdeck-queue-worker.log 2>&1 &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
+            sleep 1
+          done
+          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+
+      - name: Run tests against MariaDB
+        run: php artisan test --compact
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build frontend
+        run: npm run build
