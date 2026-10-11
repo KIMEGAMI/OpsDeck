@@ -279,6 +279,10 @@ class ImportMappingTest extends TestCase
         $this->assertSame('2026-01-01', $control->last_reviewed_at?->toDateString());
         $this->assertSame('2027-01-01', $control->next_review_at?->toDateString());
         $this->assertSame('completed', $batch->refresh()->status);
+        $afterSnapshot = $batch->rowResults()->firstOrFail()->after_json;
+        foreach ($afterSnapshot as $field => $expectedValue) {
+            $this->assertSame((string) $expectedValue, (string) $control->getRawOriginal($field), $field);
+        }
 
         $this->withoutExceptionHandling();
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
