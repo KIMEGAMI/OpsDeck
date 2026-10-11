@@ -13,6 +13,8 @@ use App\Models\QuestionnaireAnswer;
 use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
+use Carbon\CarbonImmutable;
+use DateTimeInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -75,6 +77,18 @@ class ImportBatchRollbackService
     private function matchesSnapshot(Employee|Department|Asset|SaasService|SaasAssignment|Contract|SecurityControl|Evidence|QuestionnaireAnswer $record, array $snapshot): bool
     {
         foreach ($snapshot as $field => $expected) {
+            $current = $record->getAttribute($field);
+            if ($current instanceof DateTimeInterface && $expected !== null) {
+                $currentDate = CarbonImmutable::instance($current);
+                $expectedDate = CarbonImmutable::parse((string) $expected, $currentDate->getTimezone());
+
+                if (! $currentDate->equalTo($expectedDate)) {
+                    return false;
+                }
+
+                continue;
+            }
+
             if ((string) $record->getRawOriginal($field) !== (string) $expected) {
                 return false;
             }
