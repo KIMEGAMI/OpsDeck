@@ -1,58 +1,89 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# OpsDeck
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+OpsDeckは、会社のIT資産・SaaS・契約・更新期限・セキュリティ確認をまとめ、ITコストの見直しと実施内容の記録を支援する業務サービスです。Excel台帳の取込みから削減候補の確認、対応状況・証跡の管理、導入効果の振り返りまでを一つの流れで扱います。
 
-## About Laravel
+OpsDeckは削減額を保証するサービスではありません。金額は登録データと設定値に基づく概算で、実際の削減実績は利用者が確認して記録します。
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## 主な機能
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- 社員、IT資産、SaaSアカウント、契約と更新予定の管理
+- CSV / XLSX / Google Sheetsからのデータ取込み、プレビュー、マッピング、実行、履歴確認
+- 未使用資産や契約更新をもとにしたコスト削減候補と、確認済み削減実績の記録
+- セキュリティ管理項目、証跡、取引先向け質問票・回答承認の管理
+- ダッシュボード、お知らせ、週次サマリー、導入効果レポート
+- 組織メンバー・権限管理、監査ログ、Free / Premiumの利用制御とStripe Billing
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+データ取込み後も、列の対応付けや実行内容を確認してから処理します。AI機能は任意で、AIが質問票回答を自動承認することはありません。
 
-## Learning Laravel
+## Free / Premium
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+現在のプラン設定は [`config/opsdeck.php`](config/opsdeck.php) が正です。
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+| プラン | 主な内容 |
+| --- | --- |
+| Free | CSVの取込みプレビュー、基本ダッシュボード、コスト集計。登録上限は社員20人、資産50件、SaaS 10件、管理者1人。 |
+| Premium | 月額9,800円。CSV / XLSX / Google Sheets取込み、取込み実行、更新・セキュリティ機能、削減候補・実績、証跡、質問票、CSV出力、導入効果レポート。登録上限は社員200人、資産500件、SaaS 100件、管理者5人。 |
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+プラン機能や上限を変更する場合は、画面表示だけでなくサーバー側の利用制御・テスト・Stripe価格設定との整合を確認してください。
 
-## Agentic Development
+## ローカル開発
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+### 必要なもの
 
-```bash
-composer require laravel/boost --dev
+- PHP 8.4、Composer 2
+- Node.js 22、npm
+- 開発用DB（`.env.example` の初期値はSQLite）
 
-php artisan boost:install
+PowerShellでリポジトリのルートから実行します。
+
+```powershell
+composer install
+Copy-Item .env.example .env
+php artisan key:generate
+if (-not (Test-Path database/database.sqlite)) { New-Item -ItemType File database/database.sqlite | Out-Null }
+php artisan migrate
+npm install --ignore-scripts
+npm run build
+php artisan serve --host=127.0.0.1 --port=8000
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+画面を開発しながら確認する場合は、`npm run build` の代わりに別のターミナルで `npm run dev` を実行できます。`.env` は各自のローカル用に作成し、Gitへ追加しないでください。本番シークレットをローカルへコピーしないでください。
 
-## Contributing
+### 外部サービス
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Google Sheets、メール送信、Stripe、AIを使う場合は、各サービスの接続情報を環境変数または本番のSecret Managerに設定します。キーやパスワードをソースコード、README、画面ログへ記載しないでください。外部連携を設定しなくても、未設定の機能を除くローカル開発・テストができます。
 
-## Code of Conduct
+## テストとCI
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```powershell
+php artisan test --compact
+npm run build
+```
 
-## Security Vulnerabilities
+GitHub ActionsはPHP 8.4で依存関係監査・フォーマット・PHPテストを実行し、MySQL 8.4とMariaDB 11.4でもテストします。別ジョブでフロントエンドをビルドします。CIの成否はGitHub Actionsの実行結果で確認してください。
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## 本番導入
 
-## License
+本番はSQLiteではなくMySQLまたはMariaDBを使用し、HTTPS、`APP_DEBUG=false`、安全なセッションCookie、耐久性のあるQueue、共有Cache、監視可能なログ、メール送信経路、定期バックアップを設定してください。バックアップは取得だけでなく、アプリDBと分離した専用DBへの復元検証も必要です。
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+有料契約を開始する前にStripeの本番キー・有効なJPY月額Premium価格・Webhookを設定してください。販売者情報と特定商取引法・プライバシー・利用規約の内容も、実際の事業者情報に合わせて確認してください。
+
+設定確認コマンド:
+
+```powershell
+php artisan opsdeck:deployment-check
+```
+
+このコマンドは秘密値を表示せず、設定・DB接続とマイグレーション・バックアップ／復元ツール・Queue／Cache・メール・Stripe・販売者情報などを確認します。Stripeの本番設定がある場合、Premium価格の状態をStripe APIへ照会します。出力が`not_ready`なら本番公開前に不足項目を解消してください。
+
+本番の設定項目・運用確認は[製品成長・導入仕様書](OPSDECK_PRODUCT_GROWTH_SPEC.md)と、アプリの`opsdeck:deployment-check`の実装・テストを参照してください。設定値の完全な一覧は[`.env.example`](.env.example)にありますが、そこには実シークレットを記載しないでください。
+
+## 主な運用コマンド
+
+利用可能なコマンドの一覧は次で確認できます。
+
+```powershell
+php artisan list
+```
+
+ヘルスチェック、バックアップ、復元検証、導入効果スナップショットなどのコマンドは、実行環境と対象DBを確認してから運用手順に沿って実行してください。特に復元テスト先は本番アプリDBと分離された専用DBでなければなりません。
