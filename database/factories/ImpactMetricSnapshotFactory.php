@@ -2,8 +2,8 @@
 
 namespace Database\Factories;
 
-use App\Models\ImportBatch;
 use App\Models\ImpactMetricSnapshot;
+use App\Models\ImportBatch;
 use App\Models\Organization;
 use Illuminate\Database\Eloquent\Factories\Factory;
 

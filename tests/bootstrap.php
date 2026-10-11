@@ -8,7 +8,6 @@ $databaseConnection = strtolower((string) getenv('DB_CONNECTION'));
 if ($databaseConnection === 'sqlite') {
     $databasePath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-phpunit-'.bin2hex(random_bytes(16)).'.sqlite';
 
-
     foreach (['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $databasePath] as $name => $value) {
         putenv($name.'='.$value);
         $_ENV[$name] = $value;
