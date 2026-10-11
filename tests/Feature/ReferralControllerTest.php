@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\ProductEvent;
 use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
 use App\Models\User;
@@ -20,7 +21,7 @@ class ReferralControllerTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
     }
 
-    public function test_admin_can_get_referral_link_and_public_click_is_counted(): void
+    public function test_admin_can_get_referral_link_and_repeated_public_clicks_are_counted(): void
     {
         [$admin, $organization] = $this->member(MembershipRole::Admin);
         $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('referrals.show'))->assertOk()->assertSee('紹介リンク')->assertSee('割引・報酬は自動適用されず');
@@ -28,7 +29,13 @@ class ReferralControllerTest extends TestCase
         ReferralConversion::query()->create(['referral_code_id' => $referral->id, 'organization_id' => $organization->id]);
         $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('referrals.show'))->assertOk()->assertSee('登録組織数：1');
         $this->get(route('referrals.redirect', $referral->code))->assertRedirect(route('register'))->assertSessionHas('referral_code', $referral->code);
-        $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 1]);
+        $this->get(route('referrals.redirect', $referral->code))->assertRedirect(route('register'))->assertSessionHas('referral_code', $referral->code);
+
+        $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 2]);
+        $this->assertSame(2, ProductEvent::query()
+            ->where('organization_id', $organization->id)
+            ->where('event_key', 'referral_clicked')
+            ->count());
     }
 
     public function test_inactive_referral_code_is_not_available(): void

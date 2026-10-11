@@ -28,6 +28,7 @@ class PasswordResetTest extends TestCase
 
     public function test_registered_and_unknown_emails_receive_the_same_confirmation(): void
     {
+        config(['app.url' => 'https://opsdeck.example.test']);
         Notification::fake();
         $user = User::factory()->create(['email' => 'password-reset-'.Str::uuid().'@example.test']);
         $statusMessage = '該当する場合は、パスワード再設定用のメールを送信しました。メールが届かない場合は、入力したメールアドレスをご確認ください。';
@@ -40,10 +41,10 @@ class PasswordResetTest extends TestCase
             $mailMessage = $notification->toMail($user);
 
             return $mailMessage->subject === 'OpsDeck パスワード再設定'
-                && $mailMessage->actionUrl === route('password.reset', [
+                && $mailMessage->actionUrl === config('app.url').route('password.reset', [
                     'token' => $notification->token,
                     'email' => $user->email,
-                ])
+                ], false)
                 && in_array('この操作に覚えがない場合は、このメールを無視してください。', $mailMessage->outroLines, true);
         });
 
@@ -53,6 +54,33 @@ class PasswordResetTest extends TestCase
             ->assertSessionHasNoErrors();
 
         Notification::assertCount(1);
+    }
+
+    public function test_password_reset_email_uses_the_configured_host_when_request_host_is_untrusted(): void
+    {
+        config(['app.url' => 'https://opsdeck.example.test/portal']);
+        Notification::fake();
+        $user = User::factory()->create(['email' => 'untrusted-host-reset-'.Str::uuid().'@example.test']);
+
+        $this->withServerVariables([
+            'HTTP_HOST' => 'attacker.example.test',
+            'HTTPS' => 'off',
+        ])->post(route('password.email', [], false), ['email' => $user->email])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        Notification::assertSentTo($user, ResetPassword::class, function (ResetPassword $notification) use ($user): bool {
+            $actionUrl = (string) $notification->toMail($user)->actionUrl;
+            $urlParts = parse_url($actionUrl);
+            parse_str($urlParts['query'] ?? '', $query);
+
+            $this->assertSame('https', $urlParts['scheme'] ?? null);
+            $this->assertSame('opsdeck.example.test', $urlParts['host'] ?? null);
+            $this->assertSame('/portal/reset-password/'.$notification->token, $urlParts['path'] ?? null);
+            $this->assertSame($user->email, $query['email'] ?? null);
+
+            return true;
+        });
     }
 
     public function test_reset_page_prefills_the_email_and_contains_the_secret_token(): void

@@ -5,8 +5,6 @@ namespace Tests\Feature;
 use App\Models\Organization;
 use App\Models\ProductEvent;
 use App\Services\ProductEventRecorder;
-use Illuminate\Database\QueryException;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -61,19 +59,18 @@ class ProductEventRecorderTest extends TestCase
         ]);
     }
 
-    public function test_database_rejects_duplicate_event_keys_for_the_same_organization(): void
+    public function test_recorder_preserves_repeated_events_for_the_same_organization(): void
     {
         $organization = Organization::query()->create(['name' => 'Event Org', 'slug' => 'event-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
-        $event = [
-            'event_key' => 'first_asset_registered',
-            'organization_id' => $organization->id,
-            'occurred_at' => now(),
-        ];
-        ProductEvent::query()->create($event);
+        $recorder = app(ProductEventRecorder::class);
 
-        $this->expectException(QueryException::class);
+        $recorder->record('member_invited', $organization);
+        $recorder->record('member_invited', $organization);
 
-        ProductEvent::query()->create($event);
+        $this->assertSame(2, ProductEvent::query()
+            ->where('event_key', 'member_invited')
+            ->where('organization_id', $organization->id)
+            ->count());
     }
 
     public function test_migration_refuses_duplicate_organization_events_without_deleting_them(): void
@@ -84,9 +81,6 @@ class ProductEventRecorderTest extends TestCase
             'organization_id' => $organization->id,
             'occurred_at' => now(),
         ];
-        Schema::table('product_events', function (Blueprint $table): void {
-            $table->dropUnique('product_events_organization_event_unique');
-        });
         ProductEvent::query()->create($event);
         ProductEvent::query()->create($event);
 
@@ -103,9 +97,6 @@ class ProductEventRecorderTest extends TestCase
         } finally {
             ProductEvent::query()->where('organization_id', $organization->id)->delete();
             $organization->delete();
-            Schema::table('product_events', function (Blueprint $table): void {
-                $table->unique(['organization_id', 'event_key'], 'product_events_organization_event_unique');
-            });
         }
     }
 
@@ -117,5 +108,30 @@ class ProductEventRecorderTest extends TestCase
         $this->expectExceptionMessage('Product-event actor identifiers cannot be restored; use a forward migration.');
 
         $migration->down();
+    }
+
+    public function test_migration_refuses_to_restore_unique_event_keys_when_repeated_events_exist(): void
+    {
+        $organization = Organization::query()->create(['name' => 'Event Org', 'slug' => 'event-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $event = [
+            'event_key' => 'repeatable_event',
+            'organization_id' => $organization->id,
+            'occurred_at' => now(),
+        ];
+        ProductEvent::query()->create($event);
+        ProductEvent::query()->create($event);
+        $migration = require base_path('database/migrations/2026_10_11_220330_drop_product_event_organization_event_unique_index.php');
+
+        try {
+            $migration->down();
+            $this->fail('The migration must preserve repeated product events when restoring the unique constraint.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Cannot restore the product event uniqueness constraint while duplicate organization events exist.', $exception->getMessage());
+            $this->assertSame(2, ProductEvent::query()
+                ->where('organization_id', $organization->id)
+                ->where('event_key', 'repeatable_event')
+                ->count());
+        }
+
     }
 }

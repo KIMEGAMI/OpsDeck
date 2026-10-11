@@ -43,13 +43,16 @@ class AppServiceProvider extends ServiceProvider
         )->by(hash('sha256', (string) $request->ip())));
 
         ResetPassword::toMailUsing(static function (User $user, string $token): MailMessage {
+            $resetPath = route('password.reset', [
+                'token' => $token,
+                'email' => $user->getEmailForPasswordReset(),
+            ], false);
+            $resetUrl = rtrim((string) config('app.url'), '/').$resetPath;
+
             return (new MailMessage)
                 ->subject('OpsDeck パスワード再設定')
                 ->line('パスワード再設定のリクエストを受け付けました。')
-                ->action('パスワードを再設定', route('password.reset', [
-                    'token' => $token,
-                    'email' => $user->getEmailForPasswordReset(),
-                ]))
+                ->action('パスワードを再設定', $resetUrl)
                 ->line('このリンクは'.config('auth.passwords.users.expire').'分間有効です。')
                 ->line('この操作に覚えがない場合は、このメールを無視してください。');
         });

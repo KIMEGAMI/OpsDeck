@@ -12,9 +12,11 @@ use App\Models\OnboardingStep;
 use App\Models\Organization;
 use App\Models\OrganizationInvitation;
 use App\Models\OrganizationMembership;
+use App\Models\ProductEvent;
 use App\Models\SaasService;
 use App\Models\User;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -46,6 +48,27 @@ class OrganizationInvitationTest extends TestCase
         $this->assertInstanceOf(ShouldBeEncrypted::class, $job);
         $job->handle();
         Mail::assertSent(OrganizationInvitationMail::class, fn (OrganizationInvitationMail $mail): bool => $mail->hasTo($email));
+    }
+
+    public function test_owner_can_invite_multiple_members_in_the_same_organization(): void
+    {
+        Queue::fake();
+        [$owner, $organization] = $this->owner();
+
+        foreach (range(1, 2) as $number) {
+            $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+                ->post(route('settings.members.invitations.store'), [
+                    'email' => 'repeat-invite-'.$number.'-'.Str::uuid().'@example.test',
+                    'role' => 'operator',
+                ])
+                ->assertRedirect(route('settings.members'));
+        }
+
+        $this->assertSame(2, OrganizationInvitation::query()->where('organization_id', $organization->id)->count());
+        $this->assertSame(2, ProductEvent::query()
+            ->where('organization_id', $organization->id)
+            ->where('event_key', 'member_invited')
+            ->count());
     }
 
     public function test_invitation_history_pages_use_a_stable_order_when_creation_times_match(): void
@@ -326,6 +349,38 @@ class OrganizationInvitationTest extends TestCase
         $this->assertNotNull($invitation->fresh()->accepted_at);
         $this->assertDatabaseHas('product_events', ['event_key' => 'member_joined', 'organization_id' => $organization->id]);
         $this->post(route('invitations.accept', $token), ['name' => '再利用', 'password' => 'secure-password-123', 'password_confirmation' => 'secure-password-123'])->assertStatus(410);
+    }
+
+    public function test_multiple_invitations_in_the_same_organization_can_be_accepted(): void
+    {
+        [$owner, $organization] = $this->owner();
+        $invitations = [];
+
+        foreach (range(1, 2) as $number) {
+            $token = Str::random(64);
+            $invitations[] = $this->invitation(
+                $owner,
+                $organization,
+                'repeat-accept-'.$number.'-'.Str::uuid().'@example.test',
+                [],
+                $token,
+            );
+            $this->post(route('invitations.accept', $token), [
+                'name' => '招待メンバー'.$number,
+                'password' => 'secure-password-123',
+                'password_confirmation' => 'secure-password-123',
+            ])->assertRedirect(route('dashboard'));
+            Auth::logout();
+        }
+
+        $this->assertSame(2, OrganizationMembership::query()->where('organization_id', $organization->id)->where('role', MembershipRole::Viewer)->count());
+        foreach ($invitations as $invitation) {
+            $this->assertNotNull($invitation->fresh()->accepted_at);
+        }
+        $this->assertSame(2, ProductEvent::query()
+            ->where('organization_id', $organization->id)
+            ->where('event_key', 'member_joined')
+            ->count());
     }
 
     public function test_existing_user_can_log_in_and_accept_an_invitation_without_duplicate_account_creation(): void
