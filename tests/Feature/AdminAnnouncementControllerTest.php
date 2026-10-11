@@ -307,6 +307,23 @@ class AdminAnnouncementControllerTest extends TestCase
         $this->assertDatabaseHas('announcement_deliveries', ['announcement_id' => $announcement->id, 'user_id' => $recipient->id]);
     }
 
+    public function test_announcement_job_does_not_resend_after_a_successful_delivery(): void
+    {
+        Mail::fake();
+        $recipient = User::factory()->create(['email' => 'announcement-repeat-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Repeat '.Str::random(6), 'slug' => 'repeat-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        $announcement = Announcement::query()->create(['title' => '一度だけ送信', 'body' => '本文', 'published_at' => now()]);
+        $announcement->organizations()->attach($organization->id);
+        $job = new SendAnnouncementEmail($announcement, $recipient->id);
+
+        $job->handle();
+        $job->handle();
+
+        Mail::assertSentOnce(AnnouncementMail::class);
+        $this->assertNotNull(AnnouncementDelivery::query()->where('announcement_id', $announcement->id)->where('user_id', $recipient->id)->value('sent_at'));
+    }
+
     public function test_announcement_queue_rejects_duplicate_jobs_for_the_same_recipient(): void
     {
         $recipient = User::factory()->create(['email' => 'announcement-dedup-'.Str::uuid().'@example.test']);
