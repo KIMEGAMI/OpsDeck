@@ -184,7 +184,10 @@ class OpsDeckDeploymentReadiness extends Command
             return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
         }
 
-        return true;
+        $domain = rtrim($host, '.');
+
+        return str_contains($domain, '.')
+            && filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
     }
 
     private function hasSecureSessionCookies(): bool
