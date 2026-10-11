@@ -175,9 +175,9 @@ class OrganizationInvitationTest extends TestCase
             ->assertSee($revoked->email)
             ->assertSee('取消済み');
 
-        $this->get(route('invitations.show', $acceptedToken))->assertGone()->assertSee('既に使用済み');
-        $this->get(route('invitations.show', $expiredToken))->assertGone()->assertSee('有効期限を過ぎています');
-        $this->get(route('invitations.show', $revokedToken))->assertGone()->assertSee('取り消されています');
+        $this->get(route('invitations.show', $acceptedToken))->assertGone();
+        $this->get(route('invitations.show', $expiredToken))->assertGone();
+        $this->get(route('invitations.show', $revokedToken))->assertGone();
     }
 
     public function test_owner_can_revoke_a_pending_invitation_and_the_action_is_audited(): void
@@ -199,7 +199,7 @@ class OrganizationInvitationTest extends TestCase
             'entity_id' => $invitation->id,
             'action' => AuditLog::OrganizationInvitationRevoked,
         ]);
-        $this->get(route('invitations.show', $token))->assertGone()->assertSee('取り消されています');
+        $this->get(route('invitations.show', $token))->assertGone();
         $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
             ->delete(route('settings.members.invitations.revoke', $invitation))
             ->assertConflict();

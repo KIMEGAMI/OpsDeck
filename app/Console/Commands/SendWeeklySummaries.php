@@ -30,7 +30,7 @@ class SendWeeklySummaries extends Command
                 $organizationId = (int) $organization->organization_id;
                 $summary = $summaryBuilder->build($organizationId);
                 $timezone = Organization::query()->whereKey($organizationId)->value('timezone');
-                $weekStart = CarbonImmutable::parse($summary['period_end'], $timezone)->startOfWeek()->toDateString();
+                $weekStart = CarbonImmutable::parse($summary['period_end'], $timezone)->startOfWeek(CarbonImmutable::SUNDAY)->toDateString();
 
                 UserNotificationPreference::query()
                     ->where('organization_id', $organizationId)

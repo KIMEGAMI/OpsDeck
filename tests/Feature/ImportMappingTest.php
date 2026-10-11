@@ -280,6 +280,7 @@ class ImportMappingTest extends TestCase
         $this->assertSame('2027-01-01', $control->next_review_at?->toDateString());
         $this->assertSame('completed', $batch->refresh()->status);
 
+        $this->withoutExceptionHandling();
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.rollback', $batch), ['confirm' => '1'])
             ->assertRedirect(route('imports.show', $batch));

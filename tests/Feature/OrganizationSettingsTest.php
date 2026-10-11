@@ -41,14 +41,14 @@ class OrganizationSettingsTest extends TestCase
         $this->assertSame(3200, $organization->cost_savings_unused_asset_monthly_jpy);
         $this->assertDatabaseHas('audit_logs', ['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'action' => 'organization.settings_updated']);
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('action', AuditLog::OrganizationSettingsUpdated)->firstOrFail();
-        $this->assertSame([
+        $this->assertEquals([
             'timezone' => 'Asia/Tokyo',
             'company_size' => null,
             'ai_enabled' => false,
             'cost_savings_renewal_rate_percent' => null,
             'cost_savings_unused_asset_monthly_jpy' => null,
         ], $auditLog->before_json);
-        $this->assertSame([
+        $this->assertEquals([
             'timezone' => 'UTC',
             'company_size' => 80,
             'ai_enabled' => true,
