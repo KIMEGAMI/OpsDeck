@@ -179,9 +179,7 @@ jobs:
       - name: Run tests against MySQL
         env:
           DB_USERNAME: opsdeck_test
-        run: |
-          DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite php artisan test --compact --group=sqlite-only
-          php artisan test --compact --exclude-group=sqlite-only
+        run: php artisan test --compact --exclude-group=sqlite-only
 
   test-mariadb:
     runs-on: ubuntu-latest
@@ -289,9 +287,7 @@ jobs:
       - name: Run tests against MariaDB
         env:
           DB_USERNAME: opsdeck_test
-        run: |
-          DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite php artisan test --compact --group=sqlite-only
-          php artisan test --compact --exclude-group=sqlite-only
+        run: php artisan test --compact --exclude-group=sqlite-only
 
   frontend:
     runs-on: ubuntu-latest
