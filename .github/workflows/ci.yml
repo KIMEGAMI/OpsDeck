@@ -68,7 +68,7 @@ jobs:
             if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
             sleep 1
           done
-          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
 
       - name: Run tests
         run: php artisan test --compact
@@ -173,7 +173,7 @@ jobs:
             if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
             sleep 1
           done
-          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
 
       - name: Run tests against MySQL
         env:
@@ -281,7 +281,7 @@ jobs:
             if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
             sleep 1
           done
-          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
 
       - name: Run tests against MariaDB
         env:

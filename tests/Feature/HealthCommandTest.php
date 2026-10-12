@@ -126,7 +126,7 @@ class HealthCommandTest extends TestCase
 
         try {
             $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
-                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":null,"queue_timeout_status":"unknown","queue_worker_status":"stale","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
+                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":null,"queue_backlog_status":"unknown","queue_timeout_status":"unknown","queue_worker_status":"stale","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
                 ->assertExitCode(1);
         } finally {
             DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
@@ -148,7 +148,7 @@ class HealthCommandTest extends TestCase
 
         try {
             $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
-                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"invalid","queue_worker_status":"stale","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
+                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"invalid","queue_worker_status":"stale","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
                 ->assertExitCode(1);
         } finally {
             DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
@@ -190,7 +190,7 @@ class HealthCommandTest extends TestCase
 
         try {
             $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
-                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":null,"queue_timeout_status":"invalid","queue_worker_status":"invalid","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"missing"}')
+                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":null,"queue_backlog_status":"invalid","queue_timeout_status":"invalid","queue_worker_status":"invalid","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"missing"}')
                 ->assertExitCode(1);
         } finally {
             DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
@@ -322,7 +322,7 @@ class HealthCommandTest extends TestCase
 
         try {
             $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
-                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":2,"queue_timeout_status":"ok","queue_worker_status":"stale","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
+                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":2,"queue_backlog_status":"stale","queue_timeout_status":"ok","queue_worker_status":"stale","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
                 ->assertExitCode(1);
         } finally {
             DB::table('jobs')->where('queue', $queueName)->delete();

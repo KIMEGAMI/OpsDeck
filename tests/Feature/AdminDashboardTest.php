@@ -457,9 +457,9 @@ class AdminDashboardTest extends TestCase
             $this->actingAs($user)->get(route('admin.health'))
                 ->assertOk()
                 ->assertSee('要確認')
-                ->assertSee('未確認（現在のQueue方式またはjobsテーブルを監視できません）')
+                ->assertSee('未確認（このQueue方式の最古待機時間を自動判定できません）')
                 ->assertSee('ImportタイムアウトとQueue再配信猶予</dt><dd>未確認（Queue基盤側の設定確認が必要）</dd>', false)
-                ->assertSee('滞留Queue件数</dt><dd>未確認</dd>', false);
+                ->assertSee('滞留Queue件数</dt><dd>正確な件数は未取得</dd>', false);
         } finally {
             DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
             File::deleteDirectory($backupRoot);

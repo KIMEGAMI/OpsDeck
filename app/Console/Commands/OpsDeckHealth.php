@@ -52,6 +52,7 @@ class OpsDeckHealth extends Command
             $failedJobsTableAvailable = Schema::hasTable('failed_jobs');
             $failedJobs = $failedJobsTableAvailable ? (int) DB::table('failed_jobs')->count() : null;
             $staleQueuedJobs = $queueHealth->staleQueuedJobs();
+            $queueBacklogStatus = $queueHealth->backlogStatus($staleQueuedJobs);
             $queueTimeoutStatus = $queueHealth->importTimeoutStatus();
             $queueWorkerStatus = $queueHealth->workerStatus();
             $failedCheck = 'webhooks';
@@ -87,10 +88,10 @@ class OpsDeckHealth extends Command
 
         $backupStatus = $backupReport['status'];
         $backupRestoreStatus = $backupRestoreReport['status'];
-        $hasOperationalErrors = $backupStatus !== 'ok' || ! in_array($backupRestoreStatus, ['ok', 'not_applicable'], true) || $schedulerHeartbeatStatus !== 'ok' || $failedJobs === null || $failedJobs > 0 || $staleQueuedJobs === null || $staleQueuedJobs > 0 || in_array($queueTimeoutStatus, ['invalid', 'unknown'], true) || in_array($queueWorkerStatus, ['stale', 'unknown', 'invalid'], true) || $webhookErrors > 0 || $staleWebhooks > 0 || $staleImports > 0;
+        $hasOperationalErrors = $backupStatus !== 'ok' || ! in_array($backupRestoreStatus, ['ok', 'not_applicable'], true) || $schedulerHeartbeatStatus !== 'ok' || $failedJobs === null || $failedJobs > 0 || in_array($queueBacklogStatus, ['stale', 'unknown', 'invalid'], true) || in_array($queueTimeoutStatus, ['invalid', 'unknown'], true) || in_array($queueWorkerStatus, ['stale', 'unknown', 'invalid'], true) || $webhookErrors > 0 || $staleWebhooks > 0 || $staleImports > 0;
         $status = $hasOperationalErrors ? 'warning' : 'ok';
         if ($asJson) {
-            $this->line(json_encode(['status' => $status, 'database' => 'ok', 'backup' => $backupStatus, 'scheduler_heartbeat' => $schedulerHeartbeatStatus, 'queue_failed_jobs' => $failedJobs, 'stale_queue_jobs' => $staleQueuedJobs, 'queue_timeout_status' => $queueTimeoutStatus, 'queue_worker_status' => $queueWorkerStatus, 'webhook_errors' => $webhookErrors, 'stale_webhooks' => $staleWebhooks, 'stale_import_batches' => $staleImports, 'backup_restore_test' => $backupRestoreStatus], JSON_THROW_ON_ERROR));
+            $this->line(json_encode(['status' => $status, 'database' => 'ok', 'backup' => $backupStatus, 'scheduler_heartbeat' => $schedulerHeartbeatStatus, 'queue_failed_jobs' => $failedJobs, 'stale_queue_jobs' => $staleQueuedJobs, ...($queueBacklogStatus === 'not_applicable' ? [] : ['queue_backlog_status' => $queueBacklogStatus]), 'queue_timeout_status' => $queueTimeoutStatus, 'queue_worker_status' => $queueWorkerStatus, 'webhook_errors' => $webhookErrors, 'stale_webhooks' => $staleWebhooks, 'stale_import_batches' => $staleImports, 'backup_restore_test' => $backupRestoreStatus], JSON_THROW_ON_ERROR));
         } else {
             $hasOperationalErrors ? $this->warn('OpsDeck health check warning.') : $this->info('OpsDeck health check passed.');
             $this->line('Scheduler heartbeat: '.$schedulerHeartbeatStatus);
@@ -98,6 +99,7 @@ class OpsDeckHealth extends Command
             $this->line('Backup restore test: '.$backupRestoreStatus.' ('.$backupRestoreReport['completed_at'].')');
             $this->line('Queue failed jobs: '.($failedJobs ?? 'unknown (failed_jobs table missing)'));
             $this->line('Stale queue jobs: '.($staleQueuedJobs === null ? 'unknown (unsupported queue driver or missing jobs table)' : $staleQueuedJobs));
+            $this->line('Queue backlog status: '.$queueBacklogStatus);
             $this->line('Queue job timeout configuration: '.$queueTimeoutStatus);
             $this->line('Queue worker: '.$queueWorkerStatus);
             $this->line('Webhook errors: '.$webhookErrors);

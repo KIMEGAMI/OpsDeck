@@ -12,8 +12,8 @@
             <dt>DBマイグレーション</dt><dd>{{ match ($migrationStatus) { 'ok' => '適用済み', 'pending' => '未適用 '.$pendingMigrationCount.'件', default => '未確認（DBまたはmigration履歴を確認できません）' } }}</dd>
             <dt>Scheduler稼働確認</dt><dd>{{ match ($schedulerHeartbeatStatus) { 'ok' => '正常', 'stale' => '更新が停止しています', default => '未確認（Schedulerの初回実行待ち）' } }}</dd>
             <dt>Queue失敗件数</dt><dd>{{ $failedJobs ?? '未確認（failed_jobsテーブルがありません）' }}</dd>
-            <dt>Queue監視</dt><dd>{{ $staleQueuedJobs === null ? '未確認（現在のQueue方式またはjobsテーブルを監視できません）' : '監視中' }}</dd>
-            <dt>滞留Queue件数</dt><dd>{{ $staleQueuedJobs ?? '未確認' }}</dd>
+            <dt>Queue待機状態</dt><dd>{{ match ($queueBacklogStatus) { 'ok' => '正常（設定時間を超えた待機ジョブなし）', 'stale' => '要対応（設定時間を超えた待機ジョブあり）', 'not_applicable' => '対象外（非本番の同期Queue）', 'invalid' => '設定不整合（本番で同期Queueを使用中）', default => '未確認（このQueue方式の最古待機時間を自動判定できません）' } }}</dd>
+            <dt>滞留Queue件数</dt><dd>{{ $staleQueuedJobs ?? ($queueBacklogStatus === 'stale' ? '件数未確認（古い待機ジョブあり）' : '正確な件数は未取得') }}</dd>
             <dt>ImportタイムアウトとQueue再配信猶予</dt><dd>{{ match ($queueTimeoutStatus) { 'ok' => '正常', 'invalid' => '設定不整合', 'unknown' => '未確認（Queue基盤側の設定確認が必要）', default => '対象外（非本番の同期Queue）' } }}</dd>
             <dt>Queueワーカー</dt><dd>{{ match ($queueWorkerStatus) { 'ok' => '稼働中（待機中を含む）', 'stale' => '更新停止（Worker未起動または停止）', 'invalid' => '本番で同期Queueを使用中', 'unknown' => '未確認（監視対象外のQueue方式）', default => '対象外（非本番の同期Queue）' } }}</dd>
             <dt>Webhookエラー件数</dt><dd>{{ $webhookErrors }}</dd>

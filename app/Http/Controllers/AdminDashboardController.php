@@ -156,6 +156,7 @@ class AdminDashboardController extends Controller
         }
         $failedJobs = Schema::hasTable('failed_jobs') ? (int) Schema::getConnection()->table('failed_jobs')->count() : null;
         $staleQueuedJobs = $queueHealth->staleQueuedJobs();
+        $queueBacklogStatus = $queueHealth->backlogStatus($staleQueuedJobs);
         $queueTimeoutStatus = $queueHealth->importTimeoutStatus();
         $queueWorkerStatus = $queueHealth->workerStatus();
         $webhookErrors = $webhookHealth->processingErrorCount();
@@ -174,8 +175,8 @@ class AdminDashboardController extends Controller
                 });
             })
             ->count();
-        $healthStatus = $migrationStatus !== 'ok' || $schedulerHeartbeatStatus !== 'ok' || $failedJobs === null || $failedJobs > 0 || $staleQueuedJobs === null || $staleQueuedJobs > 0 || in_array($queueTimeoutStatus, ['invalid', 'unknown'], true) || in_array($queueWorkerStatus, ['stale', 'unknown', 'invalid'], true) || $webhookErrors > 0 || $staleWebhooks > 0 || $staleImportBatches > 0 || $backupReport['status'] !== 'ok' || ! in_array($backupRestoreReport['status'], ['ok', 'not_applicable'], true) ? '要確認' : '正常';
+        $healthStatus = $migrationStatus !== 'ok' || $schedulerHeartbeatStatus !== 'ok' || $failedJobs === null || $failedJobs > 0 || in_array($queueBacklogStatus, ['stale', 'unknown', 'invalid'], true) || in_array($queueTimeoutStatus, ['invalid', 'unknown'], true) || in_array($queueWorkerStatus, ['stale', 'unknown', 'invalid'], true) || $webhookErrors > 0 || $staleWebhooks > 0 || $staleImportBatches > 0 || $backupReport['status'] !== 'ok' || ! in_array($backupRestoreReport['status'], ['ok', 'not_applicable'], true) ? '要確認' : '正常';
 
-        return view('admin.health', compact('healthStatus', 'backupStatus', 'latestBackupAt', 'backupRestoreStatus', 'backupRestoreReport', 'migrationStatus', 'pendingMigrationCount', 'schedulerHeartbeatStatus', 'failedJobs', 'staleQueuedJobs', 'queueTimeoutStatus', 'queueWorkerStatus', 'webhookErrors', 'staleWebhooks', 'staleImportBatches'));
+        return view('admin.health', compact('healthStatus', 'backupStatus', 'latestBackupAt', 'backupRestoreStatus', 'backupRestoreReport', 'migrationStatus', 'pendingMigrationCount', 'schedulerHeartbeatStatus', 'failedJobs', 'staleQueuedJobs', 'queueBacklogStatus', 'queueTimeoutStatus', 'queueWorkerStatus', 'webhookErrors', 'staleWebhooks', 'staleImportBatches'));
     }
 }

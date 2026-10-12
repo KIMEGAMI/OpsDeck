@@ -4,12 +4,15 @@ namespace App\Services;
 
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use Throwable;
 
 class QueueHealthService
 {
     public function staleQueuedJobs(): ?int
     {
-        $driver = (string) config('queue.default');
+        $connectionName = (string) config('queue.default');
+        $driver = (string) config('queue.connections.'.$connectionName.'.driver', $connectionName);
         if ($driver === 'sync' && ! app()->environment('production')) {
             return 0;
         }
@@ -17,8 +20,8 @@ class QueueHealthService
             return null;
         }
 
-        $queueConnection = DB::connection(config('queue.connections.database.connection'));
-        $queueTable = (string) config('queue.connections.database.table', 'jobs');
+        $queueConnection = DB::connection(config('queue.connections.'.$connectionName.'.connection'));
+        $queueTable = (string) config('queue.connections.'.$connectionName.'.table', 'jobs');
         if (! $queueConnection->getSchemaBuilder()->hasTable($queueTable)) {
             return null;
         }
@@ -34,6 +37,52 @@ class QueueHealthService
                 })->orWhere('reserved_at', '<=', $staleQueueCutoff);
             })
             ->count();
+    }
+
+    public function backlogStatus(?int $knownStaleQueuedJobs = null): string
+    {
+        $connectionName = (string) config('queue.default');
+        $driver = (string) config('queue.connections.'.$connectionName.'.driver', $connectionName);
+        if ($driver === 'sync' && ! app()->environment('production')) {
+            return 'not_applicable';
+        }
+        if ($driver === 'sync') {
+            return 'invalid';
+        }
+
+        if ($driver === 'database') {
+            $staleQueuedJobs = $knownStaleQueuedJobs ?? $this->staleQueuedJobs();
+
+            return $staleQueuedJobs === null ? 'unknown' : ($staleQueuedJobs > 0 ? 'stale' : 'ok');
+        }
+
+        if ($driver !== 'redis') {
+            return 'unknown';
+        }
+
+        $queueName = (string) config('queue.connections.'.$connectionName.'.queue', 'default');
+        try {
+            $queue = Queue::connection($connectionName);
+            if (! method_exists($queue, 'creationTimeOfOldestPendingJob')) {
+                return 'unknown';
+            }
+
+            $oldestPendingJobTimestamp = $queue->creationTimeOfOldestPendingJob($queueName);
+        } catch (Throwable) {
+            return 'unknown';
+        }
+
+        if ($oldestPendingJobTimestamp === null) {
+            return 'ok';
+        }
+
+        if (! is_numeric($oldestPendingJobTimestamp)) {
+            return 'unknown';
+        }
+
+        $staleQueueCutoff = now()->subMinutes((int) config('opsdeck.queue.stale_after_minutes'))->timestamp;
+
+        return (int) $oldestPendingJobTimestamp <= $staleQueueCutoff ? 'stale' : 'ok';
     }
 
     public function importTimeoutStatus(): string

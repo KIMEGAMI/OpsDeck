@@ -4,8 +4,11 @@ namespace Tests\Feature;
 
 use App\Services\QueueHealthService;
 use Illuminate\Queue\Events\Looping;
+use Illuminate\Queue\RedisQueue;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
+use Mockery;
 use Tests\TestCase;
 
 class QueueWorkerHeartbeatTest extends TestCase
@@ -64,5 +67,33 @@ class QueueWorkerHeartbeatTest extends TestCase
         config(['queue.default' => 'sync']);
 
         $this->assertSame('not_applicable', app(QueueHealthService::class)->workerStatus());
+        $this->assertSame('not_applicable', app(QueueHealthService::class)->backlogStatus());
+    }
+
+    public function test_redis_queue_backlog_status_uses_oldest_pending_job_timestamp(): void
+    {
+        config(['queue.default' => 'primary', 'queue.connections.primary.driver' => 'redis', 'queue.connections.primary.queue' => 'priority', 'opsdeck.queue.stale_after_minutes' => 10]);
+        $redisQueue = Mockery::mock(RedisQueue::class);
+        $redisQueue->shouldReceive('creationTimeOfOldestPendingJob')->once()->with('priority')->andReturn(now()->subMinutes(11)->timestamp);
+        Queue::shouldReceive('connection')->once()->with('primary')->andReturn($redisQueue);
+
+        $this->assertSame('stale', app(QueueHealthService::class)->backlogStatus());
+    }
+
+    public function test_redis_queue_without_stale_pending_job_is_clear(): void
+    {
+        config(['queue.default' => 'redis', 'queue.connections.redis.queue' => 'default', 'opsdeck.queue.stale_after_minutes' => 10]);
+        $redisQueue = Mockery::mock(RedisQueue::class);
+        $redisQueue->shouldReceive('creationTimeOfOldestPendingJob')->once()->with('default')->andReturn(now()->subMinutes(9)->timestamp);
+        Queue::shouldReceive('connection')->once()->with('redis')->andReturn($redisQueue);
+
+        $this->assertSame('ok', app(QueueHealthService::class)->backlogStatus());
+    }
+
+    public function test_queue_drivers_without_oldest_job_time_remain_unverified(): void
+    {
+        config(['queue.default' => 'sqs']);
+
+        $this->assertSame('unknown', app(QueueHealthService::class)->backlogStatus());
     }
 }
