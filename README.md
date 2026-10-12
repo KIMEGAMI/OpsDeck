@@ -31,8 +31,12 @@ OpsDeckは削減額を保証するサービスではありません。金額は�
 ### 必要なもの
 
 - PHP 8.4、Composer 2
+- PHP拡張: `mbstring`、`openssl`、`xmlreader`、`zip`
+- DBに応じたPDO拡張: SQLiteは`pdo_sqlite`、MySQL/MariaDBは`pdo_mysql`（テストには`pdo_sqlite`と`openssl`が必要）
 - Node.js 22、npm
 - 開発用DB（`.env.example` の初期値はSQLite）
+
+Windowsでは`php --ini`でCLIが読み込む`php.ini`を確認し、必要な拡張を有効にしてください。`php -m`で有効化された拡張を確認できます。
 
 PowerShellでリポジトリのルートから実行します。
 
