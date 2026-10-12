@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\ProductEvent;
 use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
 use App\Models\User;
@@ -31,10 +32,10 @@ class ReferralControllerTest extends TestCase
         $this->get(route('referrals.redirect', $referral->code))->assertRedirect(route('register'))->assertSessionHas('referral_code', $referral->code);
 
         $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 2]);
-        $this->assertDatabaseMissing('product_events', [
-            'organization_id' => $organization->id,
-            'event_key' => 'referral_clicked',
-        ]);
+        $this->assertSame(2, ProductEvent::query()
+            ->where('organization_id', $organization->id)
+            ->where('event_key', 'referral_clicked')
+            ->count());
     }
 
     public function test_inactive_referral_code_is_not_available(): void
@@ -53,10 +54,7 @@ class ReferralControllerTest extends TestCase
         $this->get(route('referrals.redirect', $referral->code))->assertTooManyRequests();
 
         $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 1]);
-        $this->assertDatabaseMissing('product_events', [
-            'organization_id' => $organization->id,
-            'event_key' => 'referral_clicked',
-        ]);
+        $this->assertSame(1, ProductEvent::query()->where('organization_id', $organization->id)->where('event_key', 'referral_clicked')->count());
     }
 
     public function test_referral_registration_is_recorded_without_referrer_personal_data(): void

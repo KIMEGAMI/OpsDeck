@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ReferralCode;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -25,6 +26,7 @@ class ReferralController extends Controller
         $referral = ReferralCode::query()->where('code', $code)->where('active', true)->firstOrFail();
         $referral->increment('click_count');
         $referral->update(['last_clicked_at' => now()]);
+        app(ProductEventRecorder::class)->record('referral_clicked', $referral->organization);
 
         return to_route('register')->with('referral_code', $referral->code);
     }
