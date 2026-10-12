@@ -1,6 +1,7 @@
 <?php
 
 $maximumXlsxRows = max(1, (int) env('OPSDECK_XLSX_MAX_ROWS', 20000));
+$aiPremiumMonthlyBudgetJpy = max(0, (int) env('OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY', 500));
 $aiModelPrices = json_decode((string) env('OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS', '{}'), true);
 $aiModelPrices = is_array($aiModelPrices) ? $aiModelPrices : [];
 
@@ -99,7 +100,7 @@ return [
             'monthly_price_jpy' => 9800,
             'limits' => ['employees' => 200, 'assets' => 500, 'saas_services' => 100, 'administrators' => 5],
             'capabilities' => ['xlsx_preview' => true, 'google_sheets' => true, 'import_execution' => true, 'ai_column_mapping' => true, 'renewal_alerts' => true, 'savings_opportunities' => true, 'realized_savings' => true, 'security_controls' => true, 'evidence' => true, 'questionnaires' => true, 'exports' => true, 'impact_report' => true],
-            'features' => ['CSV / XLSX / Google Sheets Import', 'AI列マッピング候補（月500円相当まで）', '削減可能額の概算・削減実績の記録', '更新・セキュリティアラート', '証跡・質問票・Export', '導入効果レポート'],
+            'features' => ['CSV / XLSX / Google Sheets Import', 'AI列マッピング候補（月'.number_format($aiPremiumMonthlyBudgetJpy).'円相当まで）', '削減可能額の概算・削減実績の記録', '更新・セキュリティアラート', '証跡・質問票・Export', '導入効果レポート'],
         ],
     ],
     'plan_capability_labels' => [
@@ -157,8 +158,8 @@ return [
         'monthly_budget_reservation_ttl_minutes' => max(1, (int) env('OPSDECK_AI_BUDGET_RESERVATION_TTL_MINUTES', 2)),
         'estimated_input_overhead_tokens' => max(0, (int) env('OPSDECK_AI_ESTIMATED_INPUT_OVERHEAD_TOKENS', 4096)),
         'input_token_estimate_multiplier' => max(1, (int) env('OPSDECK_AI_INPUT_TOKEN_ESTIMATE_MULTIPLIER', 4)),
-        'monthly_budget_jpy' => ['free' => 0, 'premium' => 500],
-        'legacy_monthly_budget_jpy' => 500,
+        'monthly_budget_jpy' => ['free' => 0, 'premium' => $aiPremiumMonthlyBudgetJpy],
+        'legacy_monthly_budget_jpy' => $aiPremiumMonthlyBudgetJpy,
         'mapping_suggestions_max_attempts' => max(1, (int) env('OPSDECK_AI_MAPPING_SUGGESTIONS_MAX_ATTEMPTS', 5)),
         'mapping_suggestion_decay_seconds' => max(1, (int) env('OPSDECK_AI_MAPPING_SUGGESTION_DECAY_SECONDS', 60)),
         'mapping_reason_max_length' => max(1, (int) env('OPSDECK_AI_MAPPING_REASON_MAX_LENGTH', 160)),

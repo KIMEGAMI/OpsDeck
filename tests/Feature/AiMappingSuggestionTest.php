@@ -67,6 +67,46 @@ class AiMappingSuggestionTest extends TestCase
         }
     }
 
+    public function test_premium_ai_budget_is_loaded_from_environment_configuration_and_shared_with_legacy_plan(): void
+    {
+        $environmentKey = 'OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY';
+        $previousEnvironmentValue = getenv($environmentKey);
+        $previousEnvironmentValueWasSet = array_key_exists($environmentKey, $_ENV);
+        $previousEnvironmentValueInEnv = $_ENV[$environmentKey] ?? null;
+        $previousEnvironmentValueWasInServer = array_key_exists($environmentKey, $_SERVER);
+        $previousEnvironmentValueInServer = $_SERVER[$environmentKey] ?? null;
+
+        putenv($environmentKey.'=725');
+        $_ENV[$environmentKey] = '725';
+        $_SERVER[$environmentKey] = '725';
+
+        try {
+            $configuration = require config_path('opsdeck.php');
+
+            $this->assertSame(725, $configuration['ai']['monthly_budget_jpy']['premium']);
+            $this->assertSame(725, $configuration['ai']['legacy_monthly_budget_jpy']);
+            $this->assertContains('AI列マッピング候補（月725円相当まで）', $configuration['plans']['premium']['features']);
+        } finally {
+            if ($previousEnvironmentValue === false) {
+                putenv($environmentKey);
+            } else {
+                putenv($environmentKey.'='.$previousEnvironmentValue);
+            }
+
+            if ($previousEnvironmentValueWasSet) {
+                $_ENV[$environmentKey] = $previousEnvironmentValueInEnv;
+            } else {
+                unset($_ENV[$environmentKey]);
+            }
+
+            if ($previousEnvironmentValueWasInServer) {
+                $_SERVER[$environmentKey] = $previousEnvironmentValueInServer;
+            } else {
+                unset($_SERVER[$environmentKey]);
+            }
+        }
+    }
+
     public function test_it_returns_validated_ai_mapping_and_logs_usage(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
