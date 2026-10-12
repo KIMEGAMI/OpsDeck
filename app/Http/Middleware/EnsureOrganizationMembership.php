@@ -28,7 +28,18 @@ class EnsureOrganizationMembership
             abort(Response::HTTP_UNAUTHORIZED);
         }
 
-        $selectedOrganizationId = $request->session()->get('current_organization_id');
+        $requestedSummaryOrganizationId = null;
+        $summaryQuery = $request->query->all();
+        if ($request->routeIs('weekly-summary.show') && array_key_exists('organization_id', $summaryQuery)) {
+            $requestedOrganizationId = $summaryQuery['organization_id'];
+            abort_unless(
+                (is_string($requestedOrganizationId) || is_int($requestedOrganizationId))
+                    && ctype_digit((string) $requestedOrganizationId),
+                Response::HTTP_NOT_FOUND,
+            );
+            $requestedSummaryOrganizationId = $requestedOrganizationId;
+        }
+        $selectedOrganizationId = $requestedSummaryOrganizationId ?? $request->session()->get('current_organization_id');
         $memberships = OrganizationMembership::query()
             ->with('organization')
             ->where('user_id', $user->id)

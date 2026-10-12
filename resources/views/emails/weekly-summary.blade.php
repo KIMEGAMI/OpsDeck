@@ -5,6 +5,8 @@
     <li><a href="{{ route('imports.index', ['has_errors' => 1, 'created_after' => $summary['period_start'] ?? now()->subDays((int) config('opsdeck.weekly_summary_period_days') - 1)->toDateString(), 'created_before' => $summary['period_end'] ?? now()->toDateString()]) }}">Importエラー行数</a>：{{ $summary['import_errors'] }}</li>
     <li><a href="{{ route('imports.index', ['status' => 'failed', 'created_after' => $summary['period_start'] ?? now()->subDays((int) config('opsdeck.weekly_summary_period_days') - 1)->toDateString(), 'created_before' => $summary['period_end'] ?? now()->toDateString()]) }}">Import実行失敗</a>：{{ $summary['failed_import_batches'] ?? 0 }}バッチ</li>
 </ul>
+<p><a href="{{ route('weekly-summary.show', ['organization_id' => $organization->id]) }}">週次サマリーの配信設定を変更・停止する</a></p>
+<p>設定ページへのログイン後、この組織の週次サマリー配信を停止できます。管理者のお知らせメールの設定は別に管理されます。</p>
 <h2>集計時点で対応が必要な項目</h2>
 @if (! ($summary['renewal_alerts_enabled'] ?? true) && ! ($summary['security_alerts_enabled'] ?? true))<p>現在のプランでは契約更新・セキュリティ項目を集計対象外としています。</p>@endif
 <ul>

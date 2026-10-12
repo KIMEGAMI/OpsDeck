@@ -95,7 +95,49 @@ class WeeklySummaryControllerTest extends TestCase
         $job->handle();
 
         Mail::assertSentTimes(WeeklySummaryMail::class, 1);
+        Mail::assertSent(WeeklySummaryMail::class, function (WeeklySummaryMail $mail) use ($organization): bool {
+            $this->assertStringContainsString(
+                route('weekly-summary.show', ['organization_id' => $organization->id]),
+                $mail->render(),
+            );
+
+            return true;
+        });
         $this->assertDatabaseHas('weekly_summary_deliveries', ['user_id' => $user->id, 'organization_id' => $organization->id]);
+    }
+
+    public function test_weekly_summary_settings_link_selects_only_an_active_member_organization(): void
+    {
+        [$user, $linkedOrganization] = $this->member();
+        [, $otherOrganization] = $this->member();
+        $secondOrganization = Organization::query()->create([
+            'name' => 'Summary second organization',
+            'slug' => 'summary-second-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $secondOrganization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Viewer,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $secondOrganization->id])
+            ->get(route('weekly-summary.show', ['organization_id' => $linkedOrganization->id]))
+            ->assertOk();
+
+        $this->assertSame($linkedOrganization->id, session('current_organization_id'));
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $linkedOrganization->id])
+            ->get(route('weekly-summary.show', ['organization_id' => $otherOrganization->id]))
+            ->assertForbidden();
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $linkedOrganization->id])
+            ->get('/weekly-summary?organization_id%5B%5D=1')
+            ->assertNotFound();
     }
 
     public function test_weekly_summary_email_job_uses_configured_retry_backoff(): void
