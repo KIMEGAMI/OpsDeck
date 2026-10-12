@@ -33,7 +33,7 @@
             @csrf
             <label for="target_type">対象データ種別</label>
             <select id="target_type" name="target_type" required>
-                @foreach ($targetTypes as $targetType)<option value="{{ $targetType }}">{{ config('opsdeck.import_target_labels.'.$targetType, $targetType) }}</option>@endforeach
+                @foreach ($targetTypes as $targetType)<option value="{{ $targetType }}" @selected($targetType === $suggestedTargetType)>{{ config('opsdeck.import_target_labels.'.$targetType, $targetType) }}</option>@endforeach
             </select>
             <h2>CSV列</h2>
             @foreach (($importBatch->headers_json ?? []) as $header)

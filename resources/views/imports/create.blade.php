@@ -1,12 +1,16 @@
 <x-layouts.app>
     <section class="card">
         <h1>Migration Studio: {{ $capabilities['xlsx_preview'] ? 'CSV / XLSXプレビュー' : 'CSVプレビュー' }}</h1>
+        @if ($targetType !== null)
+            <p class="muted">導入チェックリスト：{{ $targetTypeLabel }}の管理表をプレビューします。Preview後の列マッピング画面でも対象種別が選択済みになります。</p>
+        @endif
         <p class="muted">この操作ではDBの業務データを変更せず、CSVの行数とプレビュー履歴だけを保存します。</p>
         <p class="muted">1回の取込は最大{{ number_format(config('opsdeck.import.max_rows')) }}行、ファイルサイズは最大{{ number_format(config('opsdeck.import.max_size_kilobytes')) }}KBです。超える場合はデータを分割して取り込んでください。</p>
         <form method="post" action="{{ route('imports.store') }}" enctype="multipart/form-data">
             @csrf
+            @if ($targetType !== null)<input type="hidden" name="target_type" value="{{ $targetType }}">@endif
             <label for="source_name">取込名</label>
-            <input id="source_name" name="source_name" value="{{ old('source_name') }}" required maxlength="255">
+            <input id="source_name" name="source_name" value="{{ old('source_name', $targetTypeLabel !== null ? $targetTypeLabel.'管理表' : '') }}" required maxlength="255">
             <label for="file">{{ $capabilities['xlsx_preview'] ? 'CSV / XLSXファイル' : 'CSVファイル' }}</label>
             <input id="file" type="file" name="file" accept="{{ $capabilities['xlsx_preview'] ? '.csv,.txt,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : '.csv,.txt,text/csv,text/plain' }}" required>
             <p class="muted">CSVはUTF-8（BOM付き可）またはShift_JIS（Windows-31J）に対応しています。文字化けや列ずれを避けるため、Previewで内容を必ず確認してください。</p>

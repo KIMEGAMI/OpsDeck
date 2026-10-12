@@ -58,7 +58,7 @@
             <p class="muted">これはプレビューです。業務テーブルへの反映はまだ実行されていません。</p>
         @endif
         @if (in_array($importBatch->status, ['preview', 'ready'], true))
-            @can('update', $importBatch)<p><a href="{{ route('imports.mapping', $importBatch) }}">列マッピングを設定する</a></p>@endcan
+            @can('update', $importBatch)<p><a href="{{ route('imports.mapping', $targetTypeSuggestion === null ? $importBatch : [$importBatch, 'target_type' => $targetTypeSuggestion]) }}">{{ $targetTypeSuggestion === null ? '列マッピングを設定する' : config('opsdeck.import_target_labels.'.$targetTypeSuggestion, $targetTypeSuggestion).'の列マッピングを設定する' }}</a></p>@endcan
         @endif
         @if ($importBatch->status === 'ready' && $capabilities['import_execution'])
             <form method="post" action="{{ route('imports.execute', $importBatch) }}">

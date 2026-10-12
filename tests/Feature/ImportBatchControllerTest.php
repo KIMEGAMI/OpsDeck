@@ -155,6 +155,61 @@ class ImportBatchControllerTest extends TestCase
             ->assertDontSee(route('imports.google-sheets'));
     }
 
+    public function test_onboarding_import_target_is_prefilled_through_preview_to_column_mapping(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.create', ['target_type' => 'employees']))
+            ->assertOk()
+            ->assertSee('導入チェックリスト：社員の管理表をプレビューします。')
+            ->assertSee('name="target_type" value="employees"', false)
+            ->assertSee('value="社員管理表"', false);
+
+        $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.store'), [
+                'target_type' => 'employees',
+                'source_name' => '社員管理表',
+                'file' => UploadedFile::fake()->createWithContent('employees.csv', "employee_number,name,email,employment_status\nEMP-001,山田太郎,taro@example.test,active\n"),
+            ]);
+
+        $batch = ImportBatch::query()->where('organization_id', $organization->id)->latest('id')->firstOrFail();
+        $response->assertRedirect(route('imports.show', [$batch, 'target_type' => 'employees']));
+        $this->assertSame('preview', $batch->refresh()->status);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', [$batch, 'target_type' => 'employees']))
+            ->assertOk()
+            ->assertSee(route('imports.mapping', [$batch, 'target_type' => 'employees']), false)
+            ->assertSee('社員の列マッピングを設定する');
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', [$batch, 'target_type' => 'employees']))
+            ->assertOk()
+            ->assertSee('<option value="employees" selected>', false)
+            ->assertSee('employee_number');
+    }
+
+    public function test_import_target_type_query_parameter_is_validated(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $previousImportBatchCount = ImportBatch::query()->count();
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.store'), [
+                'target_type' => 'users;DROP TABLE employees',
+                'source_name' => 'invalid target',
+                'file' => UploadedFile::fake()->createWithContent('employees.csv', "employee_number,name\nEMP-001,Test\n"),
+            ])
+            ->assertSessionHasErrors('target_type');
+
+        $this->assertDatabaseCount('import_batches', $previousImportBatchCount);
+    }
+
     public function test_premium_import_page_explains_xlsx_date_and_amount_handling(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

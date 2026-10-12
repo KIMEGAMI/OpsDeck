@@ -97,8 +97,13 @@ class ImportBatchController extends Controller
         $this->authorize('create', [ImportBatch::class, $organization]);
         $capabilities = $this->importCapabilities($organization);
         $canManageBilling = $request->user()->can('manageBilling', $organization);
+        $requestedTargetType = $request->query('target_type');
+        $targetType = is_string($requestedTargetType) && in_array($requestedTargetType, config('opsdeck.import_target_types', []), true)
+            ? $requestedTargetType
+            : null;
+        $targetTypeLabel = $targetType === null ? null : config('opsdeck.import_target_labels.'.$targetType, $targetType);
 
-        return view('imports.create', compact('organization', 'capabilities', 'canManageBilling'));
+        return view('imports.create', compact('organization', 'capabilities', 'canManageBilling', 'targetType', 'targetTypeLabel'));
     }
 
     public function sample(Request $request, string $targetType): StreamedResponse
@@ -239,6 +244,8 @@ class ImportBatchController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('create', [ImportBatch::class, $organization]);
+        $targetType = $request->validated('target_type');
+        $showRouteParameters = $targetType === null ? [] : ['target_type' => $targetType];
         $disk = config('opsdeck.import.disk');
         $file = $request->file('file');
         if (strtolower($file->getClientOriginalExtension()) === 'xlsx') {
@@ -256,7 +263,7 @@ class ImportBatchController extends Controller
                     'started_at' => now(),
                 ]);
 
-                return to_route('imports.show', $batch)->with('status', 'シートを選択してください。');
+                return to_route('imports.show', [$batch, ...$showRouteParameters])->with('status', 'シートを選択してください。');
             } catch (\Throwable $exception) {
                 Storage::disk($disk)->delete($path);
                 throw $exception;
@@ -284,7 +291,7 @@ class ImportBatchController extends Controller
             throw $exception;
         }
 
-        return to_route('imports.show', $batch)->with('status', 'ファイルを受け付けました。Previewをバックグラウンドで準備します。');
+        return to_route('imports.show', [$batch, ...$showRouteParameters])->with('status', 'ファイルを受け付けました。Previewをバックグラウンドで準備します。');
     }
 
     public function show(Request $request, ImportBatch $importBatch): View
@@ -314,8 +321,12 @@ class ImportBatchController extends Controller
         $importSourceTypeLabels = config('opsdeck.import_source_type_labels', []);
         $importCandidateTypeLabels = config('opsdeck.import_candidate_type_labels', []);
         $importCandidateStatusLabels = config('opsdeck.import_candidate_status_labels', []);
+        $requestedTargetType = $request->query('target_type');
+        $targetTypeSuggestion = is_string($requestedTargetType) && in_array($requestedTargetType, config('opsdeck.import_target_types', []), true)
+            ? $requestedTargetType
+            : null;
 
-        return view('imports.show', compact('importBatch', 'rowResults', 'selectableRowResults', 'reviewCandidates', 'capabilities', 'mapping', 'importTargetLabel', 'importFieldLabels', 'importActionLabels', 'importErrorLabels', 'importBatchStatusLabels', 'importSourceTypeLabels', 'importCandidateTypeLabels', 'importCandidateStatusLabels'));
+        return view('imports.show', compact('importBatch', 'rowResults', 'selectableRowResults', 'reviewCandidates', 'capabilities', 'mapping', 'importTargetLabel', 'importFieldLabels', 'importActionLabels', 'importErrorLabels', 'importBatchStatusLabels', 'importSourceTypeLabels', 'importCandidateTypeLabels', 'importCandidateStatusLabels', 'targetTypeSuggestion'));
     }
 
     public function selectSheet(SelectImportSheetRequest $request, ImportBatch $importBatch): RedirectResponse
@@ -353,6 +364,10 @@ class ImportBatchController extends Controller
         $suggestions = [];
         $aiSuggestions = [];
         $aiTargetType = $request->string('ai_target_type')->toString();
+        $suggestedTargetType = $request->string('target_type')->toString();
+        if (! in_array($suggestedTargetType, $targetTypes, true)) {
+            $suggestedTargetType = in_array($aiTargetType, $targetTypes, true) ? $aiTargetType : '';
+        }
         $normalizationSuggestions = [];
         foreach ($targetTypes as $targetType) {
             $aliases = config('opsdeck.import_column_aliases.'.$targetType, []);
@@ -381,7 +396,7 @@ class ImportBatchController extends Controller
             $normalizationSuggestions = app(ImportNormalizationSuggestionService::class)->suggest($importBatch->headers_json ?? [], $this->sourceRowsForMapping($importBatch, $aiTargetType), $columnMap);
         }
 
-        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'aiTargetType', 'aiSuggestions', 'normalizationSuggestions'));
+        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'normalizationSuggestions'));
     }
 
     public function saveMapping(StoreImportMappingRequest $request, ImportBatch $importBatch): RedirectResponse

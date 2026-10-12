@@ -31,8 +31,8 @@ return [
     'weekly_summary_period_days' => max(1, (int) env('OPSDECK_WEEKLY_SUMMARY_PERIOD_DAYS', 7)),
     'onboarding_steps' => [
         'organization_settings' => ['label' => '組織設定を確認', 'route' => 'settings.organization'],
-        'employees_import' => ['label' => '社員表をImport', 'free_label' => '社員表の取込プレビューを確認', 'route' => 'imports.create'],
-        'assets_import' => ['label' => '資産表をImport', 'free_label' => '資産表の取込プレビューを確認', 'route' => 'imports.create'],
+        'employees_import' => ['label' => '社員表をImport', 'free_label' => '社員表の取込プレビューを確認', 'route' => 'imports.create', 'route_parameters' => ['target_type' => 'employees']],
+        'assets_import' => ['label' => '資産表をImport', 'free_label' => '資産表の取込プレビューを確認', 'route' => 'imports.create', 'route_parameters' => ['target_type' => 'assets']],
         'contract_or_saas' => ['label' => '契約またはSaaSを登録', 'route' => 'contracts.create'],
         'renewal_checked' => ['label' => '更新期限を1件確認', 'route' => 'reminders.renewals', 'required_feature' => 'renewal_alerts'],
         'security_control' => ['label' => 'Security Controlを確認', 'route' => 'security-controls.index', 'required_feature' => 'security_controls'],

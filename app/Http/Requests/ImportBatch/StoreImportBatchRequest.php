@@ -4,6 +4,7 @@ namespace App\Http\Requests\ImportBatch;
 
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreImportBatchRequest extends FormRequest
 {
@@ -25,6 +26,7 @@ class StoreImportBatchRequest extends FormRequest
         return [
             'source_name' => ['required', 'string', 'max:255'],
             'file' => ['required', 'file', 'mimes:'.implode(',', config('opsdeck.import.allowed_extensions')), 'max:'.config('opsdeck.import.max_size_kilobytes')],
+            'target_type' => ['nullable', 'string', Rule::in(config('opsdeck.import_target_types', []))],
         ];
     }
 }

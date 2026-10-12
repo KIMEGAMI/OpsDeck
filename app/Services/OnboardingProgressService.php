@@ -17,7 +17,7 @@ use Illuminate\Database\Eloquent\Builder;
 class OnboardingProgressService
 {
     /**
-     * @param  array<int, array{key:string,label:string,route:string,completed:bool}>  $steps
+     * @param  array<int, array{key:string,label:string,route:string,route_parameters:array<string, string>,completed:bool}>  $steps
      */
     public function recordCompletedSteps(Organization $organization, array $steps): void
     {
@@ -34,7 +34,7 @@ class OnboardingProgressService
         $this->recordCompletedSteps($organization, $this->steps($organization));
     }
 
-    /** @return array<int, array{key:string,label:string,route:string,completed:bool}> */
+    /** @return array<int, array{key:string,label:string,route:string,route_parameters:array<string, string>,completed:bool}> */
     public function steps(Organization $organization): array
     {
         $planFeatureService = app(PlanFeatureService::class);
@@ -90,6 +90,7 @@ class OnboardingProgressService
                     ? $definition['free_label']
                     : $definition['label'],
                 'route' => $definition['route'],
+                'route_parameters' => $definition['route_parameters'] ?? [],
                 'completed' => array_key_exists($key, $derived) ? $derived[$key] : isset($recorded[$key]),
             ];
         }, $definitions, array_keys($definitions));

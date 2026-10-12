@@ -21,7 +21,7 @@
                     @if ($step['completed'])
                         <span aria-label="完了">✅</span> <strong>{{ $step['label'] }}</strong>
                     @else
-                        <span aria-label="未完了">⬜</span> <a href="{{ route($step['route']) }}">{{ $step['label'] }}</a>
+                        <span aria-label="未完了">⬜</span> <a href="{{ route($step['route'], $step['route_parameters']) }}">{{ $step['label'] }}</a>
                     @endif
                 </li>
             @endforeach

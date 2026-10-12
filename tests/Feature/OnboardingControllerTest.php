@@ -34,6 +34,8 @@ class OnboardingControllerTest extends TestCase
             ->assertOk()
             ->assertSee('導入チェックリスト')
             ->assertSee('社員表の取込プレビューを確認')
+            ->assertSee(route('imports.create', ['target_type' => 'employees']), false)
+            ->assertSee(route('imports.create', ['target_type' => 'assets']), false)
             ->assertSee('0/5 完了')
             ->assertSee('業務データへのImport実行')
             ->assertDontSee('Security Controlを確認')
