@@ -20,7 +20,7 @@
             <dt>Premium料金</dt><dd>会社単位 月額{{ number_format($premiumPlan['monthly_price_jpy']) }}円（税別、適用税額を加算）</dd>
         </dl>
         @if ($failedStripeEvent)
-            <p class="errors" role="alert">Stripeからの更新通知の処理に失敗しました。契約状態は通知が正常に処理されるまで確定できません。サポートへの問い合わせ時は参照番号 STRIPE-{{ $failedStripeEvent->stripe_event_id }} をお伝えください。<a href="mailto:{{ config('opsdeck.support_email') }}">サポートへ問い合わせる</a></p>
+            <p class="errors" role="alert">Stripeからの更新通知の処理に失敗しました。契約状態は通知が正常に処理されるまで確定できません。サポートへの問い合わせ時は参照番号 STRIPE-{{ $failedStripeEvent->stripe_event_id }} をお伝えください。<a href="{{ route('support.create', ['category' => 'billing', 'error_reference' => 'STRIPE-'.$failedStripeEvent->stripe_event_id]) }}">照会番号を添えてサポートへ問い合わせる</a></p>
         @endif
         @if ($organization->billing_status === 'past_due')
             @if ($organization->billing_failure_event_id)

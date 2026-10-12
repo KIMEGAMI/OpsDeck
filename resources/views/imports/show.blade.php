@@ -86,7 +86,7 @@
             @if ($importBatch->failure_message !== null)
                 <p class="errors" role="alert">{{ $importBatch->failure_message }}</p>
             @endif
-            <p class="errors" role="alert">{{ $mapping?->status === 'failed' ? '列マッピングの分析を完了できませんでした。' : 'Importを完了できませんでした。' }} 運営へ問い合わせる場合は、参照番号 IMP-{{ $importBatch->id }} をお伝えください。</p>
+            <p class="errors" role="alert">{{ $mapping?->status === 'failed' ? '列マッピングの分析を完了できませんでした。' : 'Importを完了できませんでした。' }} 運営へ問い合わせる場合は、参照番号 IMP-{{ $importBatch->id }} をお伝えください。<a href="{{ route('support.create', ['category' => 'import', 'error_reference' => 'IMP-'.$importBatch->id]) }}">このImportについて問い合わせる</a></p>
             <p class="muted"><a href="{{ route('help.recovery', 'import') }}">Import失敗の復旧ガイド</a></p>
             <form method="post" action="{{ route('imports.retry', $importBatch) }}">
                 @csrf

@@ -8,6 +8,6 @@
         </ol>
         <p>サポートへ問い合わせる場合は、照会番号 <strong>{{ $errorReference }}</strong> をお伝えください。</p>
         <p><a href="{{ route('billing.index') }}">Billing画面へ戻る</a></p>
-        <p>解決しない場合は <a href="mailto:{{ $supportEmail }}">サポートへ問い合わせる</a>ことができます。</p>
+        <p>解決しない場合は <a href="{{ route('support.create', ['category' => 'billing', 'error_reference' => $errorReference]) }}">照会番号を添えてサポートへ問い合わせる</a>か、<a href="mailto:{{ $supportEmail }}">メールでお問い合わせ</a>ください。</p>
     </section>
 </x-layouts.app>

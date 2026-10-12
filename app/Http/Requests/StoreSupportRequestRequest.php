@@ -2,6 +2,8 @@
 
 namespace App\Http\Requests;
 
+use App\Rules\SupportErrorReferenceRule;
+use App\Services\SupportErrorReference;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -26,7 +28,7 @@ class StoreSupportRequestRequest extends FormRequest
         return [
             'category' => ['required', 'string', Rule::in(['usage', 'import', 'billing', 'security', 'other'])],
             'message' => ['required', 'string', 'max:5000'],
-            'error_reference' => ['nullable', 'uuid:4'],
+            'error_reference' => ['nullable', 'string', 'max:'.SupportErrorReference::MAX_LENGTH, new SupportErrorReferenceRule],
         ];
     }
 }

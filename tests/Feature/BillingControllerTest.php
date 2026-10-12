@@ -287,6 +287,7 @@ class BillingControllerTest extends TestCase
             ->assertDontSee('sk_test_secret');
         preg_match('/BILLING-[A-F0-9-]{36}/', (string) $response->getContent(), $errorReferenceMatches);
         $this->assertNotEmpty($errorReferenceMatches);
+        $response->assertSee(route('support.create', ['category' => 'billing', 'error_reference' => $errorReferenceMatches[0]]));
         Log::shouldHaveReceived('warning')->once()->with('Stripe billing operation failed.', [
             'error_reference' => $errorReferenceMatches[0],
             'operation' => 'price_validation',

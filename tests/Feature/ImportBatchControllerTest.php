@@ -348,6 +348,7 @@ class ImportBatchControllerTest extends TestCase
             ->get(route('imports.show', $batch))
             ->assertOk()
             ->assertSee('参照番号 IMP-'.$batch->id)
+            ->assertSee(route('support.create', ['category' => 'import', 'error_reference' => 'IMP-'.$batch->id]))
             ->assertSee(route('help.recovery', 'import'));
     }
 

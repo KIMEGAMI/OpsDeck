@@ -10,9 +10,9 @@
         <form method="post" action="{{ route('support.store') }}" onsubmit="const button = this.querySelector('button[type=submit]'); button.disabled = true; button.setAttribute('aria-disabled', 'true'); return true;">
             @csrf
             <label for="category">カテゴリ</label>
-            <select id="category" name="category" required><option value="usage">使い方</option><option value="import">Import</option><option value="billing">Billing</option><option value="security">Security</option><option value="other">その他</option></select>
+            <select id="category" name="category" required><option value="usage" @selected(old('category', $category) === 'usage')>使い方</option><option value="import" @selected(old('category', $category) === 'import')>Import</option><option value="billing" @selected(old('category', $category) === 'billing')>Billing</option><option value="security" @selected(old('category', $category) === 'security')>Security</option><option value="other" @selected(old('category', $category) === 'other')>その他</option></select>
             <label for="error_reference">エラー照会ID（任意）</label>
-            <input id="error_reference" name="error_reference" value="{{ old('error_reference', $errorReference) }}" maxlength="36" autocomplete="off" aria-describedby="error-reference-help">
+            <input id="error_reference" name="error_reference" value="{{ old('error_reference', $errorReference) }}" maxlength="80" autocomplete="off" aria-describedby="error-reference-help">
             <p id="error-reference-help" class="muted">エラー画面に表示された番号がある場合は、そのまま貼り付けてください。</p>
             <label for="message">お問い合わせ内容</label>
             <textarea id="message" name="message" maxlength="5000" aria-describedby="support-safety-note" required></textarea>

@@ -109,6 +109,38 @@ class SupportRequestControllerTest extends TestCase
             ->assertDontSee('SUP-00000000-0000-4000-8000-000000000004');
     }
 
+    public function test_import_error_reference_can_be_submitted_and_found_by_platform_admin(): void
+    {
+        $errorReference = 'IMP-12345';
+        $this->get(route('support.create', ['category' => 'import', 'error_reference' => strtolower($errorReference)]))
+            ->assertOk()
+            ->assertSee('value="import" selected', false)
+            ->assertSee('name="error_reference" value="'.$errorReference.'"', false);
+
+        $this->post(route('support.store'), [
+            'category' => 'import',
+            'message' => 'Importの失敗について',
+            'error_reference' => strtolower($errorReference),
+        ])->assertRedirect(route('support.create'));
+
+        $supportRequest = SupportRequest::query()->where('error_reference', $errorReference)->firstOrFail();
+        $admin = User::factory()->create(['email' => 'support-import-admin-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+
+        $this->actingAs($admin)->get(route('admin.support.index', ['error_reference' => strtolower($errorReference)]))
+            ->assertOk()
+            ->assertSee($supportRequest->reference_code)
+            ->assertSee($errorReference);
+    }
+
+    public function test_support_request_rejects_an_unsafe_import_error_reference(): void
+    {
+        $this->from(route('support.create'))
+            ->post(route('support.store'), ['category' => 'import', 'message' => 'Importの失敗について', 'error_reference' => 'IMP-1 OR 1=1'])
+            ->assertRedirect(route('support.create'))
+            ->assertSessionHasErrors('error_reference');
+    }
+
     public function test_support_request_rejects_a_malformed_error_reference(): void
     {
         $this->from(route('support.create'))

@@ -20,7 +20,7 @@
         <p>処理を完了できませんでした。時間をおいて再度お試しください。</p>
         <p>サポートへお問い合わせの際は、次のエラー参照番号をお伝えください。</p>
         <p class="reference" aria-label="エラー参照番号">{{ $errorReference }}</p>
-        <p><a href="{{ route('help.index') }}">ヘルプを確認する</a> ／ <a href="{{ route('support.create', ['error_reference' => $errorReference]) }}">エラー番号を添えて問い合わせる</a></p>
+        <p><a href="{{ route('help.index') }}">ヘルプを確認する</a> ／ <a href="{{ route('support.create', ['category' => 'other', 'error_reference' => $errorReference]) }}">エラー番号を添えて問い合わせる</a></p>
     </main>
 </body>
 </html>

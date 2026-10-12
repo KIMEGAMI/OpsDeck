@@ -26,7 +26,7 @@ class ErrorReferenceTest extends TestCase
         $this->assertStringNotContainsString('USER_EMAIL_SENTINEL@example.test', $response->getContent());
         $this->assertMatchesRegularExpression('/[0-9a-f-]{36}/', $response->headers->get('X-OpsDeck-Error-Reference'));
         $this->assertStringContainsString(
-            route('support.create', ['error_reference' => $response->headers->get('X-OpsDeck-Error-Reference')]),
+            str_replace('&', '&amp;', route('support.create', ['category' => 'other', 'error_reference' => $response->headers->get('X-OpsDeck-Error-Reference')])),
             $response->getContent(),
         );
         $this->assertSafeCorrelatedDiagnosticLog(
