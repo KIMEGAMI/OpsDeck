@@ -49,6 +49,42 @@ class RecoveryGuideControllerTest extends TestCase
             ->assertDontSee('Queueエラー');
     }
 
+    public function test_google_oauth_recovery_guide_links_to_connection_settings(): void
+    {
+        $user = User::factory()->create(['email' => 'recovery-google-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Recovery Google Org', 'slug' => 'recovery-google-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('help.recovery', 'google_oauth'))
+            ->assertOk()
+            ->assertSee('Google Sheets連携の状態を確認する')
+            ->assertSee(route('google-sheets.connection'));
+    }
+
+    public function test_stripe_recovery_guide_respects_billing_permissions(): void
+    {
+        $owner = User::factory()->create(['email' => 'recovery-stripe-owner-'.Str::uuid().'@example.test']);
+        $ownerOrganization = Organization::query()->create(['name' => 'Recovery Stripe Owner Org', 'slug' => 'recovery-stripe-owner-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $ownerOrganization->id, 'user_id' => $owner->id, 'role' => 'owner', 'status' => 'active', 'joined_at' => now()]);
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $ownerOrganization->id])
+            ->get(route('help.recovery', 'stripe'))
+            ->assertOk()
+            ->assertSee('Billing画面で契約状態を確認する')
+            ->assertSee(route('billing.index'));
+
+        $viewer = User::factory()->create(['email' => 'recovery-stripe-viewer-'.Str::uuid().'@example.test']);
+        $viewerOrganization = Organization::query()->create(['name' => 'Recovery Stripe Viewer Org', 'slug' => 'recovery-stripe-viewer-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $viewerOrganization->id, 'user_id' => $viewer->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+
+        $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])
+            ->get(route('help.recovery', 'stripe'))
+            ->assertOk()
+            ->assertSee('Billing画面はOwner/Adminに確認してもらってください。')
+            ->assertDontSee(route('billing.index'));
+    }
+
     public function test_member_can_view_ai_recovery_steps_without_exposing_provider_credentials(): void
     {
         $user = User::factory()->create(['email' => 'recovery-ai-'.Str::uuid().'@example.test']);

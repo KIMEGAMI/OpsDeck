@@ -11,7 +11,8 @@ class RecoveryGuideController extends Controller
     {
         abort_unless(array_key_exists($type, config('opsdeck.recovery_guides', [])), 404);
         $guide = config('opsdeck.recovery_guides.'.$type);
+        $canManageBilling = $request->user()->can('manageBilling', $request->attributes->get('currentOrganization'));
 
-        return view('recovery-guides.show', compact('guide', 'type'));
+        return view('recovery-guides.show', compact('guide', 'type', 'canManageBilling'));
     }
 }
