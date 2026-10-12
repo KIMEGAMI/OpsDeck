@@ -31,19 +31,60 @@ class OpsDeckDeploymentReadinessTest extends TestCase
 
     private string|false $previousResendDomainCheckApiKey;
 
+    private bool $previousResendDomainCheckApiKeyWasInEnvironment;
+
+    private mixed $previousResendDomainCheckApiKeyEnvironmentValue;
+
+    private bool $previousResendDomainCheckApiKeyWasInServer;
+
+    private mixed $previousResendDomainCheckApiKeyServerValue;
+
     protected function setUp(): void
     {
         parent::setUp();
         $this->previousResendDomainCheckApiKey = getenv('RESEND_DOMAIN_CHECK_API_KEY');
-        putenv('RESEND_DOMAIN_CHECK_API_KEY=test-domain-check-key');
+        $this->previousResendDomainCheckApiKeyWasInEnvironment = array_key_exists('RESEND_DOMAIN_CHECK_API_KEY', $_ENV);
+        $this->previousResendDomainCheckApiKeyEnvironmentValue = $_ENV['RESEND_DOMAIN_CHECK_API_KEY'] ?? null;
+        $this->previousResendDomainCheckApiKeyWasInServer = array_key_exists('RESEND_DOMAIN_CHECK_API_KEY', $_SERVER);
+        $this->previousResendDomainCheckApiKeyServerValue = $_SERVER['RESEND_DOMAIN_CHECK_API_KEY'] ?? null;
+        $this->setResendDomainCheckApiKey('test-domain-check-key');
     }
 
     protected function tearDown(): void
     {
-        putenv($this->previousResendDomainCheckApiKey === false
-            ? 'RESEND_DOMAIN_CHECK_API_KEY'
-            : 'RESEND_DOMAIN_CHECK_API_KEY='.$this->previousResendDomainCheckApiKey);
+        if ($this->previousResendDomainCheckApiKey === false) {
+            putenv('RESEND_DOMAIN_CHECK_API_KEY');
+        } else {
+            putenv('RESEND_DOMAIN_CHECK_API_KEY='.$this->previousResendDomainCheckApiKey);
+        }
+
+        if ($this->previousResendDomainCheckApiKeyWasInEnvironment) {
+            $_ENV['RESEND_DOMAIN_CHECK_API_KEY'] = $this->previousResendDomainCheckApiKeyEnvironmentValue;
+        } else {
+            unset($_ENV['RESEND_DOMAIN_CHECK_API_KEY']);
+        }
+
+        if ($this->previousResendDomainCheckApiKeyWasInServer) {
+            $_SERVER['RESEND_DOMAIN_CHECK_API_KEY'] = $this->previousResendDomainCheckApiKeyServerValue;
+        } else {
+            unset($_SERVER['RESEND_DOMAIN_CHECK_API_KEY']);
+        }
+
         parent::tearDown();
+    }
+
+    private function setResendDomainCheckApiKey(?string $apiKey): void
+    {
+        if ($apiKey === null) {
+            putenv('RESEND_DOMAIN_CHECK_API_KEY');
+            unset($_ENV['RESEND_DOMAIN_CHECK_API_KEY'], $_SERVER['RESEND_DOMAIN_CHECK_API_KEY']);
+
+            return;
+        }
+
+        putenv('RESEND_DOMAIN_CHECK_API_KEY='.$apiKey);
+        $_ENV['RESEND_DOMAIN_CHECK_API_KEY'] = $apiKey;
+        $_SERVER['RESEND_DOMAIN_CHECK_API_KEY'] = $apiKey;
     }
 
     public function test_database_dump_binary_locator_checks_an_explicit_directory(): void
@@ -278,7 +319,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
     public function test_it_fails_readiness_without_a_separate_resend_domain_check_key(): void
     {
         $this->configureReadyDeployment();
-        putenv('RESEND_DOMAIN_CHECK_API_KEY');
+        $this->setResendDomainCheckApiKey(null);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
@@ -293,8 +334,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
 
     public function test_it_uses_a_temporary_process_key_for_the_resend_domain_check(): void
     {
-        $previousApiKey = getenv('RESEND_DOMAIN_CHECK_API_KEY');
-        putenv('RESEND_DOMAIN_CHECK_API_KEY=test-ephemeral-domain-check-key');
+        $this->setResendDomainCheckApiKey('test-ephemeral-domain-check-key');
 
         try {
             $this->configureReadyDeployment();
@@ -310,9 +350,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             Http::assertSent(static fn (Request $request): bool => str_contains($request->url(), 'api.resend.com/domains')
                 && $request->hasHeader('Authorization', 'Bearer test-ephemeral-domain-check-key'));
         } finally {
-            putenv($previousApiKey === false
-                ? 'RESEND_DOMAIN_CHECK_API_KEY'
-                : 'RESEND_DOMAIN_CHECK_API_KEY='.$previousApiKey);
+            $this->setResendDomainCheckApiKey('test-domain-check-key');
         }
     }
 
