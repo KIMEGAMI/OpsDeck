@@ -97,11 +97,35 @@ class ImportBatchRollbackService
                 continue;
             }
 
+            $cast = $record->getCasts()[$field] ?? null;
+            if (is_string($cast) && str_starts_with($cast, 'decimal:')) {
+                $scale = (int) substr($cast, strlen('decimal:'));
+                if ($this->normalizeDecimalValue($record->getRawOriginal($field), $scale) !== $this->normalizeDecimalValue($expected, $scale)) {
+                    return false;
+                }
+
+                continue;
+            }
+
             if ((string) $record->getRawOriginal($field) !== (string) $expected) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private function normalizeDecimalValue(mixed $value, int $scale): ?string
+    {
+        if ($value === null || ! preg_match('/^(?<sign>-?)(?<integer>\d+)(?:\.(?<fraction>\d*))?$/', trim((string) $value), $matches)) {
+            return $value === null ? null : (string) $value;
+        }
+
+        $integer = ltrim($matches['integer'], '0');
+        $integer = $integer === '' ? '0' : $integer;
+        $fraction = substr(str_pad($matches['fraction'] ?? '', $scale, '0'), 0, $scale);
+        $sign = $matches['sign'] === '-' && ($integer !== '0' || trim($fraction, '0') !== '') ? '-' : '';
+
+        return $sign.$integer.($scale > 0 ? '.'.$fraction : '');
     }
 }

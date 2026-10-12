@@ -684,10 +684,19 @@ class ImportBatchExecutionService
     {
         $snapshot = [];
         foreach ($fields as $field) {
-            $snapshot[$field] = $record->getRawOriginal($field);
+            $snapshot[$field] = $this->hasDecimalCast($record, $field)
+                ? $record->getAttribute($field)
+                : $record->getRawOriginal($field);
         }
 
         return $snapshot;
+    }
+
+    private function hasDecimalCast(Model $record, string $field): bool
+    {
+        $cast = $record->getCasts()[$field] ?? null;
+
+        return is_string($cast) && str_starts_with($cast, 'decimal:');
     }
 
     /** @return array<string, mixed> */

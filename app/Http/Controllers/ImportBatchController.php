@@ -942,7 +942,10 @@ class ImportBatchController extends Controller
     {
         $snapshot = [];
         foreach ($fields as $field) {
-            $snapshot[$field] = $record->getRawOriginal($field);
+            $cast = $record->getCasts()[$field] ?? null;
+            $snapshot[$field] = is_string($cast) && str_starts_with($cast, 'decimal:')
+                ? $record->getAttribute($field)
+                : $record->getRawOriginal($field);
         }
 
         return $snapshot;

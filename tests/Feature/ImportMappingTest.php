@@ -341,6 +341,9 @@ class ImportMappingTest extends TestCase
         $this->assertFalse($existingContract->auto_renew);
         $this->assertSame(1, $batch->refresh()->inserted_rows);
         $this->assertSame(1, $batch->updated_rows);
+        $updatedRow = $batch->rowResults()->where('action', 'updated')->firstOrFail();
+        $this->assertSame('200.00', $updatedRow->after_json['amount']);
+        $updatedRow->update(['after_json' => array_replace($updatedRow->after_json, ['amount' => '200'])]);
 
         $batch->update(['status' => 'rolling_back']);
         app(ImportBatchRollbackService::class)->rollback($batch->id);
@@ -1295,11 +1298,10 @@ class ImportMappingTest extends TestCase
         $this->assertSame(1, $firstProfileVersion->version);
         $this->assertSame(1, $firstProfileVersion->header_end_row_number);
         $this->assertSame($sourceSignature, $firstProfileVersion->source_signature);
-        $this->assertDatabaseHas('import_profiles', [
-            'id' => $firstProfileVersion->id,
-            'organization_id' => $organization->id,
-            'column_map' => json_encode(['Employee name' => 'name', 'Work email' => 'email']),
-        ]);
+        $this->assertSame(
+            ['Employee name' => 'name', 'Work email' => 'email'],
+            ImportProfile::query()->where('organization_id', $organization->id)->findOrFail($firstProfileVersion->id)->column_map,
+        );
 
         $secondBatch = ImportBatch::query()->create([
             'organization_id' => $organization->id,
