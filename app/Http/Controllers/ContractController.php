@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\Contract\StoreContractRequest;
 use App\Http\Requests\Contract\UpdateContractRequest;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Employee;
 use App\Models\Organization;
@@ -12,6 +13,7 @@ use App\Services\OnboardingProgressService;
 use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
@@ -46,6 +48,7 @@ class ContractController extends Controller
         $this->authorize('manageOperationalData', $organization);
         $contract = Contract::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
         app(ProductEventRecorder::class)->recordOnce('first_contract_registered', $organization);
+        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
         app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
 
         return to_route('contracts.show', $contract)->with('status', '契約を登録しました。');
@@ -83,7 +86,24 @@ class ContractController extends Controller
         $organization = $this->organization($request);
         $contract = $this->scopedContract($organization, $contract);
         $this->authorize('update', $contract);
-        $contract->update($this->validatedForOrganization($request->validated(), $organization));
+        $attributes = $this->validatedForOrganization($request->validated(), $organization);
+
+        DB::transaction(function () use ($request, $organization, $contract, $attributes): void {
+            $contract->fill($attributes);
+            $changedFields = array_keys($contract->getDirty());
+            $contract->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => Contract::class,
+                    'entity_id' => $contract->id,
+                    'action' => AuditLog::ContractUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('contracts.show', $contract)->with('status', '契約を更新しました。');
     }

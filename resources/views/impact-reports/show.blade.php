@@ -27,9 +27,16 @@
             <dt>未割当・退職者紐づき資産</dt><dd>{{ $metrics['asset_attention'] }}件</dd>
             <dt>未割当・退職者紐づきSaaS</dt><dd>{{ $metrics['saas_attention'] }}件</dd>
             <dt>確認が必要な項目の合計</dt><dd>{{ $metrics['unresolved_items'] }}件</dd>
-            <dt>登録済み契約の月額換算コスト（JPY）</dt><dd>{{ number_format($metrics['monthly_jpy'], 2) }}円</dd>
+            <dt>登録済み契約の月額換算コスト</dt>
+            <dd>
+                @forelse ($metrics['monthly_costs_by_currency'] as $currency => $monthlyCost)
+                    <div>{{ $currency }}: {{ number_format($monthlyCost, 2) }}</div>
+                @empty
+                    <span class="muted">対象となる月次・年次契約はありません。</span>
+                @endforelse
+            </dd>
         </dl>
-        <p class="muted">登録済みの有効・解約予定契約のうち、月次・年次のJPY契約のみを月額換算しています（年次契約は12分割）。外貨・一時契約・その他の請求周期は含みません。これは契約台帳に基づく概算で、実際の請求額や実現した経費削減額ではありません。<a href="{{ route('costs.dashboard') }}">通貨別コストと削減可能額の概算</a>はこちらで確認できます。</p>
+        <p class="muted">登録済みの有効・解約予定契約のうち、月次・年次の契約を通貨別に月額換算しています（年次契約は12分割）。通貨間の換算はせず、一時契約・その他の請求周期は含みません。これは契約台帳に基づく概算で、実際の請求額や実現した経費削減額ではありません。<a href="{{ route('costs.dashboard') }}">削減可能額の概算</a>はこちらで確認できます。</p>
         <section aria-labelledby="impact-realized-savings-title">
             <h2 id="impact-realized-savings-title">記録された削減実績</h2>
             <p class="muted">組織の担当者が実現済みとして記録した金額です。根拠資料をOpsDeckが自動検証したものではありません。取消済みは除外し、通貨と期間を分けて集計します。<a href="{{ route('costs.dashboard') }}">削減実績の記録・履歴</a></p>
@@ -56,6 +63,9 @@
                                 $after = $comparison['after']->metrics_json[$metric] ?? 0;
                             @endphp
                             <tr><th scope="row">{{ $label }}</th><td>{{ $before }}</td><td>{{ $after }}</td><td>{{ $after - $before }}</td></tr>
+                        @endforeach
+                        @foreach ($comparison['monthly_costs_by_currency'] as $currency => $costs)
+                            <tr><th scope="row">月額コスト（{{ $currency }}）</th><td>{{ number_format($costs['before'], 2) }}</td><td>{{ number_format($costs['after'], 2) }}</td><td>{{ number_format($costs['delta'], 2) }}</td></tr>
                         @endforeach
                     </tbody>
                 </table>

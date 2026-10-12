@@ -19,6 +19,8 @@ class LegalPagesTest extends TestCase
             ->assertOk()
             ->assertSee('特定商取引法に基づく表記')
             ->assertSee('最終更新日：2026年9月27日')
+            ->assertSee('月額9,800円（税別）')
+            ->assertSee('決済前にStripe Checkoutで合計を表示します')
             ->assertSee('support@kimegami.jp')
             ->assertSee('mailto:support@kimegami.jp');
     }

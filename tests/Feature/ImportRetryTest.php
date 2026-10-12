@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Jobs\ExecuteImportBatch;
 use App\Jobs\PrepareImportRetryBatch;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\ImpactMetricSnapshot;
 use App\Models\ImportBatch;
@@ -156,6 +157,7 @@ class ImportRetryTest extends TestCase
         $this->assertSame('new_candidate', $batch->rowResults()->where('source_row_number', 2)->firstOrFail()->action);
         $this->assertSame(1, ImpactMetricSnapshot::query()->where('import_batch_id', $batch->id)->where('stage', 'import_before')->count());
         $this->assertSame(0, ImpactMetricSnapshot::query()->where('import_batch_id', $batch->id)->where('stage', 'import_after')->count());
+        $this->assertDatabaseMissing('audit_logs', ['entity_id' => $batch->id, 'action' => AuditLog::ImportBatchExecuted]);
     }
 
     public function test_failed_callback_marks_a_batch_failed_when_worker_stops_before_execution(): void

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -34,6 +35,32 @@ class ExportControllerTest extends TestCase
         [$user, $organization] = $this->member(MembershipRole::Viewer);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('exports.index'))->assertForbidden();
+    }
+
+    public function test_audit_log_export_contains_only_current_organization_logs(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Admin);
+        AuditLog::query()->create([
+            'organization_id' => $organization->id,
+            'actor_user_id' => $user->id,
+            'entity_type' => Employee::class,
+            'action' => 'current_organization.audit_action',
+        ]);
+        [, $otherOrganization] = $this->member(MembershipRole::Admin);
+        AuditLog::query()->create([
+            'organization_id' => $otherOrganization->id,
+            'entity_type' => Employee::class,
+            'action' => 'other_organization.audit_action',
+        ]);
+
+        $response = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('exports.download', 'audit_logs'));
+
+        $response->assertOk();
+        $this->assertStringContainsString('current_organization.audit_action', $response->streamedContent());
+        $this->assertStringNotContainsString('other_organization.audit_action', $response->streamedContent());
     }
 
     public function test_csv_export_round_trips_quotes_and_backslashes_using_rfc_csv_escaping(): void

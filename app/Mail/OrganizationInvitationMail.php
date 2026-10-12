@@ -8,6 +8,7 @@ use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Mail\Mailables\Headers;
 use Illuminate\Queue\SerializesModels;
 
 class OrganizationInvitationMail extends Mailable
@@ -17,7 +18,7 @@ class OrganizationInvitationMail extends Mailable
     /**
      * Create a new message instance.
      */
-    public function __construct(public OrganizationInvitation $invitation, public string $token)
+    public function __construct(public OrganizationInvitation $invitation, public string $token, public ?string $idempotencyKey = null)
     {
         //
     }
@@ -52,5 +53,12 @@ class OrganizationInvitationMail extends Mailable
     public function attachments(): array
     {
         return [];
+    }
+
+    public function headers(): Headers
+    {
+        return new Headers(text: $this->idempotencyKey === null
+            ? []
+            : [ResendIdempotentTransport::IDEMPOTENCY_HEADER => $this->idempotencyKey]);
     }
 }

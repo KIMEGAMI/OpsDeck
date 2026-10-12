@@ -2,10 +2,12 @@
 
 namespace App\Notifications;
 
+use App\Mail\ResendIdempotentTransport;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
+use Symfony\Component\Mime\Email;
 
 class ServerErrorAlert extends Notification implements ShouldQueue
 {
@@ -14,6 +16,7 @@ class ServerErrorAlert extends Notification implements ShouldQueue
     public function __construct(
         public readonly string $errorReference,
         public readonly int $statusCode,
+        public readonly ?string $idempotencyKey = null,
     ) {}
 
     /**
@@ -37,6 +40,11 @@ class ServerErrorAlert extends Notification implements ShouldQueue
             ->line('本番環境でHTTP 5xxエラーが発生しました。')
             ->line('エラーID: '.$this->errorReference)
             ->line('詳細な調査は、サーバーのログでエラーIDを検索してください。')
-            ->salutation('OpsDeck');
+            ->salutation('OpsDeck')
+            ->withSymfonyMessage(function (Email $email): void {
+                if ($this->idempotencyKey !== null) {
+                    $email->getHeaders()->addTextHeader(ResendIdempotentTransport::IDEMPOTENCY_HEADER, $this->idempotencyKey);
+                }
+            });
     }
 }

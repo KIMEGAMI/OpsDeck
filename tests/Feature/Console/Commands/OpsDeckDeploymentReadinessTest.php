@@ -11,6 +11,7 @@ use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Builder;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -26,6 +27,23 @@ use Tests\TestCase;
 class OpsDeckDeploymentReadinessTest extends TestCase
 {
     private Builder $schemaBuilder;
+
+    private string|false $previousResendDomainCheckApiKey;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->previousResendDomainCheckApiKey = getenv('RESEND_DOMAIN_CHECK_API_KEY');
+        putenv('RESEND_DOMAIN_CHECK_API_KEY=test-domain-check-key');
+    }
+
+    protected function tearDown(): void
+    {
+        putenv($this->previousResendDomainCheckApiKey === false
+            ? 'RESEND_DOMAIN_CHECK_API_KEY'
+            : 'RESEND_DOMAIN_CHECK_API_KEY='.$this->previousResendDomainCheckApiKey);
+        parent::tearDown();
+    }
 
     public function test_database_dump_binary_locator_checks_an_explicit_directory(): void
     {
@@ -73,6 +91,99 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_it_fails_readiness_when_idempotent_resend_is_enabled_without_an_api_key(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => '',
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_accepts_enabled_idempotent_resend_with_a_configured_api_key(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => 'test-resend-key',
+            'mail.mailers.resend_idempotent.timeout' => 10,
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"status":"ready"')
+            ->assertExitCode(0);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function invalidMailDeliveryBackoffs(): array
+    {
+        return [
+            'missing' => [[]],
+            'zero delay' => [[0, 30]],
+            'negative delay' => [[-1, 30]],
+            'non-numeric delay' => [[30, 'invalid']],
+            'associative configuration' => [['first' => 30]],
+        ];
+    }
+
+    #[DataProvider('invalidMailDeliveryBackoffs')]
+    public function test_it_fails_readiness_when_mail_retry_backoff_is_invalid(mixed $backoff): void
+    {
+        $this->configureReadyDeployment();
+        config(['mail.delivery_job_backoff_seconds' => $backoff]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function invalidResendApiTimeouts(): array
+    {
+        return [
+            'zero' => [0],
+            'negative' => [-1],
+            'fractional' => [1.5],
+            'non-numeric' => ['not-a-timeout'],
+            'missing' => [null],
+        ];
+    }
+
+    #[DataProvider('invalidResendApiTimeouts')]
+    public function test_it_fails_readiness_when_enabled_idempotent_resend_has_an_invalid_timeout(mixed $timeout): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => 'test-resend-key',
+            'mail.mailers.resend_idempotent.timeout' => $timeout,
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
     #[DataProvider('invalidProductionApplicationUrls')]
     public function test_it_fails_readiness_for_an_invalid_production_application_url(string $applicationUrl): void
     {
@@ -106,7 +217,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         ];
     }
 
-    public function test_it_returns_ready_when_production_mail_uses_a_configured_failover_mailer(): void
+    public function test_it_fails_readiness_when_production_mail_uses_a_failover_mailer(): void
     {
         $this->configureReadyDeployment();
         config([
@@ -129,8 +240,107 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_fails_readiness_when_idempotent_resend_is_disabled(): void
+    {
+        $this->configureReadyDeployment();
+        config(['mail.mailers.resend_idempotent.enabled' => false]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_fails_readiness_when_the_resend_sender_domain_is_not_verified(): void
+    {
+        $this->configureReadyDeployment(resendDomainStatus: 'partially_verified');
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_fails_readiness_without_a_separate_resend_domain_check_key(): void
+    {
+        $this->configureReadyDeployment();
+        putenv('RESEND_DOMAIN_CHECK_API_KEY');
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+
+        Http::assertNotSent(static fn (Request $request): bool => str_contains($request->url(), 'api.resend.com/domains'));
+    }
+
+    public function test_it_uses_a_temporary_process_key_for_the_resend_domain_check(): void
+    {
+        $previousApiKey = getenv('RESEND_DOMAIN_CHECK_API_KEY');
+        putenv('RESEND_DOMAIN_CHECK_API_KEY=test-ephemeral-domain-check-key');
+
+        try {
+            $this->configureReadyDeployment();
+            $connection = $this->mock(Connection::class);
+            $connection->shouldReceive('getPdo')->once();
+            $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+            DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+            $this->artisan('opsdeck:deployment-check', ['--json' => true])
+                ->expectsOutputToContain('"mail":"pass"')
+                ->assertExitCode(0);
+
+            Http::assertSent(static fn (Request $request): bool => str_contains($request->url(), 'api.resend.com/domains')
+                && $request->hasHeader('Authorization', 'Bearer test-ephemeral-domain-check-key'));
+        } finally {
+            putenv($previousApiKey === false
+                ? 'RESEND_DOMAIN_CHECK_API_KEY'
+                : 'RESEND_DOMAIN_CHECK_API_KEY='.$previousApiKey);
+        }
+    }
+
+    public function test_it_fails_readiness_when_resend_sending_capability_is_disabled(): void
+    {
+        $this->configureReadyDeployment(resendSendingCapability: 'disabled');
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_finds_the_resend_sender_domain_after_a_page_boundary(): void
+    {
+        $this->configureReadyDeployment(resendDomainOnSecondPage: true);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
             ->expectsOutputToContain('"mail":"pass"')
             ->assertExitCode(0);
+
+        Http::assertSent(static fn (Request $request): bool => $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://api.resend.com/domains?')
+            && str_contains($request->url(), 'after=domain_other')
+            && $request->hasHeader('Authorization', 'Bearer test-domain-check-key'));
     }
 
     public function test_it_fails_readiness_when_a_failover_mailer_references_an_unconfigured_mailer(): void
@@ -193,10 +403,88 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_it_fails_readiness_when_the_live_stripe_price_is_not_tax_exclusive(): void
+    {
+        $this->configureReadyDeployment(stripePriceTaxBehavior: 'inclusive');
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_fails_readiness_when_the_stripe_product_has_no_tax_code(): void
+    {
+        $this->configureReadyDeployment(stripeProductTaxCode: null, stripeDefaultTaxCode: null);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_accepts_the_account_default_tax_code_when_the_product_has_no_override(): void
+    {
+        $this->configureReadyDeployment(stripeProductTaxCode: null);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"pass"')
+            ->assertExitCode(0);
+    }
+
+    public function test_it_fails_readiness_when_stripe_tax_settings_are_pending(): void
+    {
+        $this->configureReadyDeployment(stripeTaxSettingsStatus: 'pending');
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_fails_readiness_when_japan_tax_registration_is_not_active(): void
+    {
+        $this->configureReadyDeployment(hasJapanTaxRegistration: false);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_finds_active_japan_tax_registration_after_a_stripe_page_boundary(): void
+    {
+        $this->configureReadyDeployment(taxRegistrationOnSecondPage: true);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"pass"')
+            ->assertExitCode(0);
+    }
+
     public function test_it_fails_readiness_without_exposing_credentials_when_stripe_cannot_be_reached(): void
     {
         $this->configureReadyDeployment();
-        Http::fake(['api.stripe.com/v1/prices/price_unit_test' => Http::failedConnection()]);
+        Http::fake(['api.stripe.com/v1/prices/price_unit_test*' => Http::failedConnection()]);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
@@ -557,38 +845,10 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
-    public function test_it_fails_readiness_when_smtp_configuration_is_incomplete(): void
+    public function test_it_fails_readiness_when_smtp_is_selected_as_the_default_mailer(): void
     {
         $this->configureReadyDeployment();
-        config(['mail.mailers.smtp.host' => '']);
-        $connection = $this->mock(Connection::class);
-        $connection->shouldReceive('getPdo')->once();
-        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
-        DB::shouldReceive('connection')->twice()->andReturn($connection);
-
-        $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
-            ->assertExitCode(1);
-    }
-
-    /** @return array<string, array{array{username: ?string, password: ?string}}> */
-    public static function partialSmtpCredentials(): array
-    {
-        return [
-            'username without password' => [['username' => 'smtp-user', 'password' => null]],
-            'password without username' => [['username' => null, 'password' => 'smtp-password']],
-        ];
-    }
-
-    /** @param array{username: ?string, password: ?string} $credentials */
-    #[DataProvider('partialSmtpCredentials')]
-    public function test_it_fails_readiness_when_only_one_smtp_credential_is_configured(array $credentials): void
-    {
-        $this->configureReadyDeployment();
-        config([
-            'mail.mailers.smtp.username' => $credentials['username'],
-            'mail.mailers.smtp.password' => $credentials['password'],
-        ]);
+        config(['mail.default' => 'smtp']);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
@@ -807,7 +1067,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
-    private function configureReadyDeployment(bool $hasDatabaseBackupTool = true, array $missingPhpExtensions = [], bool $hasDatabaseRestoreTool = true, bool $hasDatabaseCacheTables = true, bool $hasReadyRestoreTarget = true, bool $hasPendingMigrations = false, bool $hasMigrationRepository = true, bool $cacheLockAcquisitionSucceeds = true, bool $cacheLockReleaseSucceeds = true, bool $hasDatabaseQueueTable = true, bool $hasFailedJobsTable = true, int $stripePriceAmount = 9800, bool $hasFreshQueueWorker = true, bool $hasSafeQueueJobTimeout = true): void
+    private function configureReadyDeployment(bool $hasDatabaseBackupTool = true, array $missingPhpExtensions = [], bool $hasDatabaseRestoreTool = true, bool $hasDatabaseCacheTables = true, bool $hasReadyRestoreTarget = true, bool $hasPendingMigrations = false, bool $hasMigrationRepository = true, bool $cacheLockAcquisitionSucceeds = true, bool $cacheLockReleaseSucceeds = true, bool $hasDatabaseQueueTable = true, bool $hasFailedJobsTable = true, int $stripePriceAmount = 9800, bool $hasFreshQueueWorker = true, bool $hasSafeQueueJobTimeout = true, string $stripePriceTaxBehavior = 'exclusive', bool $hasJapanTaxRegistration = true, bool $taxRegistrationOnSecondPage = false, ?string $stripeProductTaxCode = 'txcd_test_service', ?string $stripeDefaultTaxCode = 'txcd_test_default', string $stripeTaxSettingsStatus = 'active', string $resendDomainStatus = 'verified', string $resendSendingCapability = 'enabled', bool $resendDomainOnSecondPage = false): void
     {
         $this->app['env'] = 'production';
         config([
@@ -845,7 +1105,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'cache.stores.database.table' => 'cache',
             'cache.stores.database.lock_connection' => null,
             'cache.stores.database.lock_table' => 'cache_locks',
-            'mail.default' => 'smtp',
+            'mail.default' => 'resend_idempotent',
             'logging.default' => 'stack',
             'logging.channels.stack.driver' => 'stack',
             'logging.channels.stack.channels' => ['daily'],
@@ -858,6 +1118,9 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'mail.mailers.smtp.port' => 587,
             'mail.mailers.smtp.username' => null,
             'mail.mailers.smtp.password' => null,
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => 'test-resend-key',
+            'mail.mailers.resend_idempotent.timeout' => 10,
             'mail.from.address' => 'info@kimegami.jp',
             'opsdeck.commercial_information.seller_name' => 'OpsDeck Test Seller',
             'opsdeck.commercial_information.seller_address' => '東京都千代田区テスト1-2-3',
@@ -870,16 +1133,58 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'services.stripe.webhook_secret' => 'whsec_unit_test',
             'opsdeck.backup.database_dump_directory' => null,
         ]);
+        $taxRegistrationResponses = Http::sequence()->push($taxRegistrationOnSecondPage ? [
+            'object' => 'list',
+            'has_more' => true,
+            'data' => [['id' => 'taxreg_other', 'country' => 'US', 'status' => 'active']],
+        ] : [
+            'object' => 'list',
+            'has_more' => false,
+            'data' => $hasJapanTaxRegistration ? [['id' => 'taxreg_japan', 'country' => 'JP', 'status' => 'active']] : [],
+        ], 200);
+        if ($taxRegistrationOnSecondPage) {
+            $taxRegistrationResponses->push([
+                'object' => 'list',
+                'has_more' => false,
+                'data' => $hasJapanTaxRegistration ? [['id' => 'taxreg_japan', 'country' => 'JP', 'status' => 'active']] : [],
+            ], 200);
+        }
+
+        $resendDomains = Http::sequence()->push($resendDomainOnSecondPage ? [
+            'object' => 'list',
+            'has_more' => true,
+            'data' => [['id' => 'domain_other', 'name' => 'other.example.test', 'status' => 'verified', 'capabilities' => ['sending' => 'enabled']]],
+        ] : [
+            'object' => 'list',
+            'has_more' => false,
+            'data' => [['id' => 'domain_kimegami', 'name' => 'kimegami.jp', 'status' => $resendDomainStatus, 'capabilities' => ['sending' => $resendSendingCapability]]],
+        ], 200);
+        if ($resendDomainOnSecondPage) {
+            $resendDomains->push([
+                'object' => 'list',
+                'has_more' => false,
+                'data' => [['id' => 'domain_kimegami', 'name' => 'kimegami.jp', 'status' => $resendDomainStatus, 'capabilities' => ['sending' => $resendSendingCapability]]],
+            ], 200);
+        }
+
         Http::fake([
-            'api.stripe.com/v1/prices/price_unit_test' => Http::response([
+            'api.stripe.com/v1/prices/price_unit_test*' => Http::response([
                 'id' => 'price_unit_test',
                 'active' => true,
                 'type' => 'recurring',
                 'billing_scheme' => 'per_unit',
                 'currency' => 'jpy',
                 'unit_amount' => $stripePriceAmount,
+                'tax_behavior' => $stripePriceTaxBehavior,
+                'product' => ['id' => 'prod_unit_test', 'tax_code' => $stripeProductTaxCode],
                 'recurring' => ['interval' => 'month', 'interval_count' => 1],
             ], 200),
+            'api.stripe.com/v1/tax/settings' => Http::response([
+                'status' => $stripeTaxSettingsStatus,
+                'defaults' => ['tax_code' => $stripeDefaultTaxCode],
+            ], 200),
+            'api.stripe.com/v1/tax/registrations*' => $taxRegistrationResponses,
+            'api.resend.com/domains*' => $resendDomains,
         ]);
 
         $executableFinder = $this->mock(ExecutableFinder::class);

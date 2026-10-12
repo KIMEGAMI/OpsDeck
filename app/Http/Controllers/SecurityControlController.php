@@ -4,12 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\SecurityControl\StoreSecurityControlRequest;
 use App\Http\Requests\SecurityControl\UpdateSecurityControlRequest;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\SecurityControl;
 use App\Services\OnboardingProgressService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
@@ -85,7 +87,24 @@ class SecurityControlController extends Controller
         $organization = $this->organization($request);
         $securityControl = $this->scopedControl($organization, $securityControl);
         $this->authorize('update', $securityControl);
-        $securityControl->update($this->validatedForOrganization($request->validated(), $organization));
+        $attributes = $this->validatedForOrganization($request->validated(), $organization);
+
+        DB::transaction(function () use ($request, $organization, $securityControl, $attributes): void {
+            $securityControl->fill($attributes);
+            $changedFields = array_keys($securityControl->getDirty());
+            $securityControl->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => SecurityControl::class,
+                    'entity_id' => $securityControl->id,
+                    'action' => AuditLog::SecurityControlUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('security-controls.show', $securityControl)->with('status', 'セキュリティ管理項目を更新しました。');
     }

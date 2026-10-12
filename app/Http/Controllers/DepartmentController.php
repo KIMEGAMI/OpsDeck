@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\Department\StoreDepartmentRequest;
 use App\Http\Requests\Department\UpdateDepartmentRequest;
+use App\Models\AuditLog;
 use App\Models\Department;
 use App\Models\Organization;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
@@ -53,7 +55,24 @@ class DepartmentController extends Controller
         $organization = $this->organization($request);
         $department = $this->scopedDepartment($organization, $department);
         $this->authorize('update', $department);
-        $department->update($this->validatedForOrganization($request->validated(), $organization, $department));
+        $attributes = $this->validatedForOrganization($request->validated(), $organization, $department);
+
+        DB::transaction(function () use ($request, $organization, $department, $attributes): void {
+            $department->fill($attributes);
+            $changedFields = array_keys($department->getDirty());
+            $department->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => Department::class,
+                    'entity_id' => $department->id,
+                    'action' => AuditLog::DepartmentUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('departments.index')->with('status', '部署を更新しました。');
     }

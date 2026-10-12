@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AdminAnnouncementController;
 use App\Http\Controllers\AdminDashboardController;
+use App\Http\Controllers\AdminMailDeliveryReviewController;
 use App\Http\Controllers\AdminProductMetricsController;
 use App\Http\Controllers\AnnouncementReadController;
 use App\Http\Controllers\AssetAssignmentController;
@@ -77,7 +78,7 @@ Route::middleware('guest')->group(function (): void {
 });
 
 Route::post('/billing/stripe/webhook', StripeWebhookController::class)->withoutMiddleware([ValidateCsrfToken::class])->name('billing.stripe.webhook');
-Route::get('/r/{code}', [ReferralController::class, 'redirect'])->name('referrals.redirect');
+Route::get('/r/{code}', [ReferralController::class, 'redirect'])->middleware('throttle:referrals')->name('referrals.redirect');
 
 Route::middleware(['auth', 'organization.member'])->group(function (): void {
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
@@ -176,6 +177,9 @@ Route::get('/admin', AdminDashboardController::class)->middleware(['auth', 'plat
 Route::get('/admin/ai-cost', [AdminDashboardController::class, 'aiCost'])->middleware(['auth', 'platform.admin'])->name('admin.ai-cost');
 Route::get('/admin/queue-errors', [AdminDashboardController::class, 'queueErrors'])->middleware(['auth', 'platform.admin'])->name('admin.queue-errors');
 Route::get('/admin/health', [AdminDashboardController::class, 'health'])->middleware(['auth', 'platform.admin'])->name('admin.health');
+Route::get('/admin/mail-delivery-reviews', [AdminMailDeliveryReviewController::class, 'index'])->middleware(['auth', 'platform.admin'])->name('admin.mail-delivery-reviews.index');
+Route::post('/admin/mail-delivery-reviews/announcements/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveAnnouncement'])->middleware(['auth', 'platform.admin'])->name('admin.mail-delivery-reviews.announcements.resolve');
+Route::post('/admin/mail-delivery-reviews/weekly-summaries/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveWeeklySummary'])->middleware(['auth', 'platform.admin'])->name('admin.mail-delivery-reviews.weekly-summaries.resolve');
 Route::get('/admin/product-metrics', AdminProductMetricsController::class)->middleware(['auth', 'platform.admin'])->name('admin.product-metrics');
 Route::get('/admin/product-metrics.csv', [AdminProductMetricsController::class, 'export'])->middleware(['auth', 'platform.admin'])->name('admin.product-metrics.export');
 Route::get('/admin/support', [SupportRequestController::class, 'adminIndex'])->middleware(['auth', 'platform.admin'])->name('admin.support.index');

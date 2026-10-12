@@ -7,10 +7,15 @@ use App\Models\StripeWebhookEvent;
 use App\Services\PlanAccessService;
 use App\Services\ProductEventRecorder;
 use Carbon\CarbonImmutable;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 
 class BillingController extends Controller
 {
@@ -45,7 +50,7 @@ class BillingController extends Controller
         return view('billing.index', compact('organization', 'effectivePlanCode', 'billingGraceDeadline', 'failedStripeEvent'));
     }
 
-    public function checkout(Request $request): RedirectResponse
+    public function checkout(Request $request): RedirectResponse|Response
     {
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
@@ -58,30 +63,57 @@ class BillingController extends Controller
         );
         $premiumPriceId = config('services.stripe.prices.premium');
         abort_unless(config('services.stripe.secret') && is_string($premiumPriceId) && $premiumPriceId !== '', 503, 'Stripe Billingが設定されていません。');
-        $stripePrice = Http::withBasicAuth(config('services.stripe.secret'), '')
-            ->timeout(10)
-            ->get('https://api.stripe.com/v1/prices/'.rawurlencode($premiumPriceId));
-        abort_unless(
+        try {
+            $stripePrice = Http::withBasicAuth(config('services.stripe.secret'), '')
+                ->timeout(10)
+                ->get('https://api.stripe.com/v1/prices/'.rawurlencode($premiumPriceId), ['expand[]' => 'product']);
+        } catch (ConnectionException) {
+            return $this->stripeUnavailableResponse('price_validation');
+        }
+        if (! (
             $stripePrice->successful()
                 && $stripePrice->json('active') === true
                 && $stripePrice->json('type') === 'recurring'
                 && $stripePrice->json('billing_scheme') === 'per_unit'
                 && $stripePrice->json('currency') === 'jpy'
                 && $stripePrice->json('unit_amount') === (int) config('opsdeck.plans.premium.monthly_price_jpy')
+                && $stripePrice->json('tax_behavior') === 'exclusive'
                 && $stripePrice->json('recurring.interval') === 'month'
-                && (int) $stripePrice->json('recurring.interval_count') === 1,
-            503,
-            'Stripe Premium価格設定が月額料金と一致しないため、Checkoutを開始できません。',
-        );
+                && (int) $stripePrice->json('recurring.interval_count') === 1
+        )) {
+            return $this->stripeUnavailableResponse('price_validation');
+        }
+        try {
+            $stripeTaxSettings = Http::withBasicAuth(config('services.stripe.secret'), '')
+                ->timeout(10)
+                ->get('https://api.stripe.com/v1/tax/settings');
+        } catch (ConnectionException) {
+            return $this->stripeUnavailableResponse('tax_validation');
+        }
+
+        $productTaxCode = $stripePrice->json('product.tax_code');
+        $defaultTaxCode = $stripeTaxSettings->json('defaults.tax_code');
+        $hasTaxCode = (is_string($productTaxCode) && trim($productTaxCode) !== '')
+            || (is_string($defaultTaxCode) && trim($defaultTaxCode) !== '');
+        if (! $stripeTaxSettings->successful() || $stripeTaxSettings->json('status') !== 'active' || ! $hasTaxCode) {
+            return $this->stripeUnavailableResponse('tax_validation');
+        }
+
         $customerId = $organization->stripe_customer_id;
         if ($customerId === null) {
             $customerParameters = ['name' => $organization->name, 'metadata[organization_id]' => (string) $organization->id];
-            $customer = Http::withBasicAuth(config('services.stripe.secret'), '')
-                ->withHeader('Idempotency-Key', $this->stripeIdempotencyKey('customer', (int) $organization->id, $customerParameters))
-                ->asForm()
-                ->timeout(10)
-                ->post('https://api.stripe.com/v1/customers', $customerParameters);
-            abort_unless($customer->successful() && is_string($customer->json('id')), 422, 'Stripe Customerを作成できませんでした。');
+            try {
+                $customer = Http::withBasicAuth(config('services.stripe.secret'), '')
+                    ->withHeader('Idempotency-Key', $this->stripeIdempotencyKey('customer', (int) $organization->id, $customerParameters))
+                    ->asForm()
+                    ->timeout(10)
+                    ->post('https://api.stripe.com/v1/customers', $customerParameters);
+            } catch (ConnectionException) {
+                return $this->stripeUnavailableResponse('customer_create');
+            }
+            if (! $customer->successful() || ! is_string($customer->json('id'))) {
+                return $this->stripeUnavailableResponse('customer_create');
+            }
             $customerId = $customer->json('id');
             $organization->update(['stripe_customer_id' => $customerId]);
         }
@@ -89,6 +121,8 @@ class BillingController extends Controller
             'mode' => 'subscription',
             'customer' => $customerId,
             'client_reference_id' => (string) $organization->id,
+            'billing_address_collection' => 'required',
+            'automatic_tax[enabled]' => true,
             'line_items[0][price]' => $premiumPriceId,
             'line_items[0][quantity]' => 1,
             'success_url' => route('billing.index').'?checkout=success',
@@ -98,24 +132,36 @@ class BillingController extends Controller
             'subscription_data[metadata][organization_id]' => (string) $organization->id,
             'subscription_data[metadata][plan_code]' => config('opsdeck.premium_plan_code'),
         ];
-        $checkout = Http::withBasicAuth(config('services.stripe.secret'), '')
-            ->withHeader('Idempotency-Key', $this->stripeIdempotencyKey('checkout', (int) $organization->id, $checkoutParameters))
-            ->asForm()
-            ->timeout(10)
-            ->post('https://api.stripe.com/v1/checkout/sessions', $checkoutParameters);
-        abort_unless($checkout->successful() && is_string($checkout->json('url')), 422, 'Stripe Checkoutを開始できませんでした。');
+        try {
+            $checkout = Http::withBasicAuth(config('services.stripe.secret'), '')
+                ->withHeader('Idempotency-Key', $this->stripeIdempotencyKey('checkout', (int) $organization->id, $checkoutParameters))
+                ->asForm()
+                ->timeout(10)
+                ->post('https://api.stripe.com/v1/checkout/sessions', $checkoutParameters);
+        } catch (ConnectionException) {
+            return $this->stripeUnavailableResponse('checkout_create');
+        }
+        if (! $checkout->successful() || ! is_string($checkout->json('url'))) {
+            return $this->stripeUnavailableResponse('checkout_create');
+        }
         app(ProductEventRecorder::class)->recordOnce('billing_checkout_started', $organization);
 
         return redirect()->away($checkout->json('url'));
     }
 
-    public function portal(Request $request): RedirectResponse
+    public function portal(Request $request): RedirectResponse|Response
     {
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
         abort_unless(config('services.stripe.secret') && $organization->stripe_customer_id, 422, 'Stripe Customerが登録されていません。');
-        $portal = Http::withBasicAuth(config('services.stripe.secret'), '')->asForm()->timeout(10)->post('https://api.stripe.com/v1/billing_portal/sessions', ['customer' => $organization->stripe_customer_id, 'return_url' => route('billing.index')]);
-        abort_unless($portal->successful() && is_string($portal->json('url')), 422, 'Stripe Customer Portalを開始できませんでした。');
+        try {
+            $portal = Http::withBasicAuth(config('services.stripe.secret'), '')->asForm()->timeout(10)->post('https://api.stripe.com/v1/billing_portal/sessions', ['customer' => $organization->stripe_customer_id, 'return_url' => route('billing.index')]);
+        } catch (ConnectionException) {
+            return $this->stripeUnavailableResponse('portal_session');
+        }
+        if (! $portal->successful() || ! is_string($portal->json('url'))) {
+            return $this->stripeUnavailableResponse('portal_session');
+        }
 
         return redirect()->away($portal->json('url'));
     }
@@ -128,8 +174,26 @@ class BillingController extends Controller
         return $organization;
     }
 
+    private function stripeUnavailableResponse(string $operation): Response
+    {
+        $errorReference = 'BILLING-'.Str::upper((string) Str::uuid());
+        try {
+            Log::warning('Stripe billing operation failed.', [
+                'error_reference' => $errorReference,
+                'operation' => $operation,
+            ]);
+        } catch (Throwable) {
+            // Keep the customer-facing recovery response available if logging is unavailable.
+        }
+
+        return response()->view('billing.unavailable', [
+            'errorReference' => $errorReference,
+            'supportEmail' => config('opsdeck.support_email'),
+        ], Response::HTTP_SERVICE_UNAVAILABLE);
+    }
+
     /**
-     * @param  array<string, int|string>  $parameters
+     * @param  array<string, bool|int|string>  $parameters
      */
     private function stripeIdempotencyKey(string $operation, int $organizationId, array $parameters): string
     {

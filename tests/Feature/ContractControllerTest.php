@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -28,6 +29,10 @@ class ContractControllerTest extends TestCase
             'contract_name' => 'Core Services',
             'status' => config('opsdeck.contract_status.draft'),
         ]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_create_a_contract(): void
@@ -44,6 +49,10 @@ class ContractControllerTest extends TestCase
             'organization_id' => $organization->id,
             'contract_name' => 'Core Services',
         ]);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_update_a_contract(): void
@@ -58,6 +67,25 @@ class ContractControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('Core Services', $contract->refresh()->contract_name);
+    }
+
+    public function test_contract_update_records_changed_field_names_without_contract_values(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $contract = Contract::query()->create($this->attributes() + ['organization_id' => $organization->id]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('contracts.update', $contract), $this->attributes(['contract_name' => 'Sensitive renewal title']))
+            ->assertRedirect();
+
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $contract->id)->where('action', AuditLog::ContractUpdated)->sole();
+
+        $this->assertSame($organization->id, $auditLog->organization_id);
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame($contract->id, $auditLog->entity_id);
+        $this->assertSame(['changed_fields' => ['contract_name']], $auditLog->after_json);
+        $this->assertStringNotContainsString('Sensitive renewal title', json_encode($auditLog->toArray()));
     }
 
     public function test_operator_cannot_update_a_contract_in_another_organization(): void

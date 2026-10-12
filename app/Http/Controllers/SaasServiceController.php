@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\Saas\StoreSaasServiceRequest;
 use App\Http\Requests\Saas\UpdateSaasServiceRequest;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\SaasService;
 use App\Services\OnboardingProgressService;
 use App\Services\PlanLimitService;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -44,6 +46,7 @@ class SaasServiceController extends Controller
 
             return SaasService::query()->create($this->uniqueAttributes($request->validated(), $organization) + ['organization_id' => $organization->id]);
         });
+        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
         app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
 
         return to_route('saas-services.show', $service)->with('status', 'SaaSを登録しました。');
@@ -78,7 +81,24 @@ class SaasServiceController extends Controller
         $organization = $this->organization($request);
         $saasService = $this->scopedService($organization, $saasService);
         $this->authorize('update', $saasService);
-        $saasService->update($this->uniqueAttributes($request->validated(), $organization, $saasService));
+        $attributes = $this->uniqueAttributes($request->validated(), $organization, $saasService);
+
+        DB::transaction(function () use ($request, $organization, $saasService, $attributes): void {
+            $saasService->fill($attributes);
+            $changedFields = array_keys($saasService->getDirty());
+            $saasService->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => SaasService::class,
+                    'entity_id' => $saasService->id,
+                    'action' => AuditLog::SaasServiceUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('saas-services.show', $saasService)->with('status', 'SaaSを更新しました。');
     }

@@ -22,7 +22,7 @@ class RetryWeeklySummaryEmails extends Command
         $limit = max(1, min(1000, (int) $this->option('limit')));
         $queued = 0;
         $summaryBuilder = app(WeeklySummaryBuilder::class);
-        WeeklySummaryDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereHas('user.organizationMemberships', function (Builder $query): void {
+        WeeklySummaryDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('manual_review_at')->whereHas('user.organizationMemberships', function (Builder $query): void {
             $query->whereColumn('organization_memberships.organization_id', 'weekly_summary_deliveries.organization_id')->where('status', 'active');
         })->whereDoesntHave('user.notificationPreferences', function (Builder $query): void {
             $query->whereColumn('user_notification_preferences.organization_id', 'weekly_summary_deliveries.organization_id')->where('weekly_summary_enabled', false);

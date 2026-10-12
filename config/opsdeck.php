@@ -60,6 +60,9 @@ return [
         'past_due_grace_days' => (int) env('OPSDECK_BILLING_PAST_DUE_GRACE_DAYS', 7),
         'checkout_attempts_per_minute' => max(1, (int) env('OPSDECK_BILLING_CHECKOUT_ATTEMPTS_PER_MINUTE', 3)),
     ],
+    'referrals' => [
+        'redirect_attempts_per_minute' => max(1, (int) env('OPSDECK_REFERRAL_REDIRECT_ATTEMPTS_PER_MINUTE', 60)),
+    ],
     'queue' => [
         'stale_after_minutes' => max(1, (int) env('OPSDECK_QUEUE_STALE_AFTER_MINUTES', 10)),
         'worker_heartbeat_interval_seconds' => max(1, (int) env('OPSDECK_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS', 60)),

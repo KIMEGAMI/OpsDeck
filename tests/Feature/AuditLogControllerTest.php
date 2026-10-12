@@ -18,8 +18,15 @@ class AuditLogControllerTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         AuditLog::query()->create(['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'entity_type' => 'QuestionnaireAnswer', 'action' => AuditLog::QuestionnaireAnswerApproved]);
+        [, $otherOrganization] = $this->member(MembershipRole::Admin);
+        AuditLog::query()->create(['organization_id' => $otherOrganization->id, 'entity_type' => 'QuestionnaireAnswer', 'action' => 'other_organization.private_action']);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('audit-logs.index'))->assertOk()->assertSee(AuditLog::QuestionnaireAnswerApproved);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('audit-logs.index'))
+            ->assertOk()
+            ->assertSee(AuditLog::QuestionnaireAnswerApproved)
+            ->assertDontSee($user->email)
+            ->assertDontSee('other_organization.private_action');
     }
 
     public function test_audit_log_pages_use_a_stable_order_when_creation_times_match(): void

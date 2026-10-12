@@ -7,11 +7,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class WeeklySummaryDelivery extends Model
 {
-    protected $fillable = ['organization_id', 'user_id', 'week_start', 'sent_at', 'failed_at'];
+    protected $fillable = ['organization_id', 'user_id', 'week_start', 'sent_at', 'failed_at', 'resend_idempotency_started_at', 'manual_review_at', 'manual_review_resolved_by'];
 
     protected function casts(): array
     {
-        return ['week_start' => 'date', 'sent_at' => 'datetime', 'failed_at' => 'datetime'];
+        return ['week_start' => 'date', 'sent_at' => 'datetime', 'failed_at' => 'datetime', 'resend_idempotency_started_at' => 'datetime', 'manual_review_at' => 'datetime'];
     }
 
     public function organization(): BelongsTo

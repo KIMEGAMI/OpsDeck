@@ -17,11 +17,11 @@ jobs:
 
       - name: Check secrets are not committed
         run: |
-          if git ls-files --error-unmatch .env .env.production >/dev/null 2>&1; then
+          if git ls-files -z | grep -zE '(^|/)\.env($|\.)' | grep -zvE '(^|/)\.env\.example$' | grep -qz .; then
             echo "Environment files must not be committed"
             exit 1
           fi
-          if git grep -nE 'sk_(live|test)_[A-Za-z0-9]{16,}|rk_(live|test)_[A-Za-z0-9]{16,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|github_pat_[A-Za-z0-9_]{22,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{20,}|-----BEGIN (ENCRYPTED |RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----' -- .; then
+          if git grep -qE '(^|[^A-Za-z0-9_-])re_[A-Za-z0-9_-]{8,}|whsec_[A-Za-z0-9_-]{20,}|(^|[^A-Za-z0-9_-])sk-admin-[A-Za-z0-9_-]{8,}|sk_(live|test)_[A-Za-z0-9]{16,}|rk_(live|test)_[A-Za-z0-9]{16,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|github_pat_[A-Za-z0-9_]{22,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{20,}|GOCSPX-[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{20,}|-----BEGIN (ENCRYPTED |RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----' -- .; then
             echo "Potential production secret found in application sources"
             exit 1
           fi
@@ -46,7 +46,6 @@ jobs:
           php artisan key:generate --force
           mkdir -p database
           touch database/database.sqlite
-          sed -i 's#C:/MyDeveloper/OpsDeck/database/database.sqlite#database/database.sqlite#g' phpunit.xml
           php artisan migrate --force
 
       - name: Run formatter check
@@ -58,8 +57,8 @@ jobs:
       - name: Verify application routes and commands
         run: |
           php artisan route:list --except-vendor
-          php artisan list | grep -E 'opsdeck:(backup|backup:verify|health|impact:snapshots|scheduler:heartbeat)'
-          php artisan schedule:list | grep -E 'opsdeck:backup|opsdeck:impact:snapshots|opsdeck:scheduler:heartbeat'
+          php artisan list | grep -E 'opsdeck:(backup|backup:verify|billing:enforce-grace|health|impact:prune-snapshots|impact:snapshots|scheduler:heartbeat)'
+          php artisan schedule:list | grep -E 'opsdeck:backup|opsdeck:billing:enforce-grace|opsdeck:impact:prune-snapshots|opsdeck:impact:snapshots|opsdeck:scheduler:heartbeat'
           php artisan opsdeck:scheduler:heartbeat
           php artisan opsdeck:backup
           php artisan queue:work database --sleep=1 --tries=1 --timeout=60 > /tmp/opsdeck-queue-worker.log 2>&1 &

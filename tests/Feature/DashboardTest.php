@@ -69,7 +69,41 @@ class DashboardTest extends TestCase
         SaasAssignment::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $historicalService->id, 'employee_id' => $formerEmployee->id, 'status' => 'ended', 'mfa_status' => config('opsdeck.saas_assignment_mfa_status.unknown'), 'ended_at' => now()->subWeek()]);
         SaasAssignment::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $historicalService->id, 'employee_id' => $activeEmployee->id, 'status' => 'active', 'mfa_status' => config('opsdeck.saas_assignment_mfa_status.unknown')]);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('dashboard'))->assertOk()->assertSee('現在の組織データと、優先して確認すべき項目を表示しています。')->assertSee('10,000.00')->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の更新アラート')->assertSee('要対応セキュリティ項目')->assertSee('未確認Importエラー行数')->assertSee('未確認Import実行失敗')->assertSee('今日やること')->assertSee(route('costs.dashboard'))->assertSee(route('security-controls.index', ['attention' => 1]))->assertSee(route('evidence.index', ['expired' => 1]))->assertSee(route('imports.index', ['has_errors' => 1, 'unreviewed' => 1]))->assertSee(route('imports.index', ['status' => 'failed', 'unreviewed' => 1]))->assertSee(route('employees.index'))->assertSee(route('assets.index'))->assertSee(route('saas-services.index'))->assertSee(route('contracts.index'))->assertSee(route('settings.members'))->assertSee('未割当または退職者に紐づく資産を確認する')->assertSee('未割当または退職者に紐づくSaaSを確認する')->assertSee('（1件）')->assertSee('（2件）');
+        $response = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'));
+
+        $response->assertOk()
+            ->assertSee('現在の組織データと、優先して確認すべき項目を表示しています。')
+            ->assertSee('10,000.00')
+            ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の更新アラート')
+            ->assertSee('要対応セキュリティ項目')
+            ->assertSee('未確認Importエラー行数')
+            ->assertSee('未確認Import実行失敗')
+            ->assertSee('今日やること')
+            ->assertSee(route('costs.dashboard'))
+            ->assertSee(route('security-controls.index', ['attention' => 1]))
+            ->assertSee(route('evidence.index', ['expired' => 1]))
+            ->assertSee(route('imports.index', ['has_errors' => 1, 'unreviewed' => 1]))
+            ->assertSee(route('imports.index', ['status' => 'failed', 'unreviewed' => 1]))
+            ->assertSee(route('employees.index'))
+            ->assertSee(route('assets.index'))
+            ->assertSee(route('saas-services.index'))
+            ->assertSee(route('contracts.index'))
+            ->assertSee(route('settings.members'))
+            ->assertSee('未割当または退職者に紐づく資産を確認する')
+            ->assertSee('未割当または退職者に紐づくSaaSを確認する')
+            ->assertSee('（1件）')
+            ->assertSee('（2件）')
+            ->assertSeeInOrder([
+                '期限切れ証跡を確認する',
+                '期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新を確認する',
+                '未確認Importエラーを確認する',
+                '未確認のImport実行失敗を確認する',
+                '未対応のSecurity Controlを確認する',
+                '未割当または退職者に紐づく資産を確認する',
+                '未割当または退職者に紐づくSaaSを確認する',
+            ]);
 
         $this->assertDatabaseMissing('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
     }
@@ -125,6 +159,19 @@ class DashboardTest extends TestCase
             ->assertOk()
             ->assertDontSee('プラン上限の注意')
             ->assertDontSee('利用上限について問い合わせる');
+    }
+
+    public function test_dashboard_layout_keeps_high_visibility_keyboard_focus_indicators(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->ownerOrganization();
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee(':focus-visible { outline: 3px solid #005f73; outline-offset: 2px; }', false)
+            ->assertSee('.app-navigation a:focus-visible { outline-color: #f6c945; }', false)
+            ->assertDontSee('outline: none', false);
     }
 
     public function test_dashboard_includes_contracts_with_an_ending_date_inside_the_alert_window(): void

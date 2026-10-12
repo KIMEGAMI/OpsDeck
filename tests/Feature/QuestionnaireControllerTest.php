@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\Questionnaire;
@@ -21,6 +22,10 @@ class QuestionnaireControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaires.store'), ['title' => '取引先質問票', 'status' => config('opsdeck.questionnaire_status.draft')])->assertRedirect();
 
         $this->assertDatabaseHas('questionnaires', ['organization_id' => $organization->id, 'title' => '取引先質問票']);
+        $questionnaire = Questionnaire::query()->where('organization_id', $organization->id)->where('title', '取引先質問票')->firstOrFail();
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $questionnaire->id)->where('action', AuditLog::QuestionnaireCreated)->sole();
+        $this->assertSame(['changed_fields' => ['title', 'status']], $auditLog->after_json);
+        $this->assertStringNotContainsString('取引先質問票', json_encode($auditLog->toArray()));
     }
 
     public function test_viewer_cannot_create_a_questionnaire(): void
@@ -34,6 +39,7 @@ class QuestionnaireControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertDatabaseMissing('questionnaires', ['organization_id' => $organization->id, 'title' => '閲覧者の質問票']);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'action' => AuditLog::QuestionnaireCreated]);
     }
 
     public function test_operator_can_update_a_questionnaire(): void
@@ -56,6 +62,9 @@ class QuestionnaireControllerTest extends TestCase
             ->assertRedirect(route('questionnaires.show', $questionnaire));
 
         $this->assertSame('更新した質問票', $questionnaire->refresh()->title);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $questionnaire->id)->where('action', AuditLog::QuestionnaireUpdated)->sole();
+        $this->assertSame(['changed_fields' => ['title']], $auditLog->after_json);
+        $this->assertStringNotContainsString('更新した質問票', json_encode($auditLog->toArray()));
     }
 
     public function test_viewer_cannot_update_a_questionnaire(): void
@@ -78,6 +87,7 @@ class QuestionnaireControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('閲覧専用質問票', $questionnaire->refresh()->title);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'entity_id' => $questionnaire->id, 'action' => AuditLog::QuestionnaireUpdated]);
     }
 
     public function test_operator_cannot_update_a_questionnaire_in_another_organization(): void

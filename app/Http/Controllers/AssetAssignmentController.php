@@ -6,6 +6,7 @@ use App\Http\Requests\AssetAssignment\ReturnAssetAssignmentRequest;
 use App\Http\Requests\AssetAssignment\StoreAssetAssignmentRequest;
 use App\Models\Asset;
 use App\Models\AssetAssignment;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use Illuminate\Http\RedirectResponse;
@@ -49,6 +50,15 @@ class AssetAssignmentController extends Controller
             $assignment = AssetAssignment::query()->create($attributes + ['organization_id' => $organization->id]);
             $asset->update(['status' => config('opsdeck.asset_status.assigned')]);
 
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => AssetAssignment::class,
+                'entity_id' => $assignment->id,
+                'action' => AuditLog::AssetAssignmentCreated,
+                'after_json' => ['changed_fields' => ['asset_id', 'employee_id', 'assigned_at']],
+            ]);
+
             return $assignment;
         });
 
@@ -75,7 +85,20 @@ class AssetAssignmentController extends Controller
                 throw ValidationException::withMessages(['returned_at' => 'この割当は既に返却済みです。']);
             }
 
-            $assignment->update($request->safe()->only(['returned_at', 'note']));
+            $assignment->fill($request->safe()->only(['returned_at', 'note']));
+            $changedFields = array_keys($assignment->getDirty());
+            $assignment->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => AssetAssignment::class,
+                    'entity_id' => $assignment->id,
+                    'action' => AuditLog::AssetAssignmentReturned,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
 
             if (! AssetAssignment::query()
                 ->where('organization_id', $organization->id)

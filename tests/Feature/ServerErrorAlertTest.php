@@ -29,6 +29,8 @@ class ServerErrorAlertTest extends TestCase
             ServerErrorAlert::class,
             fn (ServerErrorAlert $notification, array $channels, AnonymousNotifiable $notifiable): bool => $notification->errorReference === $response->headers->get('X-OpsDeck-Error-Reference')
                 && $notification->statusCode === 500
+                && is_string($notification->idempotencyKey)
+                && ! str_contains($notification->idempotencyKey, $notifiable->routes['mail'])
                 && $channels === ['mail']
                 && in_array($notifiable->routes['mail'] ?? null, ['admin-one@example.test', 'admin-two@example.test'], true),
         );

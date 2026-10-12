@@ -54,8 +54,10 @@ class ServerErrorAlertDispatcher
         $dispatchFailed = false;
         foreach ($adminEmails as $adminEmail) {
             try {
+                $idempotencyKey = app(ResendIdempotencyKeyFactory::class)
+                    ->forServerErrorAlert($errorReference, $statusCode, $adminEmail);
                 Notification::route('mail', $adminEmail)
-                    ->notifyNow(new ServerErrorAlert($errorReference, $statusCode));
+                    ->notifyNow(new ServerErrorAlert($errorReference, $statusCode, $idempotencyKey));
             } catch (Throwable) {
                 $dispatchFailed = true;
             }

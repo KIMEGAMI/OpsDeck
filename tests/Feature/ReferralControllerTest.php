@@ -44,6 +44,19 @@ class ReferralControllerTest extends TestCase
         $this->get(route('referrals.redirect', $referral->code))->assertNotFound();
     }
 
+    public function test_referral_redirects_are_rate_limited_without_counting_rejected_requests(): void
+    {
+        [, $organization] = $this->member(MembershipRole::Owner);
+        $referral = ReferralCode::query()->create(['organization_id' => $organization->id, 'code' => 'limited-'.Str::lower(Str::random(8)), 'active' => true]);
+        config(['opsdeck.referrals.redirect_attempts_per_minute' => 1]);
+
+        $this->get(route('referrals.redirect', $referral->code))->assertRedirect(route('register'));
+        $this->get(route('referrals.redirect', $referral->code))->assertTooManyRequests();
+
+        $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 1]);
+        $this->assertSame(1, ProductEvent::query()->where('organization_id', $organization->id)->where('event_key', 'referral_clicked')->count());
+    }
+
     public function test_referral_registration_is_recorded_without_referrer_personal_data(): void
     {
         [, $organization] = $this->member(MembershipRole::Owner);

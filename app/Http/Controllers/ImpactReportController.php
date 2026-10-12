@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Organization;
+use App\Services\CsvFormulaSanitizer;
 use App\Services\ImpactReportMetricsService;
 use App\Services\RealizedSavingsSummary;
 use Illuminate\Http\Request;
@@ -30,12 +31,29 @@ class ImpactReportController extends Controller
         $comparison = $metricsService->importComparison($organization);
         $trend = $metricsService->trend($organization);
         $realizedSavingsTotals = $realizedSavingsSummary->totalsByCurrencyAndPeriod($organization);
+        $csvFormulaSanitizer = app(CsvFormulaSanitizer::class);
 
-        return response()->streamDownload(static function () use ($metrics, $comparison, $trend, $realizedSavingsTotals): void {
+        return response()->streamDownload(static function () use ($metrics, $comparison, $trend, $realizedSavingsTotals, $csvFormulaSanitizer): void {
             $handle = fopen('php://output', 'wb');
             fwrite($handle, "\xEF\xBB\xBF");
             fputcsv($handle, ['metric', 'value', 'source'], ',', '"', '');
             foreach ($metrics as $metric => $value) {
+                if ($metric === 'monthly_costs_by_currency' && is_array($value)) {
+                    foreach ($value as $currency => $monthlyCost) {
+                        if (! is_string($currency) || (! is_int($monthlyCost) && ! is_float($monthlyCost))) {
+                            continue;
+                        }
+
+                        fputcsv($handle, [
+                            $csvFormulaSanitizer->sanitize('monthly_cost_'.$currency),
+                            number_format((float) $monthlyCost, 2, '.', ''),
+                            'OpsDeck current contract data; grouped by currency, not converted',
+                        ], ',', '"', '');
+                    }
+
+                    continue;
+                }
+
                 fputcsv($handle, [$metric, $value, 'OpsDeck current data'], ',', '"', '');
             }
             if ($comparison !== null) {
@@ -45,6 +63,14 @@ class ImpactReportController extends Controller
                     fputcsv($handle, ['latest_import_before_'.$metric, $before, 'Import batch '.$comparison['after']->import_batch_id], ',', '"', '');
                     fputcsv($handle, ['latest_import_after_'.$metric, $after, 'Import batch '.$comparison['after']->import_batch_id], ',', '"', '');
                     fputcsv($handle, ['latest_import_delta_'.$metric, $after - $before, 'Import batch '.$comparison['after']->import_batch_id], ',', '"', '');
+                }
+
+                foreach ($comparison['monthly_costs_by_currency'] as $currency => $costs) {
+                    $metric = $csvFormulaSanitizer->sanitize('latest_import_monthly_cost_'.$currency);
+                    $batchSource = 'Import batch '.$comparison['after']->import_batch_id;
+                    fputcsv($handle, [$metric.'_before', number_format($costs['before'], 2, '.', ''), $batchSource], ',', '"', '');
+                    fputcsv($handle, [$metric.'_after', number_format($costs['after'], 2, '.', ''), $batchSource], ',', '"', '');
+                    fputcsv($handle, [$metric.'_delta', number_format($costs['delta'], 2, '.', ''), $batchSource], ',', '"', '');
                 }
             }
             foreach ($trend as $snapshot) {

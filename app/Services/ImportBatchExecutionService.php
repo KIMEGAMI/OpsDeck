@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Asset;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Department;
 use App\Models\Employee;
@@ -109,7 +110,7 @@ class ImportBatchExecutionService
                 ->mapWithKeys(fn ($row): array => [(int) $row => true])
                 ->all();
 
-            DB::transaction(function () use ($sourceRowsStream, $importBatch, $mapping, $columnMap, $headerIndexes, &$counts, &$seenKeys, $acceptedCandidateHashes, $excludedRows, $organization): void {
+            DB::transaction(function () use ($sourceRowsStream, $importBatch, $mapping, $columnMap, $headerIndexes, &$counts, &$seenKeys, $acceptedCandidateHashes, $excludedRows, $organization, $expectedStatus): void {
                 Organization::query()->whereKey($organization->id)->lockForUpdate()->firstOrFail();
 
                 foreach ($this->stagedSourceRows($sourceRowsStream) as $sourceRow) {
@@ -164,8 +165,29 @@ class ImportBatchExecutionService
                 app(ImpactReportMetricsService::class)->capture($organization, $importBatch, 'import_after');
                 if ($counts['inserted'] + $counts['updated'] > 0) {
                     app(ProductEventRecorder::class)->recordOnce('first_import_completed', $organization);
+                    app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
                 }
                 app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $importBatch->executed_by ?? $user->id,
+                    'entity_type' => ImportBatch::class,
+                    'entity_id' => $importBatch->id,
+                    'action' => AuditLog::ImportBatchExecuted,
+                    'before_json' => [
+                        'status' => $expectedStatus,
+                        'source_type' => $importBatch->source_type,
+                        'target_type' => $mapping->target_type,
+                        'total_rows' => $importBatch->total_rows,
+                    ],
+                    'after_json' => [
+                        'status' => 'completed',
+                        'inserted_rows' => $counts['inserted'],
+                        'updated_rows' => $counts['updated'],
+                        'skipped_rows' => $counts['skipped'],
+                        'error_rows' => $counts['error'],
+                    ],
+                ]);
             });
         } catch (Throwable $exception) {
             ImportBatch::query()->whereKey($importBatch->id)->where('status', 'executing')->update([

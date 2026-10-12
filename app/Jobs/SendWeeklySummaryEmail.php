@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Mail\ResendIdempotencyConflictException;
 use App\Mail\WeeklySummaryMail;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -9,6 +10,7 @@ use App\Models\User;
 use App\Models\UserNotificationPreference;
 use App\Models\WeeklySummaryDelivery;
 use App\Services\PlanFeatureService;
+use App\Services\ResendIdempotencyWindow;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\QueryException;
@@ -23,6 +25,12 @@ class SendWeeklySummaryEmail implements ShouldBeUnique, ShouldQueue
     use Queueable, SerializesModels;
 
     public int $tries = 3;
+
+    /** @return list<int> */
+    public function backoff(): array
+    {
+        return config('mail.delivery_job_backoff_seconds');
+    }
 
     public function uniqueId(): string
     {
@@ -59,6 +67,11 @@ class SendWeeklySummaryEmail implements ShouldBeUnique, ShouldQueue
         if ($delivery->sent_at !== null) {
             return;
         }
+        $useResend = (bool) config('mail.mailers.resend_idempotent.enabled');
+        if ($useResend && ! app(ResendIdempotencyWindow::class)->startOrRequireManualReview($delivery)) {
+            return;
+        }
+
         $summary = $this->summary;
         $summary['renewal_alerts_enabled'] = app(PlanFeatureService::class)->isAvailable($organization, 'renewal_alerts');
         $summary['security_alerts_enabled'] = app(PlanFeatureService::class)->isAvailable($organization, 'security_controls');
@@ -70,8 +83,16 @@ class SendWeeklySummaryEmail implements ShouldBeUnique, ShouldQueue
             $summary['mfa_unknown'] = 0;
         }
         try {
-            Mail::to($user->email)->send(new WeeklySummaryMail($organization, $summary));
-            $delivery->update(['sent_at' => now(), 'failed_at' => null]);
+            $idempotencyKey = $useResend ? 'weekly-summary-delivery/'.$delivery->getKey() : null;
+            $mail = new WeeklySummaryMail($organization, $summary, $idempotencyKey);
+            if ($useResend) {
+                Mail::mailer('resend_idempotent')->to($user->email)->send($mail);
+            } else {
+                Mail::to($user->email)->send($mail);
+            }
+            $delivery->update(['sent_at' => now(), 'failed_at' => null, 'manual_review_at' => null]);
+        } catch (ResendIdempotencyConflictException) {
+            $delivery->update(['failed_at' => now(), 'manual_review_at' => now()]);
         } catch (Throwable $exception) {
             $delivery->update(['failed_at' => now()]);
 

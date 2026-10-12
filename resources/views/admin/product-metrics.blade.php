@@ -49,7 +49,7 @@
             @forelse ($supportStatuses as $status)<tr><td>{{ $status->status }}</td><td>{{ $status->request_count }}</td></tr>@empty<tr><td colspan="2">問い合わせはありません。</td></tr>@endforelse
         </tbody></table>
         <h2>メール配信</h2>
-        <dl><dt>お知らせ成功率</dt><dd>{{ $deliveryRates['announcement'] }}%</dd><dt>週次サマリー成功率</dt><dd>{{ $deliveryRates['weekly_summary'] }}%</dd><dt>お知らせ失敗</dt><dd>{{ $deliveryFailures['announcement'] }}</dd><dt>週次サマリー失敗</dt><dd>{{ $deliveryFailures['weekly_summary'] }}</dd></dl>
+        <dl><dt>お知らせ成功率</dt><dd>{{ $deliveryRates['announcement'] }}%</dd><dt>週次サマリー成功率</dt><dd>{{ $deliveryRates['weekly_summary'] }}%</dd><dt>お知らせ失敗</dt><dd>{{ $deliveryFailures['announcement'] }}</dd><dt>お知らせ手動確認</dt><dd>{{ $deliveryFailures['announcement_manual_review'] }}</dd><dt>週次サマリー失敗</dt><dd>{{ $deliveryFailures['weekly_summary'] }}</dd><dt>週次サマリー手動確認</dt><dd>{{ $deliveryFailures['weekly_summary_manual_review'] }}</dd></dl>
         <h2>問い合わせ</h2>
         <table><thead><tr><th>カテゴリ</th><th>件数</th></tr></thead><tbody>
             @forelse ($supportCategories as $category)<tr><td>{{ $category->category }}</td><td>{{ $category->request_count }}</td></tr>@empty<tr><td colspan="2">問い合わせはありません。</td></tr>@endforelse

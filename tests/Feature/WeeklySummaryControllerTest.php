@@ -19,8 +19,10 @@ use App\Services\ContractRenewalWindow;
 use App\Services\WeeklySummaryBuilder;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\UniqueLock;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -82,13 +84,81 @@ class WeeklySummaryControllerTest extends TestCase
     {
         Mail::fake();
         [$user, $organization] = $this->member();
-        $job = new SendWeeklySummaryEmail($user->id, $organization->id, ['renewals' => 1], now()->startOfWeek()->toDateString());
+        $job = new SendWeeklySummaryEmail(
+            $user->id,
+            $organization->id,
+            app(WeeklySummaryBuilder::class)->build($organization->id),
+            now()->startOfWeek()->toDateString(),
+        );
         $this->assertDatabaseMissing('weekly_summary_deliveries', ['user_id' => $user->id, 'organization_id' => $organization->id]);
         $job->handle();
         $job->handle();
 
         Mail::assertSentTimes(WeeklySummaryMail::class, 1);
         $this->assertDatabaseHas('weekly_summary_deliveries', ['user_id' => $user->id, 'organization_id' => $organization->id]);
+    }
+
+    public function test_weekly_summary_email_job_uses_configured_retry_backoff(): void
+    {
+        config(['mail.delivery_job_backoff_seconds' => [19, 89]]);
+
+        $job = new SendWeeklySummaryEmail(1, 1, [], now()->startOfWeek()->toDateString());
+
+        $this->assertSame([19, 89], $job->backoff());
+    }
+
+    public function test_weekly_summary_uses_delivery_id_as_resend_idempotency_key(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['https://api.resend.com/emails' => Http::response(['id' => 'resend-weekly-id'])]);
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => Str::random(48),
+        ]);
+        [$user, $organization] = $this->member();
+        $job = new SendWeeklySummaryEmail(
+            $user->id,
+            $organization->id,
+            app(WeeklySummaryBuilder::class)->build($organization->id),
+            now()->startOfWeek()->toDateString(),
+        );
+
+        $job->handle();
+
+        $delivery = WeeklySummaryDelivery::query()->where('user_id', $user->id)->where('organization_id', $organization->id)->firstOrFail();
+        Http::assertSent(static fn (Request $request): bool => $request->hasHeader('Idempotency-Key', 'weekly-summary-delivery/'.$delivery->id));
+        $this->assertNotNull($delivery->sent_at);
+    }
+
+    public function test_resend_payload_conflict_sends_weekly_summary_to_manual_review_without_automatic_retry(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['https://api.resend.com/emails' => Http::response([
+            'name' => 'invalid_idempotent_request',
+            'message' => 'Payload changed for weekly-summary@example.test',
+        ], 409)]);
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => Str::random(48),
+        ]);
+        [$user, $organization] = $this->member();
+        $job = new SendWeeklySummaryEmail(
+            $user->id,
+            $organization->id,
+            app(WeeklySummaryBuilder::class)->build($organization->id),
+            now()->startOfWeek()->toDateString(),
+        );
+
+        $job->handle();
+
+        $delivery = WeeklySummaryDelivery::query()->where('user_id', $user->id)->where('organization_id', $organization->id)->firstOrFail();
+        $this->assertNotNull($delivery->failed_at);
+        $this->assertNotNull($delivery->manual_review_at);
+        $this->assertNull($delivery->sent_at);
+        Queue::fake();
+        $this->artisan('opsdeck:retry-weekly-summary-emails')->assertExitCode(0);
+        Queue::assertNotPushed(SendWeeklySummaryEmail::class, fn (SendWeeklySummaryEmail $job): bool => $job->userId === $user->id && $job->organizationId === $organization->id && $job->weekStart === now()->startOfWeek()->toDateString());
+        Http::assertSentCount(1);
     }
 
     public function test_weekly_summary_command_builds_one_aggregate_per_organization(): void

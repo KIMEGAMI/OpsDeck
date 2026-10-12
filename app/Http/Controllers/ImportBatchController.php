@@ -427,7 +427,24 @@ class ImportBatchController extends Controller
         $importBatch = $this->scopedBatch($this->organization($request), $importBatch);
         $this->authorize('update', $importBatch);
         abort_unless($candidate->import_batch_id === $importBatch->id, 404);
-        $candidate->update(['status' => $request->validated('status'), 'reviewed_by' => $request->user()->id, 'reviewed_at' => now()]);
+        $status = $request->validated('status');
+
+        DB::transaction(function () use ($request, $importBatch, $candidate, $status): void {
+            $lockedCandidate = ImportReviewCandidate::query()
+                ->where('import_batch_id', $importBatch->id)
+                ->lockForUpdate()
+                ->findOrFail($candidate->id);
+            $lockedCandidate->update(['status' => $status, 'reviewed_by' => $request->user()->id, 'reviewed_at' => now()]);
+
+            AuditLog::query()->create([
+                'organization_id' => $importBatch->organization_id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => ImportReviewCandidate::class,
+                'entity_id' => $lockedCandidate->id,
+                'action' => AuditLog::ImportCandidateReviewed,
+                'after_json' => ['status' => $status],
+            ]);
+        });
 
         return to_route('imports.show', $importBatch)->with('status', '重複候補の判断を保存しました。Importの自動統合は行っていません。');
     }

@@ -61,7 +61,7 @@ class OnboardingProgressService
         $hasPreviewedImport = static fn (string $targetType): bool => ImportBatch::query()
             ->where('organization_id', $organization->id)
             ->where('source_type', 'csv')
-            ->whereIn('status', ['ready', 'completed'])
+            ->whereIn('status', ['preview', 'ready', 'completed'])
             ->whereHas('mappings', static fn (Builder $query): Builder => $query
                 ->where('target_type', $targetType)
                 ->whereColumn('import_mappings.id', 'import_batches.mapping_id'))

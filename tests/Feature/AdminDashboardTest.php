@@ -18,6 +18,12 @@ use Tests\TestCase;
 
 class AdminDashboardTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+    }
+
     public function test_platform_admin_can_view_aggregate_dashboard(): void
     {
         $user = User::factory()->create(['email' => 'platform-'.Str::uuid().'@example.test']);
@@ -72,7 +78,13 @@ class AdminDashboardTest extends TestCase
         config(['opsdeck.platform_admin_emails' => [$user->email]]);
 
         $this->actingAs($user)->get(route('admin.ai-cost'))->assertOk()->assertSee('AI原価');
-        $this->actingAs($user)->get(route('admin.queue-errors'))->assertOk()->assertSee('Queue / Webhookエラー');
+        $this->actingAs($user)->get(route('admin.queue-errors'))
+            ->assertOk()
+            ->assertSee('Queue / Webhookエラー')
+            ->assertSee('php artisan queue:retry &lt;UUID&gt;', false)
+            ->assertSee('全件一括再試行は避けてください')
+            ->assertSee('メール配信の手動確認')
+            ->assertSee(route('admin.mail-delivery-reviews.index'));
     }
 
     public function test_platform_admin_can_find_an_import_failure_by_the_reference_shown_to_the_member(): void

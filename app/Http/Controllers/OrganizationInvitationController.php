@@ -105,8 +105,16 @@ class OrganizationInvitationController extends Controller
             } else {
                 $user->update(['name' => $request->string('name')->toString()]);
             }
-            OrganizationMembership::query()->updateOrCreate(['organization_id' => $organization->id, 'user_id' => $user->id], ['role' => $lockedInvitation->role, 'status' => MembershipStatus::Active, 'invited_at' => $lockedInvitation->created_at, 'joined_at' => now()]);
+            $membership = OrganizationMembership::query()->updateOrCreate(['organization_id' => $organization->id, 'user_id' => $user->id], ['role' => $lockedInvitation->role, 'status' => MembershipStatus::Active, 'invited_at' => $lockedInvitation->created_at, 'joined_at' => now()]);
             $lockedInvitation->update(['accepted_at' => now()]);
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $user->id,
+                'entity_type' => OrganizationMembership::class,
+                'entity_id' => $membership->id,
+                'action' => AuditLog::OrganizationMemberJoined,
+                'after_json' => ['role' => $membership->role->value, 'status' => $membership->status->value],
+            ]);
             app(ProductEventRecorder::class)->record('member_joined', $organization);
         });
         $request->session()->regenerate();

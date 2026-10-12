@@ -7,6 +7,7 @@ use App\Enums\MembershipStatus;
 use App\Jobs\PrepareGoogleSheetDiffPreview;
 use App\Jobs\PrepareImportMappingAnalysis;
 use App\Jobs\PrepareImportPreview;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\GoogleSheetConnection;
 use App\Models\ImportBatch;
@@ -75,6 +76,35 @@ class GoogleSheetConnectionTest extends TestCase
         $this->assertSame('access-token', $connection->access_token);
         $this->assertSame('refresh-token', $connection->refresh_token);
         $this->assertNotSame('access-token', $connection->getRawOriginal('access_token'));
+    }
+
+    public function test_operator_can_disconnect_google_sheets_without_logging_oauth_tokens(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        $connection = GoogleSheetConnection::query()->create([
+            'organization_id' => $organization->id,
+            'connected_by' => $user->id,
+            'access_token' => 'private-access-token',
+            'refresh_token' => 'private-refresh-token',
+        ]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('google-sheets.disconnect'))
+            ->assertRedirect(route('google-sheets.connection'));
+
+        $this->assertNull($connection->refresh()->access_token);
+        $this->assertNull($connection->refresh()->refresh_token);
+        $this->assertNotNull($connection->revoked_at);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)
+            ->where('entity_id', $connection->id)
+            ->where('action', AuditLog::GoogleSheetDisconnected)
+            ->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['changed_fields' => ['access_token', 'refresh_token', 'revoked_at']], $auditLog->after_json);
+        $this->assertStringNotContainsString('private-access-token', json_encode($auditLog->toArray()));
+        $this->assertStringNotContainsString('private-refresh-token', json_encode($auditLog->toArray()));
     }
 
     public function test_operator_can_select_a_spreadsheet_for_preview(): void

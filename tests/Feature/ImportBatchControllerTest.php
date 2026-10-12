@@ -476,12 +476,20 @@ class ImportBatchControllerTest extends TestCase
             'organization_id' => $organization->id,
             'event_key' => 'first_import_completed',
         ]);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
 
         $successfulBatch = $runImport('valid-employees', "name,email\nValid,valid-".Str::uuid().'@example.test'."\n");
         $this->assertSame(1, $successfulBatch->inserted_rows);
         $this->assertDatabaseHas('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_import_completed',
+        ]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
         ]);
     }
 

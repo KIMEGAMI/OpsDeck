@@ -38,6 +38,8 @@
             @endif
         @endif
         <h2>Queue</h2>
+        <p>失敗ジョブはここから自動再実行しません。サーバーログで原因を確認し、外部サービスでの副作用が未完了で再実行しても重複しないと確認できたジョブだけ、サーバーのCLIで <code>php artisan queue:retry &lt;UUID&gt;</code> のように1件ずつ再試行してください。全件一括再試行は避けてください。</p>
+        <p>メールの配信結果が不明な場合はQueueから再試行せず、メール事業者の配信履歴を確認してください。Resendの冪等性確認待ちは<a href="{{ route('admin.mail-delivery-reviews.index') }}">メール配信の手動確認</a>で確認できます。</p>
         <ul>
             @forelse ($failedJobs as $job)
                 <li>{{ $job->uuid }} / {{ $job->queue }} / {{ $job->failed_at }}</li>

@@ -32,6 +32,11 @@ class QuestionnaireAnswerControllerTest extends TestCase
         ])->assertRedirect();
 
         $this->assertDatabaseHas('questionnaire_answers', ['question_id' => $question->id, 'source_type' => 'FACT', 'approved_by' => null]);
+        $answer = QuestionnaireAnswer::query()->where('question_id', $question->id)->firstOrFail();
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $answer->id)->where('action', AuditLog::QuestionnaireAnswerCreated)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['changed_fields' => ['question_id', 'answer_text', 'answer_status', 'source_type']], $auditLog->after_json);
+        $this->assertStringNotContainsString('多要素認証を有効にしています。', json_encode($auditLog->toArray()));
     }
 
     public function test_answer_registration_returns_404_for_a_question_in_another_organization(): void
@@ -84,6 +89,9 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $answer->refresh();
         $this->assertSame('確認済みの回答案', $answer->answer_text);
         $this->assertNull($answer->approved_at);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $answer->id)->where('action', AuditLog::QuestionnaireAnswerUpdated)->sole();
+        $this->assertSame(['changed_fields' => ['answer_text', 'source_type']], $auditLog->after_json);
+        $this->assertStringNotContainsString('確認済みの回答案', json_encode($auditLog->toArray()));
     }
 
     public function test_viewer_cannot_update_an_answer(): void
@@ -102,6 +110,7 @@ class QuestionnaireAnswerControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertNotSame('閲覧者の変更', $answer->refresh()->answer_text);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'entity_id' => $answer->id, 'action' => AuditLog::QuestionnaireAnswerUpdated]);
     }
 
     public function test_operator_cannot_update_an_answer_in_another_organization(): void

@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Jobs\SendOrganizationInvitationEmail;
 use App\Mail\OrganizationInvitationMail;
+use App\Mail\ResendIdempotentTransport;
 use App\Models\AuditLog;
 use App\Models\ImportBatch;
 use App\Models\OnboardingStep;
@@ -15,6 +16,7 @@ use App\Models\OrganizationMembership;
 use App\Models\ProductEvent;
 use App\Models\SaasService;
 use App\Models\User;
+use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
@@ -47,7 +49,9 @@ class OrganizationInvitationTest extends TestCase
         $job = Queue::pushed(SendOrganizationInvitationEmail::class)->sole();
         $this->assertInstanceOf(ShouldBeEncrypted::class, $job);
         $job->handle();
-        Mail::assertSent(OrganizationInvitationMail::class, fn (OrganizationInvitationMail $mail): bool => $mail->hasTo($email));
+        Mail::assertSent(OrganizationInvitationMail::class, fn (OrganizationInvitationMail $mail): bool => $mail->hasTo($email)
+            && $mail->headers()->text[ResendIdempotentTransport::IDEMPOTENCY_HEADER]
+                === app(ResendIdempotencyKeyFactory::class)->forOrganizationInvitation($invitation->getKey(), $job->token));
     }
 
     public function test_owner_can_invite_multiple_members_in_the_same_organization(): void
@@ -345,9 +349,15 @@ class OrganizationInvitationTest extends TestCase
         $invitation = OrganizationInvitation::query()->create(['organization_id' => $organization->id, 'invited_by' => $owner->id, 'email' => 'new-member-'.Str::uuid().'@example.test', 'role' => MembershipRole::Viewer, 'token_hash' => hash('sha256', $token), 'expires_at' => now()->addDay()]);
         $this->get(route('invitations.show', $token))->assertOk()->assertSee($invitation->email);
         $this->post(route('invitations.accept', $token), ['name' => '招待メンバー', 'password' => 'secure-password-123', 'password_confirmation' => 'secure-password-123'])->assertRedirect(route('dashboard'));
-        $this->assertDatabaseHas('organization_memberships', ['organization_id' => $organization->id, 'role' => 'viewer', 'user_id' => User::query()->where('email', $invitation->email)->value('id')]);
+        $memberId = User::query()->where('email', $invitation->email)->value('id');
+        $this->assertDatabaseHas('organization_memberships', ['organization_id' => $organization->id, 'role' => 'viewer', 'user_id' => $memberId]);
         $this->assertNotNull($invitation->fresh()->accepted_at);
         $this->assertDatabaseHas('product_events', ['event_key' => 'member_joined', 'organization_id' => $organization->id]);
+        $membership = OrganizationMembership::query()->where('organization_id', $organization->id)->where('user_id', $memberId)->firstOrFail();
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $membership->id)->where('action', AuditLog::OrganizationMemberJoined)->sole();
+        $this->assertSame($memberId, $auditLog->actor_user_id);
+        $this->assertSame(['role' => MembershipRole::Viewer->value, 'status' => MembershipStatus::Active->value], $auditLog->after_json);
+        $this->assertStringNotContainsString($invitation->email, json_encode($auditLog->toArray()));
         $this->post(route('invitations.accept', $token), ['name' => '再利用', 'password' => 'secure-password-123', 'password_confirmation' => 'secure-password-123'])->assertStatus(410);
     }
 

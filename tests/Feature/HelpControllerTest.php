@@ -10,6 +10,18 @@ class HelpControllerTest extends TestCase
     {
         $response = $this->get(route('help.index'));
 
-        $response->assertOk()->assertSee('Help / FAQ')->assertSee('MDMやEDR')->assertSee('support@kimegami.jp')->assertSee('mailto:support@kimegami.jp')->assertSee('info@kimegami.jp')->assertSee('配信停止');
+        $response->assertOk()
+            ->assertSee('Help / FAQ')
+            ->assertSee('MDMやEDR')
+            ->assertSee('初めて使うとき')
+            ->assertSee(route('onboarding.index'))
+            ->assertSee(route('imports.create'))
+            ->assertSee('業務データへのImport実行はPremiumプラン')
+            ->assertSee('概算は実際の削減額ではなく')
+            ->assertSee(route('costs.dashboard'))
+            ->assertSee('support@kimegami.jp')
+            ->assertSee('mailto:support@kimegami.jp')
+            ->assertSee('info@kimegami.jp')
+            ->assertSee('配信停止');
     }
 }

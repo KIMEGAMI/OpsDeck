@@ -65,6 +65,13 @@ return [
             'transport' => 'resend',
         ],
 
+        'resend_idempotent' => [
+            'transport' => 'resend_idempotent',
+            'key' => env('RESEND_API_KEY'),
+            'enabled' => env('RESEND_IDEMPOTENT_MAIL_ENABLED', false),
+            'timeout' => env('RESEND_API_TIMEOUT', 10),
+        ],
+
         'sendmail' => [
             'transport' => 'sendmail',
             'path' => env('MAIL_SENDMAIL_PATH', '/usr/sbin/sendmail -bs -i'),
@@ -114,5 +121,24 @@ return [
         'address' => env('MAIL_FROM_ADDRESS', 'info@kimegami.jp'),
         'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
     ],
+
+    'resend_idempotency_window_hours' => 24,
+
+    'delivery_job_backoff_seconds' => (static function (): array {
+        $configuredSeconds = explode(',', (string) env('MAIL_DELIVERY_JOB_BACKOFF_SECONDS', '30,120'));
+        $backoff = [];
+
+        foreach ($configuredSeconds as $seconds) {
+            $parsedSeconds = filter_var(trim($seconds), FILTER_VALIDATE_INT);
+
+            if ($parsedSeconds === false || $parsedSeconds <= 0) {
+                return [];
+            }
+
+            $backoff[] = $parsedSeconds;
+        }
+
+        return $backoff;
+    })(),
 
 ];

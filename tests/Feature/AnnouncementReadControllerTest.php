@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\Announcement;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
-use App\Models\ProductEvent;
 use App\Models\User;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -61,7 +60,7 @@ class AnnouncementReadControllerTest extends TestCase
         $this->assertDatabaseMissing('announcement_reads', ['announcement_id' => $announcement->id, 'user_id' => $user->id]);
     }
 
-    public function test_marking_a_dashboard_announcement_as_read_records_one_completed_action_event(): void
+    public function test_marking_a_dashboard_announcement_as_read_does_not_count_as_a_business_action(): void
     {
         ['user' => $user, 'organization' => $organization] = $this->createOrganizationMember();
         $announcement = Announcement::query()->create(['title' => '公開済み', 'body' => '確認するお知らせ', 'published_at' => now()->subMinute()]);
@@ -72,7 +71,7 @@ class AnnouncementReadControllerTest extends TestCase
             ->assertRedirect(route('dashboard'));
 
         $this->assertDatabaseHas('announcement_reads', ['announcement_id' => $announcement->id, 'user_id' => $user->id]);
-        $this->assertDatabaseHas('product_events', [
+        $this->assertDatabaseMissing('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
@@ -82,10 +81,10 @@ class AnnouncementReadControllerTest extends TestCase
             ->post(route('announcements.read', $announcement))
             ->assertRedirect(route('dashboard'));
 
-        $this->assertSame(1, ProductEvent::query()
-            ->where('organization_id', $organization->id)
-            ->where('event_key', 'first_dashboard_action_completed')
-            ->count());
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     /** @return array{user: User, organization: Organization} */

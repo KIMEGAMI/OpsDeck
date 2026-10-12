@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Mail\OrganizationInvitationMail;
 use App\Models\OrganizationInvitation;
+use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -40,7 +41,9 @@ class SendOrganizationInvitationEmail implements ShouldBeEncrypted, ShouldBeUniq
         }
 
         try {
-            Mail::to($invitation->email)->send(new OrganizationInvitationMail($invitation, $this->token));
+            $idempotencyKey = app(ResendIdempotencyKeyFactory::class)
+                ->forOrganizationInvitation($invitation->getKey(), $this->token);
+            Mail::to($invitation->email)->send(new OrganizationInvitationMail($invitation, $this->token, $idempotencyKey));
         } catch (Throwable $exception) {
             throw new RuntimeException('Organization invitation email delivery failed: '.$exception::class);
         }

@@ -3,11 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\GoogleSheet\CallbackGoogleSheetRequest;
+use App\Models\AuditLog;
 use App\Models\GoogleSheetConnection;
 use App\Models\Organization;
 use App\Services\PlanFeatureService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
@@ -89,7 +91,22 @@ class GoogleSheetConnectionController extends Controller
         $this->authorize('manageOperationalData', $organization);
         $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->first();
         if ($connection !== null) {
-            $connection->update(['access_token' => null, 'refresh_token' => null, 'revoked_at' => now()]);
+            DB::transaction(function () use ($request, $organization, $connection): void {
+                $connection->fill(['access_token' => null, 'refresh_token' => null, 'revoked_at' => now()]);
+                $changedFields = array_keys($connection->getDirty());
+                $connection->save();
+
+                if ($changedFields !== []) {
+                    AuditLog::query()->create([
+                        'organization_id' => $organization->id,
+                        'actor_user_id' => $request->user()->id,
+                        'entity_type' => GoogleSheetConnection::class,
+                        'entity_id' => $connection->id,
+                        'action' => AuditLog::GoogleSheetDisconnected,
+                        'after_json' => ['changed_fields' => ['access_token', 'refresh_token', 'revoked_at']],
+                    ]);
+                }
+            });
         }
 
         return to_route('google-sheets.connection')->with('status', 'Google Sheets連携を解除しました。');

@@ -3,6 +3,7 @@
 use App\Http\Middleware\EnsureOrganizationMembership;
 use App\Http\Middleware\EnsurePlanFeature;
 use App\Http\Middleware\EnsurePlatformAdmin;
+use App\Http\Middleware\SecurityHeaders;
 use App\Services\ServerErrorAlertDispatcher;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
@@ -44,6 +45,9 @@ return Application::configure(basePath: dirname(__DIR__))
             ->withoutOverlapping();
     })
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trustProxies(headers: Request::HEADER_X_FORWARDED_FOR | Request::HEADER_X_FORWARDED_PROTO);
+        $middleware->append(SecurityHeaders::class);
+
         $middleware->alias([
             'organization.member' => EnsureOrganizationMembership::class,
             'plan.feature' => EnsurePlanFeature::class,

@@ -3,10 +3,12 @@
 namespace App\Jobs;
 
 use App\Mail\AnnouncementMail;
+use App\Mail\ResendIdempotencyConflictException;
 use App\Models\Announcement;
 use App\Models\AnnouncementDelivery;
 use App\Models\User;
 use App\Services\AnnouncementRecipientQuery;
+use App\Services\ResendIdempotencyWindow;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -20,6 +22,12 @@ class SendAnnouncementEmail implements ShouldBeUnique, ShouldQueue
     use Queueable, SerializesModels;
 
     public int $tries = 3;
+
+    /** @return list<int> */
+    public function backoff(): array
+    {
+        return config('mail.delivery_job_backoff_seconds');
+    }
 
     /**
      * Create a new job instance.
@@ -59,9 +67,22 @@ class SendAnnouncementEmail implements ShouldBeUnique, ShouldQueue
         if ($delivery->sent_at !== null || $delivery->suppressed_at !== null) {
             return;
         }
+        $useResend = (bool) config('mail.mailers.resend_idempotent.enabled');
+        if ($useResend && ! app(ResendIdempotencyWindow::class)->startOrRequireManualReview($delivery)) {
+            return;
+        }
+
         try {
-            Mail::to($recipient->email)->send(new AnnouncementMail($this->announcement));
-            $delivery->update(['sent_at' => now(), 'failed_at' => null]);
+            $idempotencyKey = $useResend ? 'announcement-delivery/'.$delivery->getKey() : null;
+            $mail = new AnnouncementMail($this->announcement, $idempotencyKey);
+            if ($useResend) {
+                Mail::mailer('resend_idempotent')->to($recipient->email)->send($mail);
+            } else {
+                Mail::to($recipient->email)->send($mail);
+            }
+            $delivery->update(['sent_at' => now(), 'failed_at' => null, 'manual_review_at' => null]);
+        } catch (ResendIdempotencyConflictException) {
+            $delivery->update(['failed_at' => now(), 'manual_review_at' => now()]);
         } catch (Throwable $exception) {
             $delivery->update(['failed_at' => now()]);
 

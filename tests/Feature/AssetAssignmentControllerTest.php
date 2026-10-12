@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Asset;
 use App\Models\AssetAssignment;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -59,14 +60,17 @@ class AssetAssignmentControllerTest extends TestCase
             'returned_at' => null,
             'note' => '貸出メモ',
         ]);
-        $this->assertSame(
-            '2026-09-21',
-            AssetAssignment::query()->where('asset_id', $asset->id)->firstOrFail()->assigned_at->toDateString(),
-        );
+        $assignment = AssetAssignment::query()->where('asset_id', $asset->id)->firstOrFail();
+        $this->assertSame('2026-09-21', $assignment->assigned_at->toDateString());
         $this->assertDatabaseHas('assets', [
             'id' => $asset->id,
             'status' => config('opsdeck.asset_status.assigned'),
         ]);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $assignment->id)->where('action', AuditLog::AssetAssignmentCreated)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['changed_fields' => ['asset_id', 'employee_id', 'assigned_at']], $auditLog->after_json);
+        $this->assertStringNotContainsString($employee->name, json_encode($auditLog->toArray()));
+        $this->assertStringNotContainsString('貸出メモ', json_encode($auditLog->toArray()));
     }
 
     public function test_assignment_rejects_an_asset_that_is_already_assigned(): void
@@ -163,6 +167,10 @@ class AssetAssignmentControllerTest extends TestCase
             'id' => $asset->id,
             'status' => config('opsdeck.asset_status.in_stock'),
         ]);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $assignment->id)->where('action', AuditLog::AssetAssignmentReturned)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['changed_fields' => ['returned_at', 'note']], $auditLog->after_json);
+        $this->assertStringNotContainsString('返却済み', json_encode($auditLog->toArray()));
     }
 
     public function test_assignment_returns_404_for_an_asset_in_another_organization(): void

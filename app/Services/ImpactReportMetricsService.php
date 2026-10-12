@@ -17,13 +17,17 @@ use Illuminate\Support\Collection;
 
 class ImpactReportMetricsService
 {
-    /** @return array<string, int|float> */
+    /** @return array<string, int|float|array<string, float>> */
     public function current(Organization $organization): array
     {
         $today = CarbonImmutable::today($organization->timezone);
         $contracts = Contract::query()->where('organization_id', $organization->id)->whereIn('status', ['active', 'pending_cancel'])->get();
         $monthlyCalculator = app(ContractMonthlyCostCalculator::class);
-        $monthlyCents = $monthlyCalculator->monthlyTotalInCents($contracts, 'JPY');
+        $monthlyCostsByCurrency = [];
+        foreach ($monthlyCalculator->monthlyTotalsInCents($contracts) as $currency => $monthlyCents) {
+            $monthlyCostsByCurrency[$currency] = $monthlyCalculator->currencyUnitsFromCents($monthlyCents);
+        }
+        ksort($monthlyCostsByCurrency);
         $renewalWindow = app(ContractRenewalWindow::class);
 
         $metrics = [
@@ -33,7 +37,8 @@ class ImpactReportMetricsService
             'evidence_expired' => Evidence::query()->where('organization_id', $organization->id)->whereNotNull('valid_until')->whereDate('valid_until', '<', $today)->count(),
             'security_open' => SecurityControl::query()->where('organization_id', $organization->id)->whereIn('status', ['partial', 'not_implemented', 'unknown'])->count(),
             'renewals_30_days' => $contracts->filter(fn (Contract $contract): bool => $renewalWindow->dateWithin($contract, $today, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)) !== null)->count(),
-            'monthly_jpy' => $monthlyCalculator->currencyUnitsFromCents($monthlyCents),
+            'monthly_costs_by_currency' => $monthlyCostsByCurrency,
+            'monthly_jpy' => $monthlyCostsByCurrency['JPY'] ?? 0.0,
             'import_errors' => (int) ImportBatch::query()->where('organization_id', $organization->id)->whereNull('errors_reviewed_at')->where('status', '!=', 'failed')->sum('error_rows'),
             'import_failed_batches' => (int) ImportBatch::query()->where('organization_id', $organization->id)->whereNull('errors_reviewed_at')->where('status', 'failed')->count(),
             'questionnaire_pending' => QuestionnaireAnswer::query()->where('answer_status', '!=', 'approved')->whereHas('question.questionnaire', fn ($query) => $query->where('organization_id', $organization->id))->count(),
@@ -84,6 +89,7 @@ class ImpactReportMetricsService
             ->where('stage', 'import_after')
             ->whereHas('importBatch', fn ($query) => $query->where('status', 'completed'))
             ->latest('captured_at')
+            ->orderByDesc('id')
             ->first();
 
         if ($after === null) {
@@ -100,7 +106,47 @@ class ImpactReportMetricsService
             return null;
         }
 
-        return ['before' => $before, 'after' => $after];
+        $beforeCosts = $this->monthlyCostsByCurrency($before);
+        $afterCosts = $this->monthlyCostsByCurrency($after);
+        $currencies = array_unique(array_merge(array_keys($beforeCosts), array_keys($afterCosts)));
+        sort($currencies, SORT_STRING);
+        $costComparison = [];
+
+        foreach ($currencies as $currency) {
+            $beforeAmount = $beforeCosts[$currency] ?? 0.0;
+            $afterAmount = $afterCosts[$currency] ?? 0.0;
+            $costComparison[$currency] = [
+                'before' => $beforeAmount,
+                'after' => $afterAmount,
+                'delta' => $afterAmount - $beforeAmount,
+            ];
+        }
+
+        return ['before' => $before, 'after' => $after, 'monthly_costs_by_currency' => $costComparison];
+    }
+
+    /** @return array<string, float> */
+    private function monthlyCostsByCurrency(ImpactMetricSnapshot $snapshot): array
+    {
+        if (array_key_exists('monthly_costs_by_currency', $snapshot->metrics_json)
+            && is_array($snapshot->metrics_json['monthly_costs_by_currency'])) {
+            $monthlyCosts = [];
+
+            foreach ($snapshot->metrics_json['monthly_costs_by_currency'] as $currency => $amount) {
+                if (is_string($currency) && (is_int($amount) || is_float($amount) || (is_string($amount) && is_numeric($amount)))) {
+                    $monthlyCosts[$currency] = (float) $amount;
+                }
+            }
+
+            return $monthlyCosts;
+        }
+
+        $legacyJpy = $snapshot->metrics_json['monthly_jpy'] ?? null;
+        if (is_int($legacyJpy) || is_float($legacyJpy) || (is_string($legacyJpy) && is_numeric($legacyJpy))) {
+            return ['JPY' => (float) $legacyJpy];
+        }
+
+        return [];
     }
 
     /** @return Collection<int, ImpactMetricSnapshot> */
@@ -110,6 +156,7 @@ class ImpactReportMetricsService
             ->where('organization_id', $organization->id)
             ->whereIn('stage', ['daily', 'import_after', 'rollback_after'])
             ->latest('captured_at')
+            ->orderByDesc('id')
             ->limit(max(1, (int) config('opsdeck.pagination.per_page')))
             ->get()
             ->reverse()

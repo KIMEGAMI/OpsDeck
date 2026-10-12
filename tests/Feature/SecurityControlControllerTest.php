@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\SecurityControl;
@@ -50,6 +51,12 @@ class SecurityControlControllerTest extends TestCase
             ->assertRedirect(route('security-controls.show', $control));
 
         $this->assertSame('MFA再確認', $control->refresh()->title);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $control->id)->where('action', AuditLog::SecurityControlUpdated)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame($organization->id, $auditLog->organization_id);
+        $this->assertSame($control->id, $auditLog->entity_id);
+        $this->assertSame(['changed_fields' => ['title']], $auditLog->after_json);
+        $this->assertStringNotContainsString('MFA再確認', json_encode($auditLog->toArray()));
     }
 
     public function test_viewer_cannot_update_a_security_control(): void
@@ -64,6 +71,7 @@ class SecurityControlControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('MFA管理', $control->refresh()->title);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'action' => AuditLog::SecurityControlUpdated]);
     }
 
     public function test_operator_cannot_update_a_security_control_in_another_organization(): void

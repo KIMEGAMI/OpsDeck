@@ -6,6 +6,7 @@
     <title>{{ config('app.name') }}</title>
     <style>
         :root { color-scheme: light; font-family: system-ui, sans-serif; background: #f4f7fb; color: #172033; }
+        :focus-visible { outline: 3px solid #005f73; outline-offset: 2px; }
         body { margin: 0; }
         header { background: #102a43; color: #ffffff; padding: 1rem 2rem; }
         main { max-width: 72rem; margin: 2rem auto; padding: 0 1rem; }
@@ -22,11 +23,12 @@
         .nav-section { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .75rem; }
         .nav-section-label { color: #9fb3c8; font-size: .75rem; font-weight: 700; }
         .app-navigation a { color: #ffffff; font-size: .9rem; text-decoration: none; padding: .25rem .4rem; border-radius: .25rem; }
-        .app-navigation a:hover, .app-navigation a:focus-visible, .app-navigation a.is-active { background: #486581; outline: none; }
+        .app-navigation a:hover, .app-navigation a:focus-visible, .app-navigation a.is-active { background: #486581; }
+        .app-navigation a:focus-visible { outline-color: #f6c945; }
         .nav-section-admin { margin-left: auto; }
         .dashboard-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .75rem; margin: 1.25rem 0; }
         .metric-card { display: block; background: #f7fafc; border: 1px solid #d9e2ec; border-radius: .45rem; padding: 1rem; text-decoration: none; color: #172033; }
-        .metric-card:hover, .metric-card:focus-visible { border-color: #005f73; box-shadow: 0 0 0 2px #005f7333; outline: none; }
+        .metric-card:hover, .metric-card:focus-visible { border-color: #005f73; box-shadow: 0 0 0 2px #005f7333; }
         .metric-label { display: block; color: #486581; font-size: .82rem; font-weight: 700; }
         .metric-value { display: block; color: #102a43; font-size: 1.65rem; line-height: 1.2; margin-top: .35rem; }
         .dashboard-columns { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(16rem, .65fr); gap: 1rem; margin-top: 1rem; }

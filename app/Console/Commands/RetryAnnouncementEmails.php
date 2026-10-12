@@ -19,7 +19,7 @@ class RetryAnnouncementEmails extends Command
     {
         $limit = max(1, min(1000, (int) $this->option('limit')));
         $queued = 0;
-        AnnouncementDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->with('announcement')->latest('failed_at')->limit($limit)->get()->each(function (AnnouncementDelivery $delivery) use (&$queued): void {
+        AnnouncementDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereNull('manual_review_at')->with('announcement')->latest('failed_at')->limit($limit)->get()->each(function (AnnouncementDelivery $delivery) use (&$queued): void {
             SendAnnouncementEmail::dispatch($delivery->announcement, (int) $delivery->user_id);
             $queued++;
         });

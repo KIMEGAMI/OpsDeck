@@ -4,6 +4,7 @@ namespace Tests\Feature\Feature\Employee;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -26,6 +27,10 @@ class EmployeeAuthorizationTest extends TestCase
             ->assertSessionHasErrors('plan_limit');
 
         $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_operator_can_create_employee_only_in_current_organization(): void
@@ -45,6 +50,10 @@ class EmployeeAuthorizationTest extends TestCase
             'organization_id' => $organization->id,
             'name' => '田中 太郎',
         ]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_create_an_employee(): void
@@ -58,6 +67,10 @@ class EmployeeAuthorizationTest extends TestCase
             ->assertForbidden();
 
         $this->assertDatabaseMissing('employees', ['organization_id' => $organization->id, 'name' => '閲覧者からの登録']);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_update_an_employee(): void
@@ -76,6 +89,36 @@ class EmployeeAuthorizationTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('変更前の社員', $employee->refresh()->name);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'action' => AuditLog::EmployeeUpdated]);
+    }
+
+    public function test_employee_update_records_changed_field_names_without_personal_data(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $employee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => '変更前の社員',
+            'email' => 'private@example.test',
+            'employment_status' => 'active',
+        ]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('employees.update', $employee), [
+                'name' => '個人情報の変更値',
+                'email' => 'private-new@example.test',
+                'employment_status' => 'active',
+            ])
+            ->assertRedirect();
+
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $employee->id)->where('action', AuditLog::EmployeeUpdated)->sole();
+
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame($organization->id, $auditLog->organization_id);
+        $this->assertSame($employee->id, $auditLog->entity_id);
+        $this->assertSame(['changed_fields' => ['name', 'email']], $auditLog->after_json);
+        $this->assertStringNotContainsString('個人情報の変更値', json_encode($auditLog->toArray()));
+        $this->assertStringNotContainsString('private-new@example.test', json_encode($auditLog->toArray()));
     }
 
     public function test_operator_cannot_update_an_employee_in_another_organization(): void

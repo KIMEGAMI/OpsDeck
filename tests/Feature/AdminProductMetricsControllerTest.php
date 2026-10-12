@@ -178,6 +178,8 @@ class AdminProductMetricsControllerTest extends TestCase
         $this->assertStringContainsString('organizations_at_plan_limit', $response->streamedContent());
         $this->assertStringContainsString('plan_limit_warning_percentage', $response->streamedContent());
         $this->assertStringContainsString('activation_eligible_organizations', $response->streamedContent());
+        $this->assertStringContainsString('announcement_delivery_manual_review', $response->streamedContent());
+        $this->assertStringContainsString('weekly_summary_delivery_manual_review', $response->streamedContent());
     }
 
     public function test_platform_admin_can_view_invitation_conversion_metrics(): void

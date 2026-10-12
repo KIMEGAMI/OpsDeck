@@ -12,8 +12,10 @@ use App\Models\User;
 use App\Models\UserNotificationPreference;
 use App\Services\AnnouncementRecipientQuery;
 use Illuminate\Bus\UniqueLock;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -26,6 +28,15 @@ class AdminAnnouncementControllerTest extends TestCase
     {
         parent::setUp();
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+    }
+
+    public function test_announcement_email_job_uses_configured_retry_backoff(): void
+    {
+        config(['mail.delivery_job_backoff_seconds' => [17, 83]]);
+
+        $job = new SendAnnouncementEmail(new Announcement, 1);
+
+        $this->assertSame([17, 83], $job->backoff());
     }
 
     public function test_platform_admin_can_publish_announcement_and_queue_one_email_per_user(): void
@@ -94,7 +105,7 @@ class AdminAnnouncementControllerTest extends TestCase
         AnnouncementDelivery::query()->create(['announcement_id' => $announcement->id, 'user_id' => User::factory()->create()->id, 'failed_at' => now()]);
         AnnouncementDelivery::query()->create(['announcement_id' => $announcement->id, 'user_id' => User::factory()->create()->id, 'failed_at' => now(), 'suppressed_at' => now()]);
 
-        $this->actingAs($admin)->get(route('admin.announcements.index'))->assertOk()->assertSee('送信済み')->assertSee('失敗・停止済み')->assertSee('停止 1')->assertSee('配信状況')->assertSee('失敗したメールを再送しますか？')->assertSee('disabled = true');
+        $this->actingAs($admin)->get(route('admin.announcements.index'))->assertOk()->assertSee('送信済み')->assertSee('失敗・手動確認・停止')->assertSee('停止 1')->assertSee('配信状況')->assertSee('失敗したメールを再送しますか？')->assertSee('disabled = true');
     }
 
     public function test_announcement_pages_use_a_stable_order_when_creation_times_match(): void
@@ -322,6 +333,92 @@ class AdminAnnouncementControllerTest extends TestCase
 
         Mail::assertSentOnce(AnnouncementMail::class);
         $this->assertNotNull(AnnouncementDelivery::query()->where('announcement_id', $announcement->id)->where('user_id', $recipient->id)->value('sent_at'));
+    }
+
+    public function test_resend_retry_reuses_the_delivery_idempotency_key(): void
+    {
+        Http::preventStrayRequests();
+        Http::fakeSequence('https://api.resend.com/emails')
+            ->push(['message' => 'temporary failure'], 503)
+            ->push(['id' => 'resend-announcement-id']);
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => Str::random(48),
+        ]);
+        $recipient = User::factory()->create(['email' => 'resend-retry-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Resend Retry '.Str::random(6), 'slug' => 'resend-retry-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        $announcement = Announcement::query()->create(['title' => '重複送信防止', 'body' => '本文', 'published_at' => now()]);
+        $announcement->organizations()->attach($organization->id);
+        $job = new SendAnnouncementEmail($announcement, $recipient->id);
+
+        try {
+            $job->handle();
+            $this->fail('Expected the first Resend attempt to fail.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Announcement delivery failed: Symfony\\Component\\Mailer\\Exception\\TransportException', $exception->getMessage());
+        }
+        $job->handle();
+
+        $delivery = AnnouncementDelivery::query()->where('announcement_id', $announcement->id)->where('user_id', $recipient->id)->firstOrFail();
+        Http::assertSentCount(2);
+        Http::assertSent(static fn (Request $request): bool => $request->hasHeader('Idempotency-Key', 'announcement-delivery/'.$delivery->id));
+        $this->assertNotNull($delivery->fresh()->sent_at);
+    }
+
+    public function test_resend_payload_conflict_sends_announcement_to_manual_review_without_automatic_retry(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['https://api.resend.com/emails' => Http::response([
+            'name' => 'invalid_idempotent_request',
+            'message' => 'Payload changed for resend-retry@example.test',
+        ], 409)]);
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => Str::random(48),
+        ]);
+        $recipient = User::factory()->create(['email' => 'resend-conflict-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Resend Conflict '.Str::random(6), 'slug' => 'resend-conflict-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        $announcement = Announcement::query()->create(['title' => '要手動確認', 'body' => '本文', 'published_at' => now()]);
+        $announcement->organizations()->attach($organization->id);
+
+        (new SendAnnouncementEmail($announcement, $recipient->id))->handle();
+
+        $delivery = AnnouncementDelivery::query()->where('announcement_id', $announcement->id)->where('user_id', $recipient->id)->firstOrFail();
+        $this->assertNotNull($delivery->failed_at);
+        $this->assertNotNull($delivery->manual_review_at);
+        $this->assertNull($delivery->sent_at);
+        Queue::fake();
+        $this->artisan('opsdeck:retry-announcement-emails')->assertExitCode(0);
+        Queue::assertNotPushed(SendAnnouncementEmail::class, fn (SendAnnouncementEmail $job): bool => $job->announcement->is($announcement) && $job->recipientUserId === $recipient->id);
+        Http::assertSentCount(1);
+    }
+
+    public function test_expired_resend_idempotency_window_requires_manual_review(): void
+    {
+        Http::preventStrayRequests();
+        config([
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => Str::random(48),
+        ]);
+        $recipient = User::factory()->create(['email' => 'resend-expired-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Resend Expired '.Str::random(6), 'slug' => 'resend-expired-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        $announcement = Announcement::query()->create(['title' => '手動確認', 'body' => '本文', 'published_at' => now()]);
+        $announcement->organizations()->attach($organization->id);
+        $delivery = AnnouncementDelivery::query()->create([
+            'announcement_id' => $announcement->id,
+            'user_id' => $recipient->id,
+            'failed_at' => now()->subHours(25),
+            'resend_idempotency_started_at' => now()->subHours(25),
+        ]);
+
+        (new SendAnnouncementEmail($announcement, $recipient->id))->handle();
+
+        Http::assertNothingSent();
+        $this->assertNotNull($delivery->fresh()->manual_review_at);
+        $this->assertNotNull($delivery->fresh()->failed_at);
     }
 
     public function test_announcement_queue_rejects_duplicate_jobs_for_the_same_recipient(): void

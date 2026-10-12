@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\Questionnaire\StoreQuestionnaireRequest;
 use App\Http\Requests\Questionnaire\UpdateQuestionnaireRequest;
+use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\Questionnaire;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class QuestionnaireController extends Controller
@@ -42,7 +44,21 @@ class QuestionnaireController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
-        $questionnaire = Questionnaire::query()->create($request->validated() + ['organization_id' => $organization->id, 'created_by' => $request->user()->id]);
+        $attributes = $request->validated();
+        $questionnaire = DB::transaction(function () use ($request, $organization, $attributes): Questionnaire {
+            $questionnaire = Questionnaire::query()->create($attributes + ['organization_id' => $organization->id, 'created_by' => $request->user()->id]);
+
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => Questionnaire::class,
+                'entity_id' => $questionnaire->id,
+                'action' => AuditLog::QuestionnaireCreated,
+                'after_json' => ['changed_fields' => array_keys($attributes)],
+            ]);
+
+            return $questionnaire;
+        });
 
         return to_route('questionnaires.show', $questionnaire)->with('status', '質問票を登録しました。');
     }
@@ -75,9 +91,27 @@ class QuestionnaireController extends Controller
      */
     public function update(UpdateQuestionnaireRequest $request, Questionnaire $questionnaire): RedirectResponse
     {
-        $questionnaire = $this->scopedQuestionnaire($this->organization($request), $questionnaire);
+        $organization = $this->organization($request);
+        $questionnaire = $this->scopedQuestionnaire($organization, $questionnaire);
         $this->authorize('update', $questionnaire);
-        $questionnaire->update($request->validated());
+        $attributes = $request->validated();
+
+        DB::transaction(function () use ($request, $organization, $questionnaire, $attributes): void {
+            $questionnaire->fill($attributes);
+            $changedFields = array_keys($questionnaire->getDirty());
+            $questionnaire->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => Questionnaire::class,
+                    'entity_id' => $questionnaire->id,
+                    'action' => AuditLog::QuestionnaireUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('questionnaires.show', $questionnaire)->with('status', '質問票を更新しました。');
     }

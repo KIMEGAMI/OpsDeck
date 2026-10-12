@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\Evidence\StoreEvidenceRequest;
 use App\Http\Requests\Evidence\UpdateEvidenceRequest;
+use App\Models\AuditLog;
 use App\Models\Evidence;
 use App\Models\Organization;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\View\View;
 
@@ -92,9 +94,27 @@ class EvidenceController extends Controller
      */
     public function update(UpdateEvidenceRequest $request, Evidence $evidence): RedirectResponse
     {
-        $evidence = $this->scopedEvidence($this->organization($request), $evidence);
+        $organization = $this->organization($request);
+        $evidence = $this->scopedEvidence($organization, $evidence);
         $this->authorize('update', $evidence);
-        $evidence->update($request->validated());
+        $attributes = $request->validated();
+
+        DB::transaction(function () use ($request, $organization, $evidence, $attributes): void {
+            $evidence->fill($attributes);
+            $changedFields = array_keys($evidence->getDirty());
+            $evidence->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => Evidence::class,
+                    'entity_id' => $evidence->id,
+                    'action' => AuditLog::EvidenceUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('evidence.show', $evidence)->with('status', '証跡を更新しました。');
     }

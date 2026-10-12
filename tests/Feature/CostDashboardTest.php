@@ -257,10 +257,12 @@ class CostDashboardTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('impact-report.show'))
             ->assertOk()
-            ->assertSee('84.32円');
+            ->assertSee('JPY: 84.32')
+            ->assertSee('USD: 500.00');
 
         $metrics = app(ImpactReportMetricsService::class)->current($organization);
         $this->assertSame(84.32, $metrics['monthly_jpy']);
+        $this->assertSame(['JPY' => 84.32, 'USD' => 500.0], $metrics['monthly_costs_by_currency']);
 
         $monthlyCalculator = app(ContractMonthlyCostCalculator::class);
         $monthlyContract = Contract::query()->where('organization_id', $organization->id)->where('contract_name', 'Monthly service')->firstOrFail();

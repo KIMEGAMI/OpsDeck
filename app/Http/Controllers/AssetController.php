@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\Asset\StoreAssetRequest;
 use App\Http\Requests\Asset\UpdateAssetRequest;
 use App\Models\Asset;
+use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Services\PlanLimitService;
@@ -49,6 +50,7 @@ class AssetController extends Controller
             return Asset::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
         });
         app(ProductEventRecorder::class)->recordOnce('first_asset_registered', $organization);
+        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
 
         return to_route('assets.show', $asset)->with('status', '端末を登録しました。');
     }
@@ -84,7 +86,24 @@ class AssetController extends Controller
         $organization = $this->organization($request);
         $asset = $this->scopedAsset($organization, $asset);
         $this->authorize('update', $asset);
-        $asset->update($this->validatedForOrganization($request->validated(), $organization, $asset));
+        $attributes = $this->validatedForOrganization($request->validated(), $organization, $asset);
+
+        DB::transaction(function () use ($request, $organization, $asset, $attributes): void {
+            $asset->fill($attributes);
+            $changedFields = array_keys($asset->getDirty());
+            $asset->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => Asset::class,
+                    'entity_id' => $asset->id,
+                    'action' => AuditLog::AssetUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('assets.show', $asset)->with('status', '端末を更新しました。');
     }

@@ -55,7 +55,7 @@ class ImpactMetricSnapshotCommandTest extends TestCase
         $this->assertSame($first->id, $second->id);
     }
 
-    public function test_pruning_only_deletes_daily_snapshots_older_than_the_organization_local_cutoff(): void
+    public function test_pruning_only_deletes_daily_snapshots_older_than_the_configured_duration(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config(['opsdeck.impact_snapshots.daily_retention_days' => 365]);
@@ -76,18 +76,21 @@ class ImpactMetricSnapshotCommandTest extends TestCase
             'import_batch_id' => null,
             'stage' => 'daily',
             'snapshot_date' => $eligibleDate,
+            'captured_at' => now()->subDays(366),
         ]);
         $cutoffSnapshot = ImpactMetricSnapshot::factory()->create([
             'organization_id' => $organization->id,
             'import_batch_id' => null,
             'stage' => 'daily',
             'snapshot_date' => $cutoffDate,
+            'captured_at' => now()->subDays(365),
         ]);
         $currentSnapshot = ImpactMetricSnapshot::factory()->create([
             'organization_id' => $organization->id,
             'import_batch_id' => null,
             'stage' => 'daily',
             'snapshot_date' => $localToday,
+            'captured_at' => now()->subDays(364),
         ]);
         $importBatch = ImportBatch::factory()->create(['organization_id' => $organization->id]);
         $comparisonSnapshots = collect(['import_before', 'import_after', 'rollback_after'])
@@ -116,7 +119,7 @@ class ImpactMetricSnapshotCommandTest extends TestCase
         }
     }
 
-    public function test_pruning_preserves_local_cutoff_dates_for_organizations_in_different_timezones(): void
+    public function test_pruning_uses_the_same_exact_retention_duration_across_organization_timezones(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config(['opsdeck.impact_snapshots.daily_retention_days' => 365]);
@@ -138,19 +141,19 @@ class ImpactMetricSnapshotCommandTest extends TestCase
         $expiredSnapshots = collect();
         $cutoffSnapshots = collect();
         foreach ($organizations as $organization) {
-            $cutoffDate = now($organization->timezone)->subDays(365)->toDateString();
-
             $expiredSnapshots->push(ImpactMetricSnapshot::factory()->create([
                 'organization_id' => $organization->id,
                 'import_batch_id' => null,
                 'stage' => 'daily',
                 'snapshot_date' => now($organization->timezone)->subDays(366)->toDateString(),
+                'captured_at' => now()->subDays(366),
             ]));
             $cutoffSnapshots->push(ImpactMetricSnapshot::factory()->create([
                 'organization_id' => $organization->id,
                 'import_batch_id' => null,
                 'stage' => 'daily',
-                'snapshot_date' => $cutoffDate,
+                'snapshot_date' => now($organization->timezone)->subDays(365)->toDateString(),
+                'captured_at' => now()->subDays(365),
             ]));
         }
 

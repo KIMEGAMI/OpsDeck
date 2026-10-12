@@ -8,8 +8,10 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\StripeWebhookEvent;
 use App\Models\User;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -22,14 +24,17 @@ class BillingControllerTest extends TestCase
         $customerId = 'cus_'.Str::uuid();
         config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
         Http::fake([
-            'https://api.stripe.com/v1/prices/price_test' => Http::response([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
                 'active' => true,
                 'type' => 'recurring',
                 'billing_scheme' => 'per_unit',
                 'currency' => 'jpy',
                 'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
                 'recurring' => ['interval' => 'month', 'interval_count' => 1],
             ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
             'https://api.stripe.com/v1/customers' => Http::response(['id' => $customerId], 200),
             'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
         ]);
@@ -39,9 +44,14 @@ class BillingControllerTest extends TestCase
         $this->assertSame($customerId, $organization->refresh()->stripe_customer_id);
         Http::assertSent(fn ($request): bool => $request->url() === 'https://api.stripe.com/v1/checkout/sessions'
             && $request['line_items[0][price]'] === 'price_test'
+            && $request['automatic_tax[enabled]'] === true
+            && $request['billing_address_collection'] === 'required'
             && $request['client_reference_id'] === (string) $organization->id
             && $request['subscription_data[metadata][plan_code]'] === 'premium');
-        Http::assertSent(fn ($request): bool => $request->method() === 'GET' && $request->url() === 'https://api.stripe.com/v1/prices/price_test');
+        Http::assertSent(fn ($request): bool => $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')
+            && str_contains($request->url(), 'expand'));
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://api.stripe.com/v1/tax/settings');
         Http::assertSent(fn ($request): bool => ! str_contains($request->body(), 'sk_test_secret'));
     }
 
@@ -55,14 +65,17 @@ class BillingControllerTest extends TestCase
             'services.stripe.prices.premium' => 'price_test',
         ]);
         Http::fake([
-            'https://api.stripe.com/v1/prices/price_test' => Http::response([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
                 'active' => true,
                 'type' => 'recurring',
                 'billing_scheme' => 'per_unit',
                 'currency' => 'jpy',
                 'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
                 'recurring' => ['interval' => 'month', 'interval_count' => 1],
             ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
             'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_'.Str::uuid()], 200),
             'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
         ]);
@@ -77,7 +90,7 @@ class BillingControllerTest extends TestCase
             ->post(route('billing.checkout'))
             ->assertTooManyRequests();
 
-        Http::assertSentCount(3);
+        Http::assertSentCount(4);
     }
 
     public function test_checkout_retries_use_the_same_stripe_idempotency_key(): void
@@ -92,15 +105,21 @@ class BillingControllerTest extends TestCase
         ]);
         $checkoutIdempotencyKeys = [];
         Http::fake(function (ClientRequest $request) use (&$checkoutIdempotencyKeys) {
-            if ($request->url() === 'https://api.stripe.com/v1/prices/price_test') {
+            if (str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')) {
                 return Http::response([
                     'active' => true,
                     'type' => 'recurring',
                     'billing_scheme' => 'per_unit',
                     'currency' => 'jpy',
                     'unit_amount' => 9800,
+                    'tax_behavior' => 'exclusive',
+                    'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
                     'recurring' => ['interval' => 'month', 'interval_count' => 1],
                 ], 200);
+            }
+
+            if ($request->url() === 'https://api.stripe.com/v1/tax/settings') {
+                return Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200);
             }
 
             if ($request->url() === 'https://api.stripe.com/v1/checkout/sessions') {
@@ -129,7 +148,7 @@ class BillingControllerTest extends TestCase
         [$user, $organization] = $this->member(MembershipRole::Owner);
         config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
         Http::fake([
-            'https://api.stripe.com/v1/prices/price_test' => Http::response([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
                 'active' => true,
                 'type' => 'recurring',
                 'billing_scheme' => 'per_unit',
@@ -145,6 +164,197 @@ class BillingControllerTest extends TestCase
 
         $this->assertNull($organization->refresh()->stripe_customer_id);
         Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
+    }
+
+    public function test_checkout_fails_closed_when_stripe_price_is_not_tax_exclusive(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
+        Http::fake([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 9800,
+                'tax_behavior' => 'inclusive',
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'))
+            ->assertServiceUnavailable();
+
+        $this->assertNull($organization->refresh()->stripe_customer_id);
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
+    }
+
+    public function test_checkout_fails_closed_when_neither_product_nor_account_has_a_tax_code(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
+        Http::fake([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => null],
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => null]], 200),
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'))
+            ->assertServiceUnavailable();
+
+        $this->assertNull($organization->refresh()->stripe_customer_id);
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
+    }
+
+    public function test_checkout_accepts_account_default_tax_code_when_product_has_no_override(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
+        Http::fake([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => null],
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
+            'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_test'], 200),
+            'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'))
+            ->assertRedirect('https://checkout.stripe.test/session');
+    }
+
+    public function test_checkout_fails_closed_when_stripe_tax_settings_are_not_active(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
+        Http::fake([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'pending', 'defaults' => ['tax_code' => null]], 200),
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'))
+            ->assertServiceUnavailable();
+
+        $this->assertNull($organization->refresh()->stripe_customer_id);
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
+    }
+
+    public function test_checkout_connection_failure_shows_safe_recovery_instructions(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
+        Log::spy();
+        Http::fake(static function () {
+            throw new ConnectionException('PRIVATE_STRIPE_ERROR');
+        });
+
+        $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'));
+
+        $response->assertServiceUnavailable()
+            ->assertSee(route('help.recovery', 'stripe'))
+            ->assertSee('照会番号 <strong>BILLING-', false)
+            ->assertSee('Billing手続きを開始できませんでした')
+            ->assertDontSee('PRIVATE_STRIPE_ERROR')
+            ->assertDontSee('sk_test_secret');
+        preg_match('/BILLING-[A-F0-9-]{36}/', (string) $response->getContent(), $errorReferenceMatches);
+        $this->assertNotEmpty($errorReferenceMatches);
+        Log::shouldHaveReceived('warning')->once()->with('Stripe billing operation failed.', [
+            'error_reference' => $errorReferenceMatches[0],
+            'operation' => 'price_validation',
+        ]);
+        $this->assertNull($organization->refresh()->stripe_customer_id);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'billing_checkout_started',
+        ]);
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
+    }
+
+    public function test_checkout_creation_connection_failure_shows_safe_recovery_instructions(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['stripe_customer_id' => 'cus_existing_'.Str::uuid()]);
+        config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
+        Http::fake(static function (ClientRequest $request) {
+            if (str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')) {
+                return Http::response([
+                    'active' => true,
+                    'type' => 'recurring',
+                    'billing_scheme' => 'per_unit',
+                    'currency' => 'jpy',
+                    'unit_amount' => 9800,
+                    'tax_behavior' => 'exclusive',
+                    'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                    'recurring' => ['interval' => 'month', 'interval_count' => 1],
+                ], 200);
+            }
+
+            if ($request->url() === 'https://api.stripe.com/v1/tax/settings') {
+                return Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200);
+            }
+
+            throw new ConnectionException('PRIVATE_STRIPE_ERROR');
+        });
+
+        $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'));
+
+        $response->assertServiceUnavailable()
+            ->assertSee(route('help.recovery', 'stripe'))
+            ->assertDontSee('PRIVATE_STRIPE_ERROR')
+            ->assertDontSee('sk_test_secret');
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'billing_checkout_started',
+        ]);
+        Http::assertSent(fn ($request): bool => str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test'));
+    }
+
+    public function test_customer_portal_connection_failure_shows_safe_recovery_instructions(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['plan_code' => 'premium', 'billing_status' => 'active', 'stripe_customer_id' => 'cus_existing_'.Str::uuid()]);
+        config(['services.stripe.secret' => 'sk_test_secret']);
+        Http::fake(static function () {
+            throw new ConnectionException('PRIVATE_STRIPE_ERROR');
+        });
+
+        $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.portal'));
+
+        $response->assertServiceUnavailable()
+            ->assertSee(route('help.recovery', 'stripe'))
+            ->assertDontSee('PRIVATE_STRIPE_ERROR')
+            ->assertDontSee('sk_test_secret');
     }
 
     public function test_checkout_fails_closed_when_premium_price_is_not_configured(): void

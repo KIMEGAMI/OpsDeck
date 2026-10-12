@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Feature\Auth;
 
+use App\Mail\ResendIdempotentTransport;
 use App\Models\User;
+use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
@@ -12,6 +14,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
+use Symfony\Component\Mime\Email;
 use Tests\TestCase;
 
 class PasswordResetTest extends TestCase
@@ -39,8 +42,16 @@ class PasswordResetTest extends TestCase
 
         Notification::assertSentTo($user, ResetPassword::class, function (ResetPassword $notification) use ($user): bool {
             $mailMessage = $notification->toMail($user);
+            $email = new Email;
+            foreach ($mailMessage->callbacks as $callback) {
+                $callback($email);
+            }
+            $idempotencyKey = $email->getHeaders()->getHeaderBody(ResendIdempotentTransport::IDEMPOTENCY_HEADER);
 
             return $mailMessage->subject === 'OpsDeck パスワード再設定'
+                && $idempotencyKey === app(ResendIdempotencyKeyFactory::class)
+                    ->forPasswordReset($user->getAuthIdentifier(), $notification->token)
+                && ! str_contains((string) $idempotencyKey, $notification->token)
                 && $mailMessage->actionUrl === config('app.url').route('password.reset', [
                     'token' => $notification->token,
                     'email' => $user->email,

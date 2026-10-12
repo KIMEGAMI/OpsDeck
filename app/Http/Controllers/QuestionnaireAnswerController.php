@@ -12,6 +12,7 @@ use App\Models\QuestionnaireQuestion;
 use App\Services\QuestionnaireDraftService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class QuestionnaireAnswerController extends Controller
 {
@@ -23,7 +24,18 @@ class QuestionnaireAnswerController extends Controller
         $question = QuestionnaireQuestion::query()
             ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
             ->findOrFail($attributes['question_id']);
-        QuestionnaireAnswer::query()->create($attributes);
+        DB::transaction(function () use ($request, $organization, $attributes): void {
+            $answer = QuestionnaireAnswer::query()->create($attributes);
+
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => QuestionnaireAnswer::class,
+                'entity_id' => $answer->id,
+                'action' => AuditLog::QuestionnaireAnswerCreated,
+                'after_json' => ['changed_fields' => array_keys($attributes)],
+            ]);
+        });
 
         return to_route('questionnaires.show', $question->questionnaire_id)->with('status', '回答を登録しました。');
     }
@@ -35,7 +47,24 @@ class QuestionnaireAnswerController extends Controller
             ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
             ->findOrFail($questionnaireAnswer->question_id);
         $this->authorize('update', $questionnaireAnswer);
-        $questionnaireAnswer->update($request->validated());
+        $attributes = $request->validated();
+
+        DB::transaction(function () use ($request, $organization, $questionnaireAnswer, $attributes): void {
+            $questionnaireAnswer->fill($attributes);
+            $changedFields = array_keys($questionnaireAnswer->getDirty());
+            $questionnaireAnswer->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => QuestionnaireAnswer::class,
+                    'entity_id' => $questionnaireAnswer->id,
+                    'action' => AuditLog::QuestionnaireAnswerUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('questionnaires.show', $question->questionnaire_id)->with('status', '回答を更新しました。');
     }
@@ -47,14 +76,16 @@ class QuestionnaireAnswerController extends Controller
             ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
             ->findOrFail($questionnaireAnswer->question_id);
         $this->authorize('approve', $questionnaireAnswer);
-        $questionnaireAnswer->update(['approved_by' => $request->user()->id, 'approved_at' => now()]);
-        AuditLog::query()->create([
-            'organization_id' => $organization->id,
-            'actor_user_id' => $request->user()->id,
-            'entity_type' => QuestionnaireAnswer::class,
-            'entity_id' => $questionnaireAnswer->id,
-            'action' => AuditLog::QuestionnaireAnswerApproved,
-        ]);
+        DB::transaction(function () use ($request, $organization, $questionnaireAnswer): void {
+            $questionnaireAnswer->update(['approved_by' => $request->user()->id, 'approved_at' => now()]);
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => QuestionnaireAnswer::class,
+                'entity_id' => $questionnaireAnswer->id,
+                'action' => AuditLog::QuestionnaireAnswerApproved,
+            ]);
+        });
 
         return to_route('questionnaires.show', $question->questionnaire_id)->with('status', '回答を承認しました。');
     }

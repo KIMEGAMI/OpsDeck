@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Evidence;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -64,6 +65,11 @@ class EvidenceControllerTest extends TestCase
             ->assertRedirect(route('evidence.show', $evidence));
 
         $this->assertSame('更新後のMFA証跡', $evidence->refresh()->title);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $evidence->id)->where('action', AuditLog::EvidenceUpdated)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['changed_fields' => ['title', 'description']], $auditLog->after_json);
+        $this->assertStringNotContainsString('更新後のMFA証跡', json_encode($auditLog->toArray()));
+        $this->assertStringNotContainsString('最新の設定確認', json_encode($auditLog->toArray()));
     }
 
     public function test_viewer_cannot_update_evidence_metadata(): void
@@ -81,6 +87,7 @@ class EvidenceControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('閲覧専用証跡', $evidence->refresh()->title);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'entity_id' => $evidence->id, 'action' => AuditLog::EvidenceUpdated]);
     }
 
     public function test_operator_cannot_update_evidence_in_another_organization(): void

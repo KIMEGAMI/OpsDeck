@@ -17,6 +17,7 @@ use Illuminate\Console\Command;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Database\Schema\Builder;
 use Illuminate\Encryption\Encrypter;
+use Illuminate\Support\Env;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -44,6 +45,12 @@ class OpsDeckDeploymentReadiness extends Command
 
     private const STRIPE_PRICE_TIMEOUT_SECONDS = 10;
 
+    private const RESEND_DOMAIN_CONNECT_TIMEOUT_SECONDS = 3;
+
+    private const RESEND_DOMAIN_TIMEOUT_SECONDS = 10;
+
+    private const RESEND_DOMAIN_PAGE_SIZE = 100;
+
     private const CACHE_LOCK_TTL_SECONDS = 10;
 
     private const WORLD_PERMISSION_MASK = 0007;
@@ -59,6 +66,8 @@ class OpsDeckDeploymentReadiness extends Command
 
     private ?bool $sharedCacheReadiness = null;
 
+    private ?bool $resendSendingDomainReadiness = null;
+
     /** @var array<string, Builder> */
     private array $databaseSchemaBuilders = [];
 
@@ -66,6 +75,7 @@ class OpsDeckDeploymentReadiness extends Command
     {
         $this->durableQueueReadiness = null;
         $this->sharedCacheReadiness = null;
+        $this->resendSendingDomainReadiness = null;
         $missingPhpExtensions = $phpExtensionReadiness->missingExtensions();
         $this->checks = [
             'environment' => app()->environment('production') ? 'pass' : 'fail',
@@ -147,7 +157,7 @@ class OpsDeckDeploymentReadiness extends Command
                 'backup_restore_target' => 'OPSDECK_BACKUP_RESTORE_DB_*の設定値と接続疎通を確認し、接頭辞 opsdeck_restore_test_ の復元専用DBが空であること、ユーザーと接続ドライバーがアプリDBと分離・一致していることを確認する',
                 'queue' => '永続Queueの設定とjobsテーブルを確認し、QUEUE_FAILED_DRIVER=database-uuids / failed_jobsがメインDBにあること、Queue workerの稼働を確認する',
                 'cache_lock' => '共有Cacheの接続、DB利用時はcache/cache_locksテーブルを確認し、一時ロックの取得・解放ができることを確認する',
-                'mail' => 'MAIL_MAILER / MAIL_FROM_ADDRESS / OPSDECK_ADMIN_MAIL_FROM_ADDRESS とメール事業者の接続設定を確認する',
+                'mail' => 'MAIL_MAILER=resend_idempotent、RESEND_IDEMPOTENT_MAIL_ENABLED=true、送信用RESEND_API_KEY、検査時のみ使うドメイン参照用RESEND_DOMAIN_CHECK_API_KEY、正の整数のRESEND_API_TIMEOUTを設定する。MAIL_FROM_ADDRESSのドメインがResendでverifiedかつsending=enabledであること、送信元アドレスとMAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する',
                 'failure_alert' => 'OPSDECK_PLATFORM_ADMIN_EMAILSに有効な管理者メールを設定し、共有Cacheとメール送信設定を確認する',
                 'stripe' => '本番用STRIPE_SECRET / STRIPE_PRICE_PREMIUM / STRIPE_WEBHOOK_SECRETを設定し、Stripe上のPremium Priceが有効なJPY月額価格であることを確認する',
                 'commercial_information' => 'OPSDECK_SELLER_NAME / OPSDECK_SELLER_ADDRESS / OPSDECK_SELLER_PHONE / OPSDECK_SELLER_REPRESENTATIVE に正確な販売者情報を設定する',
@@ -800,7 +810,103 @@ class OpsDeckDeploymentReadiness extends Command
             && filter_var($fromAddress, FILTER_VALIDATE_EMAIL) !== false
             && is_string($adminFromAddress)
             && filter_var($adminFromAddress, FILTER_VALIDATE_EMAIL) !== false
-            && $this->hasConfiguredMailTransport((string) config('mail.default'));
+            && $this->hasConfiguredMailDeliveryBackoff()
+            && config('mail.default') === 'resend_idempotent'
+            && $this->hasConfiguredMailTransport('resend_idempotent')
+            && $this->hasConfiguredIdempotentResendTransport()
+            && $this->hasVerifiedResendSendingDomain();
+    }
+
+    private function hasVerifiedResendSendingDomain(): bool
+    {
+        if ($this->resendSendingDomainReadiness !== null) {
+            return $this->resendSendingDomainReadiness;
+        }
+
+        $fromAddress = config('mail.from.address');
+        $apiKey = Env::get('RESEND_DOMAIN_CHECK_API_KEY');
+        if (! is_string($fromAddress) || ! is_string($apiKey) || trim($apiKey) === '') {
+            return $this->resendSendingDomainReadiness = false;
+        }
+
+        $senderDomain = strtolower(substr(strrchr($fromAddress, '@') ?: '', 1));
+        if ($senderDomain === '') {
+            return $this->resendSendingDomainReadiness = false;
+        }
+
+        $after = null;
+        do {
+            $parameters = ['limit' => self::RESEND_DOMAIN_PAGE_SIZE];
+            if ($after !== null) {
+                $parameters['after'] = $after;
+            }
+
+            try {
+                $response = Http::withToken($apiKey)
+                    ->connectTimeout(self::RESEND_DOMAIN_CONNECT_TIMEOUT_SECONDS)
+                    ->timeout(self::RESEND_DOMAIN_TIMEOUT_SECONDS)
+                    ->get('https://api.resend.com/domains', $parameters);
+            } catch (Throwable) {
+                return $this->resendSendingDomainReadiness = false;
+            }
+
+            $domains = $response->json('data');
+            if (! $response->successful() || ! is_array($domains)) {
+                return $this->resendSendingDomainReadiness = false;
+            }
+
+            foreach ($domains as $domain) {
+                if (! is_array($domain) || ! is_string($domain['name'] ?? null)
+                    || strtolower($domain['name']) !== $senderDomain) {
+                    continue;
+                }
+
+                return $this->resendSendingDomainReadiness = ($domain['status'] ?? null) === 'verified'
+                    && is_array($domain['capabilities'] ?? null)
+                    && ($domain['capabilities']['sending'] ?? null) === 'enabled';
+            }
+
+            if ($response->json('has_more') !== true) {
+                return $this->resendSendingDomainReadiness = false;
+            }
+
+            $lastDomain = end($domains);
+            $lastDomainId = is_array($lastDomain) ? ($lastDomain['id'] ?? null) : null;
+            if (! is_string($lastDomainId) || $lastDomainId === '' || $lastDomainId === $after) {
+                return $this->resendSendingDomainReadiness = false;
+            }
+
+            $after = $lastDomainId;
+        } while (true);
+    }
+
+    private function hasConfiguredMailDeliveryBackoff(): bool
+    {
+        $backoff = config('mail.delivery_job_backoff_seconds');
+
+        if (! is_array($backoff) || $backoff === [] || ! array_is_list($backoff)) {
+            return false;
+        }
+
+        foreach ($backoff as $seconds) {
+            if (! $this->isPositiveInteger($seconds)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function hasConfiguredIdempotentResendTransport(): bool
+    {
+        $mailer = config('mail.mailers.resend_idempotent');
+
+        return (bool) config('mail.mailers.resend_idempotent.enabled')
+            && is_array($mailer)
+            && ($mailer['transport'] ?? null) === 'resend_idempotent'
+            && is_string($mailer['key'] ?? null)
+            && trim($mailer['key']) !== ''
+            && $this->isPositiveInteger($mailer['timeout'] ?? null);
     }
 
     /** @param array<string, true> $visitedMailers */
@@ -824,6 +930,7 @@ class OpsDeckDeploymentReadiness extends Command
             'ses-v2' => $this->hasSesMailConfiguration(SesV2Client::class),
             'postmark' => filled(config('services.postmark.key')),
             'resend' => filled(config('services.resend.key')),
+            'resend_idempotent' => $this->hasConfiguredIdempotentResendTransport(),
             'failover', 'roundrobin' => $this->hasConfiguredChildMailers($mailer, $visitedMailers),
             default => false,
         };
@@ -901,20 +1008,83 @@ class OpsDeckDeploymentReadiness extends Command
             $stripePrice = Http::withBasicAuth($secret, '')
                 ->connectTimeout(self::STRIPE_PRICE_CONNECT_TIMEOUT_SECONDS)
                 ->timeout(self::STRIPE_PRICE_TIMEOUT_SECONDS)
-                ->get('https://api.stripe.com/v1/prices/'.rawurlencode($price));
+                ->get('https://api.stripe.com/v1/prices/'.rawurlencode($price), ['expand[]' => 'product']);
         } catch (Throwable) {
             return false;
         }
 
-        return $stripePrice->successful()
+        $priceIsReady = $stripePrice->successful()
             && $stripePrice->json('id') === $price
             && $stripePrice->json('active') === true
             && $stripePrice->json('type') === 'recurring'
             && $stripePrice->json('billing_scheme') === 'per_unit'
             && $stripePrice->json('currency') === 'jpy'
             && $stripePrice->json('unit_amount') === (int) config('opsdeck.plans.premium.monthly_price_jpy')
+            && $stripePrice->json('tax_behavior') === 'exclusive'
             && $stripePrice->json('recurring.interval') === 'month'
             && (int) $stripePrice->json('recurring.interval_count') === 1;
+
+        if (! $priceIsReady) {
+            return false;
+        }
+
+        try {
+            $taxSettings = Http::withBasicAuth($secret, '')
+                ->connectTimeout(self::STRIPE_PRICE_CONNECT_TIMEOUT_SECONDS)
+                ->timeout(self::STRIPE_PRICE_TIMEOUT_SECONDS)
+                ->get('https://api.stripe.com/v1/tax/settings');
+        } catch (Throwable) {
+            return false;
+        }
+
+        $productTaxCode = $stripePrice->json('product.tax_code');
+        $defaultTaxCode = $taxSettings->json('defaults.tax_code');
+        $hasTaxCode = (is_string($productTaxCode) && trim($productTaxCode) !== '')
+            || (is_string($defaultTaxCode) && trim($defaultTaxCode) !== '');
+        if (! $taxSettings->successful() || $taxSettings->json('status') !== 'active' || ! $hasTaxCode) {
+            return false;
+        }
+
+        $startingAfter = null;
+
+        do {
+            $parameters = ['status' => 'active', 'limit' => 100];
+            if ($startingAfter !== null) {
+                $parameters['starting_after'] = $startingAfter;
+            }
+
+            try {
+                $taxRegistrations = Http::withBasicAuth($secret, '')
+                    ->connectTimeout(self::STRIPE_PRICE_CONNECT_TIMEOUT_SECONDS)
+                    ->timeout(self::STRIPE_PRICE_TIMEOUT_SECONDS)
+                    ->get('https://api.stripe.com/v1/tax/registrations', $parameters);
+            } catch (Throwable) {
+                return false;
+            }
+
+            $registrationData = $taxRegistrations->json('data');
+            if (! $taxRegistrations->successful() || ! is_array($registrationData)) {
+                return false;
+            }
+
+            if (collect($registrationData)->contains(static fn (mixed $registration): bool => is_array($registration)
+                && ($registration['country'] ?? null) === 'JP'
+                && ($registration['status'] ?? null) === 'active')) {
+                return true;
+            }
+
+            if ($taxRegistrations->json('has_more') !== true) {
+                return false;
+            }
+
+            $lastRegistration = end($registrationData);
+            $lastRegistrationId = is_array($lastRegistration) ? ($lastRegistration['id'] ?? null) : null;
+            if (! is_string($lastRegistrationId) || $lastRegistrationId === $startingAfter) {
+                return false;
+            }
+
+            $startingAfter = $lastRegistrationId;
+        } while (true);
     }
 
     private function hasCommercialInformation(): bool

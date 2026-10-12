@@ -32,7 +32,7 @@ class RealizedSavingController extends Controller
                 'entity_type' => RealizedSaving::class,
                 'entity_id' => $saving->id,
                 'action' => AuditLog::RealizedSavingRecorded,
-                'after_json' => $saving->only(['contract_id', 'evidence_id', 'amount', 'currency', 'period', 'realized_on']),
+                'after_json' => ['changed_fields' => array_keys($attributes)],
             ]);
         });
 

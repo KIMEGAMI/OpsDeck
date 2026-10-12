@@ -17,7 +17,7 @@
         <dl>
             <dt>現在のプラン</dt><dd>{{ $currentPlan }}</dd>
             <dt>契約状態</dt><dd>{{ $billingStatus }}</dd>
-            <dt>Premium料金</dt><dd>会社単位 月額{{ number_format($premiumPlan['monthly_price_jpy']) }}円（Stripe設定に従います）</dd>
+            <dt>Premium料金</dt><dd>会社単位 月額{{ number_format($premiumPlan['monthly_price_jpy']) }}円（税別、適用税額を加算）</dd>
         </dl>
         @if ($failedStripeEvent)
             <p class="errors" role="alert">Stripeからの更新通知の処理に失敗しました。契約状態は通知が正常に処理されるまで確定できません。サポートへの問い合わせ時は参照番号 STRIPE-{{ $failedStripeEvent->stripe_event_id }} をお伝えください。<a href="mailto:{{ config('opsdeck.support_email') }}">サポートへ問い合わせる</a></p>
@@ -42,7 +42,7 @@
         <table>
             <thead><tr><th>項目</th><th>Free</th><th>Premium</th></tr></thead>
             <tbody>
-                <tr><th>料金</th><td>{{ number_format($freePlan['monthly_price_jpy']) }}円</td><td>{{ number_format($premiumPlan['monthly_price_jpy']) }}円/月</td></tr>
+                <tr><th>料金</th><td>{{ number_format($freePlan['monthly_price_jpy']) }}円</td><td>{{ number_format($premiumPlan['monthly_price_jpy']) }}円/月（税別）</td></tr>
                 <tr><th>登録上限</th><td>社員{{ number_format($freePlan['limits']['employees']) }}・資産{{ number_format($freePlan['limits']['assets']) }}・SaaS{{ number_format($freePlan['limits']['saas_services']) }}・管理者{{ number_format($freePlan['limits']['administrators']) }}</td><td>社員{{ number_format($premiumPlan['limits']['employees']) }}・資産{{ number_format($premiumPlan['limits']['assets']) }}・SaaS{{ number_format($premiumPlan['limits']['saas_services']) }}・管理者{{ number_format($premiumPlan['limits']['administrators']) }}</td></tr>
                 <tr><th>CSVプレビュー</th><td>利用可</td><td>利用可</td></tr>
                 <tr><th>基本ダッシュボード・コスト集計</th><td>利用可</td><td>利用可</td></tr>

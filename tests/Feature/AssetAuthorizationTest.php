@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Asset;
+use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
@@ -25,6 +26,10 @@ class AssetAuthorizationTest extends TestCase
             ->assertForbidden();
 
         $this->assertDatabaseMissing('assets', ['organization_id' => $organization->id, 'asset_number' => $assetNumber]);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_operator_can_create_an_asset_in_the_current_organization(): void
@@ -39,6 +44,10 @@ class AssetAuthorizationTest extends TestCase
             ->assertRedirect();
 
         $this->assertDatabaseHas('assets', ['organization_id' => $organization->id, 'asset_number' => $assetNumber]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_update_an_asset(): void
@@ -53,6 +62,27 @@ class AssetAuthorizationTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame($asset->asset_number, $asset->refresh()->asset_number);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'action' => AuditLog::AssetUpdated]);
+    }
+
+    public function test_asset_update_records_changed_field_names_without_asset_values(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $asset = $this->asset($organization);
+        $changedAssetNumber = 'CHANGED-'.$asset->asset_number;
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('assets.update', $asset), $this->validAssetInput($changedAssetNumber))
+            ->assertRedirect();
+
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $asset->id)->where('action', AuditLog::AssetUpdated)->sole();
+
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame($organization->id, $auditLog->organization_id);
+        $this->assertSame($asset->id, $auditLog->entity_id);
+        $this->assertSame(['changed_fields' => ['asset_number']], $auditLog->after_json);
+        $this->assertStringNotContainsString($changedAssetNumber, json_encode($auditLog->toArray()));
     }
 
     public function test_operator_cannot_update_an_asset_in_another_organization(): void

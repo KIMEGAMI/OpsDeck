@@ -91,7 +91,7 @@
                 </article>
                 <article class="landing-plan landing-plan-premium">
                     <h3>Premium</h3>
-                    <p class="landing-price">月額{{ number_format((int) $plans['premium']['monthly_price_jpy']) }}円</p>
+                    <p class="landing-price">月額{{ number_format((int) $plans['premium']['monthly_price_jpy']) }}円（税別）</p>
                     <ul>
                         <li>社員{{ number_format((int) $plans['premium']['limits']['employees']) }}名・端末{{ number_format((int) $plans['premium']['limits']['assets']) }}台・SaaS{{ number_format((int) $plans['premium']['limits']['saas_services']) }}件まで</li>
                         @foreach ($plans['premium']['features'] as $feature)
@@ -102,7 +102,7 @@
                     <a class="landing-button" href="{{ route('register') }}">登録後にPremiumを申し込む</a>
                 </article>
             </div>
-            <p class="landing-note">料金の税区分や適用条件は申込画面をご確認ください。導入効果レポートの削減額は入力情報に基づく試算であり、削減を保証するものではありません。</p>
+            <p class="landing-note">適用税額を加算し、申込前にStripe Checkoutでお支払い総額を表示します。導入効果レポートの削減額は入力情報に基づく試算であり、削減を保証するものではありません。</p>
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-scope-title">

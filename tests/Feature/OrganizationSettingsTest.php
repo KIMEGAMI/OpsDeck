@@ -41,20 +41,15 @@ class OrganizationSettingsTest extends TestCase
         $this->assertSame(3200, $organization->cost_savings_unused_asset_monthly_jpy);
         $this->assertDatabaseHas('audit_logs', ['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'action' => 'organization.settings_updated']);
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('action', AuditLog::OrganizationSettingsUpdated)->firstOrFail();
-        $this->assertEquals([
-            'timezone' => 'Asia/Tokyo',
-            'company_size' => null,
-            'ai_enabled' => false,
-            'cost_savings_renewal_rate_percent' => null,
-            'cost_savings_unused_asset_monthly_jpy' => null,
-        ], $auditLog->before_json);
-        $this->assertEquals([
-            'timezone' => 'UTC',
-            'company_size' => 80,
-            'ai_enabled' => true,
-            'cost_savings_renewal_rate_percent' => 15,
-            'cost_savings_unused_asset_monthly_jpy' => 3200,
-        ], $auditLog->after_json);
+        $this->assertEqualsCanonicalizing([
+            'timezone',
+            'company_size',
+            'ai_enabled',
+            'cost_savings_renewal_rate_percent',
+            'cost_savings_unused_asset_monthly_jpy',
+        ], $auditLog->after_json['changed_fields']);
+        $this->assertNull($auditLog->before_json);
+        $this->assertStringNotContainsString('3200', json_encode($auditLog->toArray()));
     }
 
     public function test_viewer_cannot_update_organization_settings(): void

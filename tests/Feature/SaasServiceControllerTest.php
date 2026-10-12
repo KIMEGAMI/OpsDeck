@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\SaasService;
@@ -27,6 +28,10 @@ class SaasServiceControllerTest extends TestCase
             ->assertSessionHasErrors('plan_limit');
 
         $this->assertSame(1, SaasService::query()->where('organization_id', $organization->id)->count());
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_operator_creates_service_in_current_organization(): void
@@ -39,6 +44,10 @@ class SaasServiceControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('saas-services.store'), ['name' => 'Slack', 'status' => 'active'])->assertRedirect();
 
         $this->assertDatabaseHas('saas_services', ['organization_id' => $organization->id, 'name' => 'Slack']);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_create_a_saas_service(): void
@@ -65,6 +74,10 @@ class SaasServiceControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertDatabaseMissing('saas_services', ['organization_id' => $organization->id, 'name' => 'Restricted SaaS']);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_update_a_saas_service(): void
@@ -92,6 +105,40 @@ class SaasServiceControllerTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('Read Only SaaS', $service->refresh()->name);
+        $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'action' => AuditLog::SaasServiceUpdated]);
+    }
+
+    public function test_saas_service_update_records_changed_field_names_without_service_values(): void
+    {
+        $user = User::factory()->create(['email' => 'saas-update-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'SaaS Update Org',
+            'slug' => 'saas-update-'.Str::lower(Str::random(8)),
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Operator,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $service = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Existing Service', 'status' => 'active']);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('saas-services.update', $service), ['name' => 'Changed Service', 'status' => 'active'])
+            ->assertRedirect();
+
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $service->id)->where('action', AuditLog::SaasServiceUpdated)->sole();
+
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame($organization->id, $auditLog->organization_id);
+        $this->assertSame($service->id, $auditLog->entity_id);
+        $this->assertSame(['changed_fields' => ['name']], $auditLog->after_json);
+        $this->assertStringNotContainsString('Changed Service', json_encode($auditLog->toArray()));
     }
 
     public function test_operator_cannot_update_a_saas_service_in_another_organization(): void

@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Jobs\ExecuteImportBatch;
 use App\Jobs\PrepareImportMappingAnalysis;
+use App\Models\AuditLog;
 use App\Models\Department;
 use App\Models\Employee;
 use App\Models\ImportBatch;
@@ -24,6 +25,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Tests\TestCase;
 
 class ImportMappingTest extends TestCase
@@ -463,8 +465,20 @@ class ImportMappingTest extends TestCase
         $this->assertSame('completed', $batch->refresh()->status);
         $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
         $this->assertSame(1, ImportRowResult::query()->where('import_batch_id', $batch->id)->count());
+        $auditLog = AuditLog::query()
+            ->where('organization_id', $organization->id)
+            ->where('entity_type', ImportBatch::class)
+            ->where('entity_id', $batch->id)
+            ->where('action', AuditLog::ImportBatchExecuted)
+            ->firstOrFail();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['status' => 'queued', 'source_type' => 'csv', 'target_type' => 'employees', 'total_rows' => 1], $auditLog->before_json);
+        $this->assertSame(['status' => 'completed', 'inserted_rows' => 1, 'updated_rows' => 0, 'skipped_rows' => 0, 'error_rows' => 0], $auditLog->after_json);
+        $this->assertStringNotContainsString($email, json_encode([$auditLog->before_json, $auditLog->after_json], JSON_THROW_ON_ERROR));
+        $this->assertSame(1, AuditLog::query()->where('entity_type', ImportBatch::class)->where('entity_id', $batch->id)->where('action', AuditLog::ImportBatchExecuted)->count());
     }
 
+    #[RunInSeparateProcess]
     public function test_execution_processes_the_configured_maximum_csv_rows_with_bounded_resources(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -590,6 +604,14 @@ class ImportMappingTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.candidates.review', [$batch, $candidate]), ['status' => 'deferred'])->assertRedirect();
         $this->assertSame('deferred', $candidate->refresh()->status);
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.candidates.review', [$batch, $candidate]), ['status' => 'accepted'])->assertRedirect();
+        $reviewLogs = AuditLog::query()->where('organization_id', $organization->id)
+            ->where('entity_type', ImportReviewCandidate::class)
+            ->where('entity_id', $candidate->id)
+            ->where('action', AuditLog::ImportCandidateReviewed)
+            ->orderBy('id')
+            ->pluck('after_json')
+            ->all();
+        $this->assertSame([['status' => 'deferred'], ['status' => 'accepted']], $reviewLogs);
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.execute', $batch), ['confirm' => '1'])->assertRedirect();
         $this->assertSame('completed', $batch->refresh()->status);
         $this->assertSame(0, $batch->error_rows);

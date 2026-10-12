@@ -20,7 +20,12 @@ class AdminAnnouncementController extends Controller
 {
     public function index(): View
     {
-        $announcements = Announcement::query()->withCount(['deliveries as sent_count' => fn ($query) => $query->whereNotNull('sent_at'), 'deliveries as failed_count' => fn ($query) => $query->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at'), 'deliveries as suppressed_count' => fn ($query) => $query->whereNotNull('suppressed_at')])->latest()->orderByDesc('id')->paginate(config('opsdeck.pagination.per_page'));
+        $announcements = Announcement::query()->withCount([
+            'deliveries as sent_count' => fn ($query) => $query->whereNotNull('sent_at'),
+            'deliveries as failed_count' => fn ($query) => $query->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereNull('manual_review_at'),
+            'deliveries as manual_review_count' => fn ($query) => $query->whereNotNull('manual_review_at')->whereNull('sent_at')->whereNull('suppressed_at'),
+            'deliveries as suppressed_count' => fn ($query) => $query->whereNotNull('suppressed_at'),
+        ])->latest()->orderByDesc('id')->paginate(config('opsdeck.pagination.per_page'));
 
         return view('admin.announcements.index', compact('announcements'));
     }
@@ -46,7 +51,7 @@ class AdminAnnouncementController extends Controller
         $queued = 0;
         $organizationIds = $announcement->organizations()->pluck('organizations.id')->map(fn (int|string $id): int => (int) $id)->all();
         $eligibleRecipientIds = $recipientQuery->eligibleFor($organizationIds)->select('users.id');
-        $announcement->deliveries()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereIn('user_id', $eligibleRecipientIds)->orderBy('id')->each(function (AnnouncementDelivery $delivery) use (&$queued, $announcement): void {
+        $announcement->deliveries()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereNull('manual_review_at')->whereIn('user_id', $eligibleRecipientIds)->orderBy('id')->each(function (AnnouncementDelivery $delivery) use (&$queued, $announcement): void {
             SendAnnouncementEmail::dispatch($announcement, (int) $delivery->user_id);
             $queued++;
         });

@@ -12,6 +12,10 @@ class CsvFormulaSanitizer
 
         $startsWithFormulaTrigger = preg_match('/^[\t\r\n]|^[\p{Z}\s\p{Cf}]*[=+\-@＝＋－＠]/u', $value);
 
+        if ($startsWithFormulaTrigger === false) {
+            return "\t{$value}";
+        }
+
         return $startsWithFormulaTrigger === 1 ? "\t{$value}" : $value;
     }
 }

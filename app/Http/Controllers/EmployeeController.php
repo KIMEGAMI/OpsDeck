@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\Employee\StoreEmployeeRequest;
 use App\Http\Requests\Employee\UpdateEmployeeRequest;
+use App\Models\AuditLog;
 use App\Models\Department;
 use App\Models\Employee;
 use App\Models\Organization;
 use App\Services\PlanLimitService;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -63,6 +65,7 @@ class EmployeeController extends Controller
 
             return Employee::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
         });
+        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
 
         return to_route('employees.show', $employee)->with('status', '社員情報を登録しました。');
     }
@@ -95,7 +98,24 @@ class EmployeeController extends Controller
         $organization = $this->organization($request);
         $employee = $this->scopedEmployee($request, $employee);
         $this->authorize('update', $employee);
-        $employee->update($this->validatedForOrganization($request->validated(), $organization));
+        $attributes = $this->validatedForOrganization($request->validated(), $organization);
+
+        DB::transaction(function () use ($request, $organization, $employee, $attributes): void {
+            $employee->fill($attributes);
+            $changedFields = array_keys($employee->getDirty());
+            $employee->save();
+
+            if ($changedFields !== []) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => Employee::class,
+                    'entity_id' => $employee->id,
+                    'action' => AuditLog::EmployeeUpdated,
+                    'after_json' => ['changed_fields' => $changedFields],
+                ]);
+            }
+        });
 
         return to_route('employees.show', $employee)->with('status', '社員情報を更新しました。');
     }

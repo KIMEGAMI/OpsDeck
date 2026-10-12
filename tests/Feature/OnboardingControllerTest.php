@@ -276,6 +276,31 @@ class OnboardingControllerTest extends TestCase
         ]);
     }
 
+    public function test_free_plan_recognizes_the_actual_preview_status_for_import_onboarding(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'employees.csv',
+            'status' => 'preview',
+        ]);
+        $mapping = $batch->mappings()->create(['target_type' => 'employees', 'column_map' => [], 'status' => 'ready']);
+        $batch->update(['mapping_id' => (string) $mapping->id]);
+
+        $response = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('onboarding.index'))
+            ->assertOk();
+
+        $employeeStep = collect($response->viewData('steps'))->firstWhere('key', 'employees_import');
+        $this->assertTrue($employeeStep['completed']);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_import_completed',
+        ]);
+    }
+
     public function test_free_owner_sees_initial_setup_complete_after_finishing_all_free_steps(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);

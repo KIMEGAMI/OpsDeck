@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Evidence;
 use App\Models\Organization;
@@ -50,8 +51,14 @@ class RealizedSavingControllerTest extends TestCase
         $this->assertDatabaseHas('audit_logs', [
             'organization_id' => $organization->id,
             'actor_user_id' => $user->id,
-            'action' => 'cost_saving.realized',
+            'action' => AuditLog::RealizedSavingRecorded,
         ]);
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $saving->id)->where('action', AuditLog::RealizedSavingRecorded)->firstOrFail();
+        $this->assertSame(['changed_fields' => ['contract_id', 'description', 'amount', 'currency', 'period', 'realized_on', 'evidence_reference']], $auditLog->after_json);
+        $serializedAuditLog = json_encode($auditLog->toArray());
+        $this->assertStringNotContainsString($input['description'], $serializedAuditLog);
+        $this->assertStringNotContainsString($input['amount'], $serializedAuditLog);
+        $this->assertStringNotContainsString($input['evidence_reference'], $serializedAuditLog);
     }
 
     public function test_viewer_cannot_record_realized_savings(): void

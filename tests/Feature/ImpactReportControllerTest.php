@@ -34,6 +34,7 @@ class ImpactReportControllerTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])->get(route('impact-report.download'))->assertForbidden();
         [$owner, $ownerOrganization] = $this->member(MembershipRole::Owner);
         Contract::query()->create(['organization_id' => $ownerOrganization->id, 'vendor_name' => 'Future', 'contract_name' => 'Renewal', 'contract_type' => 'service', 'billing_cycle' => 'monthly', 'amount' => 1000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
+        Contract::query()->create(['organization_id' => $ownerOrganization->id, 'vendor_name' => 'Foreign', 'contract_name' => 'USD plan', 'contract_type' => 'service', 'billing_cycle' => 'monthly', 'amount' => '250.00', 'currency' => 'USD', 'auto_renew' => true, 'status' => 'active']);
         Contract::query()->create(['organization_id' => $ownerOrganization->id, 'vendor_name' => 'Expired', 'contract_name' => 'Past', 'contract_type' => 'service', 'billing_cycle' => 'monthly', 'amount' => 1000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->subDay()]);
         $this->actingAs($owner)->withSession(['current_organization_id' => $ownerOrganization->id])->get(route('impact-report.show'))
             ->assertOk()
@@ -43,10 +44,12 @@ class ImpactReportControllerTest extends TestCase
             ->assertSee('@page { size: A4; margin: 14mm; }', false)
             ->assertSee('body > header, .impact-report-actions { display: none !important; }', false)
             ->assertSee(ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の更新期限')
+            ->assertSee('USD: 250.00')
             ->assertSee('1件');
         $response = $this->actingAs($owner)->withSession(['current_organization_id' => $ownerOrganization->id])->get(route('impact-report.download'));
         $response->assertOk()->assertHeader('content-disposition');
         $this->assertStringStartsWith("\xEF\xBB\xBF", $response->streamedContent());
+        $this->assertStringContainsString('monthly_cost_USD,250.00,', $response->streamedContent());
     }
 
     public function test_import_snapshots_are_shown_as_an_actual_before_after_comparison_and_trend(): void
@@ -59,6 +62,8 @@ class ImpactReportControllerTest extends TestCase
             'status' => 'ready',
         ]);
         $metricsService = app(ImpactReportMetricsService::class);
+        $jpyContract = Contract::query()->create(['organization_id' => $organization->id, 'vendor_name' => 'Local', 'contract_name' => 'JPY license', 'contract_type' => 'software', 'billing_cycle' => 'monthly', 'amount' => '200.00', 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active']);
+        Contract::query()->create(['organization_id' => $organization->id, 'vendor_name' => 'Foreign', 'contract_name' => 'USD license', 'contract_type' => 'software', 'billing_cycle' => 'annual', 'amount' => '120.00', 'currency' => 'USD', 'auto_renew' => true, 'status' => 'active']);
         $metricsService->capture($organization, $batch, 'import_before');
         Employee::query()->create([
             'organization_id' => $organization->id,
@@ -66,6 +71,7 @@ class ImpactReportControllerTest extends TestCase
             'email' => 'impact-import-'.Str::uuid().'@example.test',
             'employment_status' => 'active',
         ]);
+        $jpyContract->update(['amount' => '250.00']);
         $batch->update(['status' => 'completed']);
         $metricsService->capture($organization, $batch, 'import_after');
 
@@ -77,13 +83,57 @@ class ImpactReportControllerTest extends TestCase
             ->assertSee('社員数')
             ->assertSee('Import前')
             ->assertSee('Import後')
-            ->assertSee('未確認Import実行失敗');
+            ->assertSee('未確認Import実行失敗')
+            ->assertSee('月額コスト（JPY）')
+            ->assertSee('月額コスト（USD）');
 
         $csv = $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
             ->get(route('impact-report.download'))
             ->streamedContent();
         $this->assertStringContainsString('latest_import_delta_employees,1,"Import batch '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('latest_import_monthly_cost_JPY_before,200.00,"Import batch '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('latest_import_monthly_cost_JPY_after,250.00,"Import batch '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('latest_import_monthly_cost_JPY_delta,50.00,"Import batch '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('latest_import_monthly_cost_USD_before,10.00,"Import batch '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('latest_import_monthly_cost_USD_delta,0.00,"Import batch '.$batch->id.'"', $csv);
         $this->assertStringContainsString('trend_import_after_unresolved_items,0,', $csv);
+    }
+
+    public function test_import_comparison_and_trend_have_stable_order_when_snapshots_share_a_timestamp(): void
+    {
+        [, $organization] = $this->member(MembershipRole::Viewer);
+        config(['opsdeck.pagination.per_page' => 2]);
+        $capturedAt = now()->startOfSecond();
+        $firstBatch = ImportBatch::factory()->create(['organization_id' => $organization->id, 'status' => 'completed']);
+        $secondBatch = ImportBatch::factory()->create(['organization_id' => $organization->id, 'status' => 'completed']);
+        foreach ([$firstBatch, $secondBatch] as $batch) {
+            ImpactMetricSnapshot::factory()->create([
+                'organization_id' => $organization->id,
+                'import_batch_id' => $batch->id,
+                'stage' => 'import_before',
+                'captured_at' => $capturedAt->copy()->subMinute(),
+            ]);
+        }
+        $firstAfter = ImpactMetricSnapshot::factory()->create([
+            'organization_id' => $organization->id,
+            'import_batch_id' => $firstBatch->id,
+            'stage' => 'import_after',
+            'captured_at' => $capturedAt,
+        ]);
+        $secondAfter = ImpactMetricSnapshot::factory()->create([
+            'organization_id' => $organization->id,
+            'import_batch_id' => $secondBatch->id,
+            'stage' => 'import_after',
+            'captured_at' => $capturedAt,
+        ]);
+        $metricsService = app(ImpactReportMetricsService::class);
+
+        $comparison = $metricsService->importComparison($organization);
+        $trend = $metricsService->trend($organization);
+
+        $this->assertNotNull($comparison);
+        $this->assertSame($secondBatch->id, $comparison['after']->import_batch_id);
+        $this->assertSame([$firstAfter->id, $secondAfter->id], $trend->modelKeys());
     }
 
     public function test_monthly_cost_metric_discloses_its_scope_and_does_not_claim_actual_savings(): void
@@ -93,8 +143,9 @@ class ImpactReportControllerTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])
             ->get(route('impact-report.show'))
             ->assertOk()
-            ->assertSee('月次・年次のJPY契約のみを月額換算')
-            ->assertSee('外貨・一時契約・その他の請求周期は含みません')
+            ->assertSee('月次・年次の契約を通貨別に月額換算')
+            ->assertSee('通貨間の換算はせず')
+            ->assertSee('一時契約・その他の請求周期は含みません')
             ->assertSee('実現した経費削減額ではありません')
             ->assertSee(route('costs.dashboard'));
     }
