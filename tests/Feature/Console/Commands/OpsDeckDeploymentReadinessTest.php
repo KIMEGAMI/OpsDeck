@@ -9,6 +9,7 @@ use App\Services\PhpExtensionReadiness;
 use App\Services\QueueHealthService;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Builder;
 use Illuminate\Http\Client\Request;
@@ -86,9 +87,12 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
-        $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
-            ->assertExitCode(0);
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $actualOutput = trim($this->app[Kernel::class]->output());
+
+        $this->assertSame('{"status":"ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}', $actualOutput);
+        $this->assertSame(0, $exitCode, $actualOutput);
     }
 
     public function test_it_fails_readiness_when_idempotent_resend_is_enabled_without_an_api_key(): void
@@ -1224,16 +1228,10 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $restoreTargetConfiguration->shouldReceive('isReadyForRestoreTest')->once()->andReturn($hasReadyRestoreTarget);
         $this->app->instance(BackupRestoreTargetConfiguration::class, $restoreTargetConfiguration);
 
-        $pendingMigrationCount = $hasMigrationRepository ? ($hasPendingMigrations ? 1 : 0) : null;
-        $migrationHealth = new class($pendingMigrationCount) extends DatabaseMigrationHealthService
-        {
-            public function __construct(private ?int $pendingMigrationCount) {}
-
-            public function pendingCount(): ?int
-            {
-                return $this->pendingMigrationCount;
-            }
-        };
+        $migrationHealth = $this->mock(DatabaseMigrationHealthService::class);
+        $migrationHealth->shouldReceive('pendingCount')
+            ->once()
+            ->andReturn($hasMigrationRepository ? ($hasPendingMigrations ? 1 : 0) : null);
         $this->app->instance(DatabaseMigrationHealthService::class, $migrationHealth);
 
         $queueHealth = $this->mock(QueueHealthService::class);
