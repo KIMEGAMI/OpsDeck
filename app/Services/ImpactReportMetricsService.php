@@ -75,9 +75,15 @@ class ImpactReportMetricsService
     public function captureDaily(Organization $organization): ImpactMetricSnapshot
     {
         $snapshotDate = CarbonImmutable::today($organization->timezone);
+        $snapshotAttributes = ['organization_id' => $organization->id, 'stage' => 'daily', 'snapshot_date' => $snapshotDate];
+        $existingSnapshot = ImpactMetricSnapshot::query()->where($snapshotAttributes)->first();
+
+        if ($existingSnapshot !== null) {
+            return $existingSnapshot;
+        }
 
         return ImpactMetricSnapshot::query()->firstOrCreate(
-            ['organization_id' => $organization->id, 'stage' => 'daily', 'snapshot_date' => $snapshotDate],
+            $snapshotAttributes,
             ['metrics_json' => $this->current($organization), 'captured_at' => now()],
         );
     }

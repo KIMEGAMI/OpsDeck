@@ -7,6 +7,7 @@ use App\Models\ImportBatch;
 use App\Models\Organization;
 use App\Services\ImpactReportMetricsService;
 use Illuminate\Support\Str;
+use Mockery;
 use Tests\TestCase;
 
 class ImpactMetricSnapshotCommandTest extends TestCase
@@ -45,7 +46,11 @@ class ImpactMetricSnapshotCommandTest extends TestCase
             'plan_code' => config('opsdeck.default_plan_code'),
             'billing_status' => config('opsdeck.default_billing_status'),
         ]);
-        $metricsService = app(ImpactReportMetricsService::class);
+        $metricsService = Mockery::mock(ImpactReportMetricsService::class)->makePartial();
+        $metricsService->shouldReceive('current')
+            ->once()
+            ->withArgs(fn (Organization $capturedOrganization): bool => $capturedOrganization->is($organization))
+            ->andReturn(['employees' => 0, 'assets' => 0]);
 
         $first = $metricsService->captureDaily($organization);
         $second = $metricsService->captureDaily($organization);
