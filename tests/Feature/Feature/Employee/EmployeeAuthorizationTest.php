@@ -22,15 +22,39 @@ class EmployeeAuthorizationTest extends TestCase
         [$user, $organization] = $this->member(MembershipRole::Operator);
         Employee::query()->create(['organization_id' => $organization->id, 'name' => '既存社員', 'employment_status' => 'active']);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+        $this->from(route('employees.create'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
             ->post('/employees', ['name' => '上限超過社員', 'employment_status' => 'active'])
-            ->assertSessionHasErrors('plan_limit');
+            ->assertOk()
+            ->assertSee('プラン変更は組織Ownerのみ行えます。Ownerに相談してください。')
+            ->assertDontSee(route('billing.index'));
 
         $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
         $this->assertDatabaseMissing('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
+    }
+
+    public function test_owner_receives_billing_link_when_employee_limit_is_reached(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Config::set('opsdeck.plans.free.limits.employees', 1);
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        Employee::query()->create(['organization_id' => $organization->id, 'name' => '既存社員', 'employment_status' => 'active']);
+
+        $this->from(route('employees.create'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post('/employees', ['name' => '上限超過社員', 'employment_status' => 'active'])
+            ->assertOk()
+            ->assertSee('料金プランと上限を確認する')
+            ->assertSee('href="'.route('billing.index').'"', false);
+
+        $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
     }
 
     public function test_operator_can_create_employee_only_in_current_organization(): void

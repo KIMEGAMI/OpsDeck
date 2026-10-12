@@ -67,6 +67,14 @@
                         <li>{{ $error }}</li>
                     @endforeach
                 </ul>
+                @if ($errors->has('plan_limit'))
+                    @php($currentOrganization = request()->attributes->get('currentOrganization'))
+                    @if ($currentOrganization instanceof \App\Models\Organization && auth()->user()?->can('manageBilling', $currentOrganization))
+                        <p><a href="{{ route('billing.index') }}">料金プランと上限を確認する</a></p>
+                    @else
+                        <p class="muted">プラン変更は組織Ownerのみ行えます。Ownerに相談してください。</p>
+                    @endif
+                @endif
             </div>
         @endif
         {{ $slot }}
