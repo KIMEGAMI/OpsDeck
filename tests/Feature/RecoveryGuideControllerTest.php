@@ -20,7 +20,7 @@ class RecoveryGuideControllerTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('help.recovery', 'import'));
 
-        $response->assertOk()->assertSee('Importに失敗したとき')->assertSee('元ファイルを変更せず')->assertSee(route('support.create'))->assertDontSee('問い合わせ用エラーID：REC-')->assertSee(config('opsdeck.support_email'))->assertDontSee('stack trace');
+        $response->assertOk()->assertSee('Importに失敗したとき')->assertSee('元ファイルを変更せず')->assertSee(route('imports.index'))->assertSee('Import履歴で失敗内容を確認し、再試行する')->assertSee(route('support.create'))->assertDontSee('問い合わせ用エラーID：REC-')->assertSee(config('opsdeck.support_email'))->assertDontSee('stack trace');
     }
 
     public function test_unknown_recovery_guide_is_not_available(): void

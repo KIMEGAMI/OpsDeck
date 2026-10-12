@@ -5,6 +5,9 @@
         <ol>
             @foreach ($guide['steps'] as $step)<li>{{ $step }}</li>@endforeach
         </ol>
+        @if ($type === 'import')
+            <p><a href="{{ route('imports.index') }}">Import履歴で失敗内容を確認し、再試行する</a></p>
+        @endif
         @if ($type === 'email')
             <p><a href="{{ route('weekly-summary.show') }}">週次サマリー・お知らせメールの受信設定を確認</a></p>
         @endif
