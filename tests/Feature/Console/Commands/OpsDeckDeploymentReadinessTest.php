@@ -1224,10 +1224,16 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $restoreTargetConfiguration->shouldReceive('isReadyForRestoreTest')->once()->andReturn($hasReadyRestoreTarget);
         $this->app->instance(BackupRestoreTargetConfiguration::class, $restoreTargetConfiguration);
 
-        $migrationHealth = $this->mock(DatabaseMigrationHealthService::class);
-        $migrationHealth->shouldReceive('pendingCount')
-            ->once()
-            ->andReturn($hasMigrationRepository ? ($hasPendingMigrations ? 1 : 0) : null);
+        $pendingMigrationCount = $hasMigrationRepository ? ($hasPendingMigrations ? 1 : 0) : null;
+        $migrationHealth = new class($pendingMigrationCount) extends DatabaseMigrationHealthService
+        {
+            public function __construct(private ?int $pendingMigrationCount) {}
+
+            public function pendingCount(): ?int
+            {
+                return $this->pendingMigrationCount;
+            }
+        };
         $this->app->instance(DatabaseMigrationHealthService::class, $migrationHealth);
 
         $queueHealth = $this->mock(QueueHealthService::class);
