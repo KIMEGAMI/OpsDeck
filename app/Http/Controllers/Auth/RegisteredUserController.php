@@ -12,6 +12,7 @@ use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
 use App\Models\User;
 use App\Services\ProductEventRecorder;
+use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +36,7 @@ class RegisteredUserController extends Controller
                 'email' => $validated['email'],
                 'password' => $validated['password'],
             ]);
+            $user->forceFill(['email_verification_required_at' => now()])->save();
 
             $organization = Organization::query()->create([
                 'name' => $validated['organization_name'],
@@ -61,6 +63,7 @@ class RegisteredUserController extends Controller
             return [$user, $organization];
         });
 
+        event(new Registered($user));
         Auth::login($user);
         $request->session()->regenerate();
         $request->session()->put('current_organization_id', $organization->id);

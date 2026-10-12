@@ -4,6 +4,8 @@ namespace App\Models;
 
 use App\Enums\MembershipStatus;
 use Database\Factories\UserFactory;
+use Illuminate\Auth\MustVerifyEmail as MustVerifyEmailBehavior;
+use Illuminate\Contracts\Auth\MustVerifyEmail as MustVerifyEmailContract;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -13,10 +15,10 @@ use Illuminate\Notifications\Notifiable;
 
 #[Fillable(['name', 'email', 'password'])]
 #[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable
+class User extends Authenticatable implements MustVerifyEmailContract
 {
     /** @use HasFactory<UserFactory> */
-    use HasFactory, Notifiable;
+    use HasFactory, MustVerifyEmailBehavior, Notifiable;
 
     /**
      * Get the attributes that should be cast.
@@ -27,8 +29,14 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'email_verification_required_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    public function hasVerifiedEmail(): bool
+    {
+        return $this->email_verification_required_at === null || $this->email_verified_at !== null;
     }
 
     public function organizationMemberships(): HasMany

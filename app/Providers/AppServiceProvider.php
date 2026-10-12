@@ -10,6 +10,7 @@ use App\Services\Ai\OpenAiProvider;
 use App\Services\QueueWorkerHeartbeatRecorder;
 use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Queue\Events\Looping;
@@ -42,6 +43,7 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('login', fn ($request) => Limit::perMinute(config('opsdeck.auth.max_login_attempts'))->by($request->ip()));
         RateLimiter::for('register', fn ($request) => Limit::perMinute(config('opsdeck.auth.max_login_attempts'))->by($request->ip()));
         RateLimiter::for('password-reset', fn ($request) => Limit::perMinute(config('opsdeck.auth.max_login_attempts'))->by(hash('sha256', (string) $request->ip())));
+        RateLimiter::for('email-verification', fn ($request) => Limit::perMinute(config('opsdeck.auth.email_verification_resend_attempts_per_minute'))->by(hash('sha256', (string) $request->user()?->getAuthIdentifier())));
         RateLimiter::for('billing-checkout', fn ($request) => Limit::perMinute(config('opsdeck.billing.checkout_attempts_per_minute'))->by(hash(
             'sha256',
             (string) ($request->attributes->get('currentOrganization')?->getKey() ?? $request->user()?->getAuthIdentifier()),
@@ -76,6 +78,20 @@ class AppServiceProvider extends ServiceProvider
                 ->line('パスワード再設定のリクエストを受け付けました。')
                 ->action('パスワードを再設定', $resetUrl)
                 ->line('このリンクは'.config('auth.passwords.users.expire').'分間有効です。')
+                ->line('この操作に覚えがない場合は、このメールを無視してください。')
+                ->withSymfonyMessage(static function (Email $email) use ($idempotencyKey): void {
+                    $email->getHeaders()->addTextHeader(ResendIdempotentTransport::IDEMPOTENCY_HEADER, $idempotencyKey);
+                });
+        });
+
+        VerifyEmail::toMailUsing(static function (User $user, string $verificationUrl): MailMessage {
+            $idempotencyKey = app(ResendIdempotencyKeyFactory::class)
+                ->forEmailVerification($user->getAuthIdentifier(), $verificationUrl);
+
+            return (new MailMessage)
+                ->subject('OpsDeck メールアドレス確認')
+                ->line('OpsDeckの登録を完了するため、メールアドレスを確認してください。')
+                ->action('メールアドレスを確認する', $verificationUrl)
                 ->line('この操作に覚えがない場合は、このメールを無視してください。')
                 ->withSymfonyMessage(static function (Email $email) use ($idempotencyKey): void {
                     $email->getHeaders()->addTextHeader(ResendIdempotentTransport::IDEMPOTENCY_HEADER, $idempotencyKey);

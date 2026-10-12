@@ -9,6 +9,7 @@ use App\Http\Controllers\AssetAssignmentController;
 use App\Http\Controllers\AssetController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\EmailVerificationController;
 use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
 use App\Http\Controllers\Auth\RegisteredUserController;
@@ -80,7 +81,14 @@ Route::middleware('guest')->group(function (): void {
 Route::post('/billing/stripe/webhook', StripeWebhookController::class)->withoutMiddleware([ValidateCsrfToken::class])->name('billing.stripe.webhook');
 Route::get('/r/{code}', [ReferralController::class, 'redirect'])->middleware('throttle:referrals')->name('referrals.redirect');
 
-Route::middleware(['auth', 'organization.member'])->group(function (): void {
+Route::middleware('auth')->group(function (): void {
+    Route::get('/email/verify', [EmailVerificationController::class, 'notice'])->name('verification.notice');
+    Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])->middleware('signed')->name('verification.verify');
+    Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])->middleware('throttle:email-verification')->name('verification.send');
+    Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
+});
+
+Route::middleware(['auth', 'verified', 'organization.member'])->group(function (): void {
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
     Route::get('/saved-views', [SavedViewController::class, 'index'])->name('saved-views.index');
     Route::get('/saved-views/create', [SavedViewController::class, 'create'])->name('saved-views.create');
@@ -169,24 +177,23 @@ Route::middleware(['auth', 'organization.member'])->group(function (): void {
     Route::resource('departments', DepartmentController::class)->only(['index', 'create', 'store', 'edit', 'update']);
     Route::resource('employees', EmployeeController::class)->except('destroy');
     Route::get('/onboarding', [OnboardingController::class, 'index'])->name('onboarding.index');
-    Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
 });
 
 Route::get('/invitations/{token}', [OrganizationInvitationController::class, 'show'])->name('invitations.show');
 Route::post('/invitations/{token}', [OrganizationInvitationController::class, 'accept'])->middleware('throttle:invitation-accept')->name('invitations.accept');
 
-Route::get('/admin', AdminDashboardController::class)->middleware(['auth', 'platform.admin'])->name('admin.dashboard');
-Route::get('/admin/ai-cost', [AdminDashboardController::class, 'aiCost'])->middleware(['auth', 'platform.admin'])->name('admin.ai-cost');
-Route::get('/admin/queue-errors', [AdminDashboardController::class, 'queueErrors'])->middleware(['auth', 'platform.admin'])->name('admin.queue-errors');
-Route::get('/admin/health', [AdminDashboardController::class, 'health'])->middleware(['auth', 'platform.admin'])->name('admin.health');
-Route::get('/admin/mail-delivery-reviews', [AdminMailDeliveryReviewController::class, 'index'])->middleware(['auth', 'platform.admin'])->name('admin.mail-delivery-reviews.index');
-Route::post('/admin/mail-delivery-reviews/announcements/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveAnnouncement'])->middleware(['auth', 'platform.admin'])->name('admin.mail-delivery-reviews.announcements.resolve');
-Route::post('/admin/mail-delivery-reviews/weekly-summaries/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveWeeklySummary'])->middleware(['auth', 'platform.admin'])->name('admin.mail-delivery-reviews.weekly-summaries.resolve');
-Route::get('/admin/product-metrics', AdminProductMetricsController::class)->middleware(['auth', 'platform.admin'])->name('admin.product-metrics');
-Route::get('/admin/product-metrics.csv', [AdminProductMetricsController::class, 'export'])->middleware(['auth', 'platform.admin'])->name('admin.product-metrics.export');
-Route::get('/admin/support', [SupportRequestController::class, 'adminIndex'])->middleware(['auth', 'platform.admin'])->name('admin.support.index');
-Route::put('/admin/support/{supportRequest}', [SupportRequestController::class, 'update'])->middleware(['auth', 'platform.admin'])->name('admin.support.update');
-Route::middleware(['auth', 'platform.admin'])->prefix('admin/announcements')->name('admin.announcements.')->group(function (): void {
+Route::get('/admin', AdminDashboardController::class)->middleware(['auth', 'verified', 'platform.admin'])->name('admin.dashboard');
+Route::get('/admin/ai-cost', [AdminDashboardController::class, 'aiCost'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.ai-cost');
+Route::get('/admin/queue-errors', [AdminDashboardController::class, 'queueErrors'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.queue-errors');
+Route::get('/admin/health', [AdminDashboardController::class, 'health'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.health');
+Route::get('/admin/mail-delivery-reviews', [AdminMailDeliveryReviewController::class, 'index'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.index');
+Route::post('/admin/mail-delivery-reviews/announcements/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveAnnouncement'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.announcements.resolve');
+Route::post('/admin/mail-delivery-reviews/weekly-summaries/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveWeeklySummary'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.weekly-summaries.resolve');
+Route::get('/admin/product-metrics', AdminProductMetricsController::class)->middleware(['auth', 'verified', 'platform.admin'])->name('admin.product-metrics');
+Route::get('/admin/product-metrics.csv', [AdminProductMetricsController::class, 'export'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.product-metrics.export');
+Route::get('/admin/support', [SupportRequestController::class, 'adminIndex'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.support.index');
+Route::put('/admin/support/{supportRequest}', [SupportRequestController::class, 'update'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.support.update');
+Route::middleware(['auth', 'verified', 'platform.admin'])->prefix('admin/announcements')->name('admin.announcements.')->group(function (): void {
     Route::get('/', [AdminAnnouncementController::class, 'index'])->name('index');
     Route::get('/create', [AdminAnnouncementController::class, 'create'])->name('create');
     Route::get('/recipient-count', [AdminAnnouncementController::class, 'recipientCount'])->name('recipient-count');

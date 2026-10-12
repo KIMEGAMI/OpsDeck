@@ -14,6 +14,11 @@ class ResendIdempotencyKeyFactory
         return $this->make('password-reset', (string) $userId, hash('sha256', $token));
     }
 
+    public function forEmailVerification(int|string $userId, string $verificationUrl): string
+    {
+        return $this->make('email-verification', (string) $userId, hash('sha256', $verificationUrl));
+    }
+
     public function forServerErrorAlert(string $errorReference, int $statusCode, string $recipient): string
     {
         return $this->make('server-error-alert', $errorReference, (string) $statusCode, hash('sha256', strtolower(trim($recipient))));

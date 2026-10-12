@@ -144,6 +144,7 @@ return [
     'auth' => [
         'max_login_attempts' => (int) env('OPSDECK_MAX_LOGIN_ATTEMPTS', 5),
         'login_decay_seconds' => (int) env('OPSDECK_LOGIN_DECAY_SECONDS', 60),
+        'email_verification_resend_attempts_per_minute' => max(1, (int) env('OPSDECK_EMAIL_VERIFICATION_RESEND_ATTEMPTS_PER_MINUTE', 3)),
     ],
     'ai' => [
         'enabled' => filter_var(env('OPSDECK_AI_ENABLED', false), FILTER_VALIDATE_BOOL),

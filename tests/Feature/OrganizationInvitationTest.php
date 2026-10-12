@@ -391,6 +391,7 @@ class OrganizationInvitationTest extends TestCase
         $this->get(route('invitations.show', $token))->assertOk()->assertSee($invitation->email);
         $this->post(route('invitations.accept', $token), ['name' => '招待メンバー', 'password' => 'secure-password-123', 'password_confirmation' => 'secure-password-123'])->assertRedirect(route('dashboard'));
         $memberId = User::query()->where('email', $invitation->email)->value('id');
+        $this->assertNotNull(User::query()->findOrFail($memberId)->email_verified_at);
         $this->assertDatabaseHas('organization_memberships', ['organization_id' => $organization->id, 'role' => 'viewer', 'user_id' => $memberId]);
         $this->assertNotNull($invitation->fresh()->accepted_at);
         $this->assertDatabaseHas('product_events', ['event_key' => 'member_joined', 'organization_id' => $organization->id]);

@@ -101,9 +101,13 @@ class OrganizationInvitationController extends Controller
             $user = $request->user();
             if ($user === null) {
                 $user = User::query()->create(['name' => $request->string('name')->toString(), 'email' => $lockedInvitation->email, 'password' => $request->string('password')->toString()]);
+                $user->markEmailAsVerified();
                 Auth::login($user);
             } else {
                 $user->update(['name' => $request->string('name')->toString()]);
+                if ($user->email_verification_required_at !== null && $user->email_verified_at === null) {
+                    $user->markEmailAsVerified();
+                }
             }
             $membership = OrganizationMembership::query()->updateOrCreate(['organization_id' => $organization->id, 'user_id' => $user->id], ['role' => $lockedInvitation->role, 'status' => MembershipStatus::Active, 'invited_at' => $lockedInvitation->created_at, 'joined_at' => now()]);
             $lockedInvitation->update(['accepted_at' => now()]);
