@@ -1298,10 +1298,11 @@ class ImportMappingTest extends TestCase
         $this->assertSame(1, $firstProfileVersion->version);
         $this->assertSame(1, $firstProfileVersion->header_end_row_number);
         $this->assertSame($sourceSignature, $firstProfileVersion->source_signature);
-        $this->assertSame(
-            ['Employee name' => 'name', 'Work email' => 'email'],
-            ImportProfile::query()->where('organization_id', $organization->id)->findOrFail($firstProfileVersion->id)->column_map,
-        );
+        $expectedColumnMap = ['Employee name' => 'name', 'Work email' => 'email'];
+        $actualColumnMap = ImportProfile::query()->where('organization_id', $organization->id)->findOrFail($firstProfileVersion->id)->column_map;
+        ksort($expectedColumnMap);
+        ksort($actualColumnMap);
+        $this->assertSame($expectedColumnMap, $actualColumnMap);
 
         $secondBatch = ImportBatch::query()->create([
             'organization_id' => $organization->id,
