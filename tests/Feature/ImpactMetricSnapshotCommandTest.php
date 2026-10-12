@@ -6,6 +6,8 @@ use App\Models\ImpactMetricSnapshot;
 use App\Models\ImportBatch;
 use App\Models\Organization;
 use App\Services\ImpactReportMetricsService;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Mockery;
 use Tests\TestCase;
@@ -58,6 +60,49 @@ class ImpactMetricSnapshotCommandTest extends TestCase
         $this->assertTrue($first->wasRecentlyCreated);
         $this->assertFalse($second->wasRecentlyCreated);
         $this->assertSame($first->id, $second->id);
+    }
+
+    public function test_existing_daily_snapshots_are_checked_in_a_batch_for_organizations_with_the_same_local_date(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $organizations = collect(range(1, 2))->map(function (int $index): Organization {
+            $suffix = Str::lower(Str::random(8));
+
+            return Organization::factory()->create([
+                'name' => 'Batch snapshot '.$index.' '.$suffix,
+                'timezone' => 'Asia/Tokyo',
+            ]);
+        });
+
+        foreach ($organizations as $organization) {
+            ImpactMetricSnapshot::factory()->create([
+                'organization_id' => $organization->id,
+                'import_batch_id' => null,
+                'stage' => 'daily',
+                'snapshot_date' => now($organization->timezone)->toDateString(),
+            ]);
+        }
+
+        config(['opsdeck.pagination.per_page' => Organization::query()->count() + 1]);
+        $expectedSnapshotDateGroups = Organization::query()
+            ->get()
+            ->groupBy(fn (Organization $organization): string => now($organization->timezone)->toDateString())
+            ->count();
+
+        $snapshotSelects = [];
+        DB::listen(static function (QueryExecuted $query) use (&$snapshotSelects): void {
+            $normalizedSql = strtolower(ltrim($query->sql));
+            if (str_starts_with($normalizedSql, 'select') && str_contains($normalizedSql, 'impact_metric_snapshots')) {
+                $snapshotSelects[] = $query->sql;
+            }
+        });
+
+        $this->artisan('opsdeck:impact:snapshots')
+            ->expectsOutput('Captured daily impact snapshots: 0')
+            ->assertExitCode(0);
+
+        $this->assertSame($expectedSnapshotDateGroups, count($snapshotSelects), implode(PHP_EOL, $snapshotSelects));
+        $this->assertLessThan(Organization::query()->count(), count($snapshotSelects));
     }
 
     public function test_pruning_only_deletes_daily_snapshots_older_than_the_configured_duration(): void
