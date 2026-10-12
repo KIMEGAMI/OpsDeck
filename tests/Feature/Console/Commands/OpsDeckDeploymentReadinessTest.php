@@ -316,6 +316,20 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_it_fails_readiness_when_admin_mail_uses_an_unverified_resend_domain(): void
+    {
+        $this->configureReadyDeployment();
+        config(['opsdeck.admin_mail_from_address' => 'opsdeck@unverified.example.test']);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
     public function test_it_fails_readiness_without_a_separate_resend_domain_check_key(): void
     {
         $this->configureReadyDeployment();

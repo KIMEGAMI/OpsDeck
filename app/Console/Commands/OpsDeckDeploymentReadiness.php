@@ -823,17 +823,37 @@ class OpsDeckDeploymentReadiness extends Command
             return $this->resendSendingDomainReadiness;
         }
 
-        $fromAddress = config('mail.from.address');
+        $fromAddresses = [config('mail.from.address'), config('opsdeck.admin_mail_from_address')];
         $apiKey = Env::get('RESEND_DOMAIN_CHECK_API_KEY');
-        if (! is_string($fromAddress) || ! is_string($apiKey) || trim($apiKey) === '') {
+        if (! is_string($apiKey) || trim($apiKey) === '') {
             return $this->resendSendingDomainReadiness = false;
         }
 
-        $senderDomain = strtolower(substr(strrchr($fromAddress, '@') ?: '', 1));
-        if ($senderDomain === '') {
-            return $this->resendSendingDomainReadiness = false;
+        $senderDomains = [];
+        foreach ($fromAddresses as $fromAddress) {
+            if (! is_string($fromAddress) || filter_var($fromAddress, FILTER_VALIDATE_EMAIL) === false) {
+                return $this->resendSendingDomainReadiness = false;
+            }
+
+            $senderDomain = strtolower(substr(strrchr($fromAddress, '@') ?: '', 1));
+            if ($senderDomain === '') {
+                return $this->resendSendingDomainReadiness = false;
+            }
+
+            $senderDomains[$senderDomain] = true;
         }
 
+        foreach (array_keys($senderDomains) as $senderDomain) {
+            if (! $this->resendDomainIsVerified($senderDomain, $apiKey)) {
+                return $this->resendSendingDomainReadiness = false;
+            }
+        }
+
+        return $this->resendSendingDomainReadiness = true;
+    }
+
+    private function resendDomainIsVerified(string $senderDomain, string $apiKey): bool
+    {
         $after = null;
         do {
             $parameters = ['limit' => self::RESEND_DOMAIN_PAGE_SIZE];
@@ -847,12 +867,12 @@ class OpsDeckDeploymentReadiness extends Command
                     ->timeout(self::RESEND_DOMAIN_TIMEOUT_SECONDS)
                     ->get('https://api.resend.com/domains', $parameters);
             } catch (Throwable) {
-                return $this->resendSendingDomainReadiness = false;
+                return false;
             }
 
             $domains = $response->json('data');
             if (! $response->successful() || ! is_array($domains)) {
-                return $this->resendSendingDomainReadiness = false;
+                return false;
             }
 
             foreach ($domains as $domain) {
@@ -861,19 +881,19 @@ class OpsDeckDeploymentReadiness extends Command
                     continue;
                 }
 
-                return $this->resendSendingDomainReadiness = ($domain['status'] ?? null) === 'verified'
+                return ($domain['status'] ?? null) === 'verified'
                     && is_array($domain['capabilities'] ?? null)
                     && ($domain['capabilities']['sending'] ?? null) === 'enabled';
             }
 
             if ($response->json('has_more') !== true) {
-                return $this->resendSendingDomainReadiness = false;
+                return false;
             }
 
             $lastDomain = end($domains);
             $lastDomainId = is_array($lastDomain) ? ($lastDomain['id'] ?? null) : null;
             if (! is_string($lastDomainId) || $lastDomainId === '' || $lastDomainId === $after) {
-                return $this->resendSendingDomainReadiness = false;
+                return false;
             }
 
             $after = $lastDomainId;
