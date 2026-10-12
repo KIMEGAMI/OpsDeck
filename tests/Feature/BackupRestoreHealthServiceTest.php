@@ -41,12 +41,13 @@ class BackupRestoreHealthServiceTest extends TestCase
     public function test_recent_successful_restore_test_is_healthy(): void
     {
         $this->app['env'] = 'production';
-        $this->recordCheck('passed', now()->subDay());
+        $completedAt = now()->subDay();
+        $this->recordCheck('passed', $completedAt);
 
         $report = app(BackupRestoreHealthService::class)->report();
 
         $this->assertSame('ok', $report['status']);
-        $this->assertSame(now()->subDay()->format('Y-m-d H:i:s'), $report['completed_at']);
+        $this->assertSame($completedAt->format('Y-m-d H:i:s'), $report['completed_at']);
     }
 
     public function test_failed_restore_test_is_reported_as_failed(): void

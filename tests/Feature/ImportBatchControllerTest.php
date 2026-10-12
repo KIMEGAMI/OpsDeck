@@ -8,6 +8,7 @@ use App\Jobs\ExecuteImportBatch;
 use App\Jobs\PrepareImportPreview;
 use App\Models\AuditLog;
 use App\Models\Employee;
+use App\Models\GoogleSheetConnection;
 use App\Models\ImportBatch;
 use App\Models\ImportRowResult;
 use App\Models\Organization;
@@ -28,11 +29,23 @@ use ZipArchive;
 
 class ImportBatchControllerTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config([
+            'opsdeck.ai.usd_to_jpy_rate' => 150,
+            'opsdeck.ai.model_prices_per_million_tokens' => [
+                'gpt-6-luna' => ['input' => 0.10, 'output' => 0.50],
+                'gpt-6.1-sol' => ['input' => 2.00, 'output' => 10.00],
+            ],
+        ]);
+    }
+
     public function test_operator_sees_ai_mapping_candidate_reason_and_confidence_before_saving(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
-        $organization->update(['ai_enabled' => true]);
+        $organization->update(['ai_enabled' => true, 'plan_code' => config('opsdeck.premium_plan_code')]);
         $batch = ImportBatch::query()->create([
             'organization_id' => $organization->id,
             'source_type' => 'csv',
@@ -42,11 +55,12 @@ class ImportBatchControllerTest extends TestCase
         ]);
         $reason = '列名と対象項目の意味が近いため <script>alert(1)</script>';
         config(['opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
-        Http::fake(['api.openai.com/v1/chat/completions' => Http::response([
-            'choices' => [['message' => ['content' => json_encode(['suggestions' => [
-                '氏名' => ['field' => 'name', 'confidence' => 0.96, 'reason' => $reason],
-            ]])]]],
-            'usage' => ['prompt_tokens' => 12, 'completion_tokens' => 8],
+        Http::fake(['api.openai.com/v1/responses' => Http::response([
+            'status' => 'completed',
+            'output' => [['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode(['suggestions' => [
+                ['source_column' => '氏名', 'field' => 'name', 'confidence' => 0.96, 'reason' => $reason, 'requires_review' => false, 'question' => null],
+            ]])]]]],
+            'usage' => ['input_tokens' => 12, 'output_tokens' => 8],
         ], 200)]);
 
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
@@ -55,16 +69,19 @@ class ImportBatchControllerTest extends TestCase
         $response->assertOk()
             ->assertSee('AI列マッピング候補')
             ->assertSee('保存後、行ごとの新規・更新・確認待ち・エラーを分析します。分析中はImportできません。業務データはこの操作では変更されません。')
-            ->assertSee('取込元の列名・対象データ種別・OpsDeckの候補項目だけ')
+            ->assertSee('取込元の列名・対象データ種別・OpsDeckの候補項目を設定済みのAIサービスへ送信します')
+            ->assertSee('メールアドレス・電話番号らしき値は送信前に伏せます')
+            ->assertSee('氏名などを含む場合は先に匿名化してください')
             ->assertSee('取込元の行データやファイル／シート全体は送信しません')
             ->assertSee('96%')
             ->assertSee('列名と対象項目の意味が近いため')
+            ->assertSee('確認')
+            ->assertSee('候補です。保存前に確認してください。')
             ->assertSee('&lt;script&gt;alert(1)&lt;/script&gt;', false)
             ->assertDontSee('<script>alert(1)</script>', false);
         Http::assertSentCount(1);
         Http::assertSent(function (Request $request): bool {
-            $messages = $request->data()['messages'] ?? [];
-            $userMessage = $messages[1]['content'] ?? null;
+            $userMessage = $request->data()['input'] ?? null;
             $sentMappingContext = is_string($userMessage) ? json_decode($userMessage, true) : null;
 
             return $sentMappingContext === [
@@ -79,7 +96,7 @@ class ImportBatchControllerTest extends TestCase
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$viewer, $organization] = $this->member(MembershipRole::Viewer);
-        $organization->update(['ai_enabled' => true]);
+        $organization->update(['ai_enabled' => true, 'plan_code' => config('opsdeck.premium_plan_code')]);
         $batch = ImportBatch::query()->create([
             'organization_id' => $organization->id,
             'source_type' => 'csv',
@@ -88,7 +105,7 @@ class ImportBatchControllerTest extends TestCase
             'status' => 'preview',
         ]);
         config(['opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
-        Http::fake(['api.openai.com/v1/chat/completions' => Http::response([], 200)]);
+        Http::fake(['api.openai.com/v1/responses' => Http::response([], 200)]);
 
         $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', [$batch, 'ai' => 1, 'ai_target_type' => 'employees']))
@@ -101,7 +118,7 @@ class ImportBatchControllerTest extends TestCase
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
-        $organization->update(['ai_enabled' => true]);
+        $organization->update(['ai_enabled' => true, 'plan_code' => config('opsdeck.premium_plan_code')]);
         $batch = ImportBatch::query()->create([
             'organization_id' => $organization->id,
             'source_type' => 'csv',
@@ -115,17 +132,62 @@ class ImportBatchControllerTest extends TestCase
             'opsdeck.ai.api_key' => 'test-key',
             'opsdeck.ai.mapping_suggestions_max_attempts' => 1,
         ]);
-        Http::fake(['api.openai.com/v1/chat/completions' => Http::response([
-            'choices' => [['message' => ['content' => json_encode(['suggestions' => [
-                '氏名' => ['field' => 'name', 'confidence' => 0.96, 'reason' => '氏名を示す列名のため'],
-            ]])]]],
-            'usage' => ['prompt_tokens' => 12, 'completion_tokens' => 8],
+        Http::fake(['api.openai.com/v1/responses' => Http::response([
+            'status' => 'completed',
+            'output' => [['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode(['suggestions' => [
+                ['source_column' => '氏名', 'field' => 'name', 'confidence' => 0.96, 'reason' => '氏名を示す列名のため', 'requires_review' => false, 'question' => null],
+            ]])]]]],
+            'usage' => ['input_tokens' => 12, 'output_tokens' => 8],
         ], 200)]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', [$batch, 'ai' => 1, 'ai_target_type' => 'employees']))
             ->assertOk();
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', [$batch, 'ai' => 1, 'ai_target_type' => 'employees']))
+            ->assertTooManyRequests();
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_ai_mapping_suggestions_share_an_organization_limit_across_members(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$firstUser, $organization] = $this->member(MembershipRole::Operator);
+        $organization->update(['ai_enabled' => true, 'plan_code' => config('opsdeck.premium_plan_code')]);
+        $secondUser = User::factory()->create();
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $secondUser->id,
+            'role' => MembershipRole::Operator,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'employees.csv',
+            'headers_json' => ['氏名'],
+            'status' => 'preview',
+        ]);
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.api_key' => 'test-key',
+            'opsdeck.ai.mapping_suggestions_max_attempts' => 1,
+        ]);
+        Http::fake(['api.openai.com/v1/responses' => Http::response([
+            'status' => 'completed',
+            'output' => [['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode(['suggestions' => [
+                ['source_column' => '氏名', 'field' => 'name', 'confidence' => 0.96, 'reason' => '氏名を示す列名のため', 'requires_review' => false, 'question' => null],
+            ]])]]]],
+            'usage' => ['input_tokens' => 12, 'output_tokens' => 8],
+        ], 200)]);
+
+        $this->actingAs($firstUser)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', [$batch, 'ai' => 1, 'ai_target_type' => 'employees']))
+            ->assertOk();
+        $this->actingAs($secondUser)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', [$batch, 'ai' => 1, 'ai_target_type' => 'employees']))
             ->assertTooManyRequests();
 
@@ -141,10 +203,13 @@ class ImportBatchControllerTest extends TestCase
             ->get(route('imports.create'))
             ->assertOk()
             ->assertSee('CSVファイル')
+            ->assertSee('見出し範囲の開始行')
+            ->assertSee('見出し範囲の終了行')
+            ->assertSee('データ開始行（任意）')
             ->assertDontSee('XLSXファイル')
             ->assertDontSee('Importを実行します')
             ->assertSee('1回の取込は最大20,000行')
-            ->assertSee('取込名とファイルを選び、「プレビューを作成」を押します。')
+            ->assertSee('取込名・見出し範囲・必要ならデータ開始行・ファイルを選び、「プレビューを作成」を押します。')
             ->assertSee('Previewの準備後、Import詳細画面の「列マッピングを設定する」で対象データ種別と列の対応を設定します。')
             ->assertSee('マッピング分析後、新規・更新・確認待ち・エラーを確認し、必要な行だけを選択します。')
             ->assertSee('サンプル行をImportすると組織の業務データとして登録される');
@@ -208,6 +273,63 @@ class ImportBatchControllerTest extends TestCase
             ->assertSessionHasErrors('target_type');
 
         $this->assertDatabaseCount('import_batches', $previousImportBatchCount);
+    }
+
+    public function test_import_header_row_number_is_bounded_before_the_upload_is_stored(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.store'), [
+                'source_name' => 'invalid header row',
+                'header_row_number' => config('opsdeck.import.max_header_row_number') + 1,
+                'file' => UploadedFile::fake()->createWithContent('employees.csv', "name,email\nAlice,alice@example.test\n"),
+            ])
+            ->assertSessionHasErrors('header_row_number');
+
+        $this->assertDatabaseMissing('import_batches', ['organization_id' => $organization->id]);
+        $this->assertSame([], Storage::disk(config('opsdeck.import.disk'))->allFiles());
+    }
+
+    public function test_import_data_start_row_must_be_after_the_header_and_within_the_source_limit(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.store'), [
+                'source_name' => 'invalid data row',
+                'header_row_number' => 3,
+                'data_start_row_number' => 3,
+                'file' => UploadedFile::fake()->createWithContent('employees.csv', "title\nnotes\nname\nAlice\n"),
+            ])
+            ->assertSessionHasErrors('data_start_row_number');
+
+        $this->assertDatabaseMissing('import_batches', ['organization_id' => $organization->id]);
+        $this->assertSame([], Storage::disk(config('opsdeck.import.disk'))->allFiles());
+    }
+
+    public function test_import_data_start_row_must_be_after_the_complete_header_range(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.store'), [
+                'source_name' => 'invalid header range',
+                'header_row_number' => 2,
+                'header_end_row_number' => 4,
+                'data_start_row_number' => 4,
+                'file' => UploadedFile::fake()->createWithContent('employees.csv', "group\nsubgroup\nname\nAlice\n"),
+            ])
+            ->assertSessionHasErrors('data_start_row_number');
+
+        $this->assertDatabaseMissing('import_batches', ['organization_id' => $organization->id]);
+        $this->assertSame([], Storage::disk(config('opsdeck.import.disk'))->allFiles());
     }
 
     public function test_premium_import_page_explains_xlsx_date_and_amount_handling(): void
@@ -416,14 +538,20 @@ class ImportBatchControllerTest extends TestCase
 
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.store'), [
             'source_name' => '社員CSV',
-            'file' => UploadedFile::fake()->createWithContent('employees.csv', "name,email\nAlice,a@example.test\nBob,b@example.test\n"),
+            'header_row_number' => 3,
+            'data_start_row_number' => 5,
+            'file' => UploadedFile::fake()->createWithContent('employees.csv', "社員管理台帳\n2026年度\nname,email\nnote,集計対象外\nAlice,a@example.test\nBob,b@example.test\n"),
         ]);
 
         $response->assertRedirect();
         $batch = ImportBatch::query()->where('organization_id', $organization->id)->firstOrFail();
         $this->assertSame('preview', $batch->status);
+        $this->assertSame(3, $batch->header_row_number);
+        $this->assertSame(5, $batch->data_start_row_number);
+        $this->assertSame(['name', 'email'], $batch->headers_json);
         $this->assertSame(2, $batch->total_rows);
         $this->assertSame(2, ImportRowResult::query()->where('import_batch_id', $batch->id)->count());
+        $this->assertSame([5, 6], $batch->rowResults()->orderBy('source_row_number')->pluck('source_row_number')->all());
         $this->assertDatabaseCount('employees', $employeeCountBefore);
         Storage::disk(config('opsdeck.import.disk'))->assertExists($batch->source_file_path);
     }
@@ -601,6 +729,137 @@ class ImportBatchControllerTest extends TestCase
 
         $this->assertSame('previewing', $batch->refresh()->status);
         Queue::assertPushed(PrepareImportPreview::class, fn (PrepareImportPreview $job): bool => $job->importBatchId === $batch->id);
+    }
+
+    public function test_google_sheet_selection_saves_the_selected_header_and_data_row_range(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'test-access-token', 'refresh_token' => 'test-refresh-token']);
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'employee-sheet',
+            'source_external_id' => 'spreadsheet-id',
+            'available_sheets_json' => ['社員一覧'],
+            'status' => 'sheet_selection',
+        ]);
+        Queue::fake([PrepareImportPreview::class]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.google-sheet.store', $batch), [
+                'sheet_name' => '社員一覧',
+                'header_row_number' => 2,
+                'header_end_row_number' => 3,
+                'data_start_row_number' => 5,
+            ])
+            ->assertRedirect(route('imports.show', $batch));
+
+        $this->assertSame('previewing', $batch->refresh()->status);
+        $this->assertSame(2, $batch->header_row_number);
+        $this->assertSame(3, $batch->header_end_row_number);
+        $this->assertSame(5, $batch->data_start_row_number);
+        Queue::assertPushed(PrepareImportPreview::class, fn (PrepareImportPreview $job): bool => $job->importBatchId === $batch->id);
+    }
+
+    public function test_operator_can_create_a_separate_preview_for_another_sheet_without_reuploading(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        $sourcePath = 'imports/'.$organization->id.'/company-register.xlsx';
+        Storage::disk(config('opsdeck.import.disk'))->put($sourcePath, 'the workbook stays in private storage');
+        $sourceBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'source_name' => '会社台帳',
+            'source_file_path' => $sourcePath,
+            'available_sheets_json' => ['社員一覧', '資産一覧'],
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'preview',
+        ]);
+        Queue::fake([PrepareImportPreview::class]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', $sourceBatch))
+            ->assertOk()
+            ->assertSee('このXLSXの別シートを取り込む')
+            ->assertSee('社員・資産などの関係を自動で結合しません。');
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.sheet.additional', $sourceBatch), [
+                'sheet_name' => '資産一覧',
+                'header_row_number' => 3,
+                'data_start_row_number' => 5,
+            ])
+            ->assertRedirect();
+
+        $additionalBatch = ImportBatch::query()
+            ->where('organization_id', $organization->id)
+            ->where('id', '!=', $sourceBatch->id)
+            ->firstOrFail();
+        $this->assertSame($sourcePath, $additionalBatch->source_file_path);
+        $this->assertSame('資産一覧', $additionalBatch->selected_sheet_name);
+        $this->assertSame(3, $additionalBatch->header_row_number);
+        $this->assertSame(5, $additionalBatch->data_start_row_number);
+        $this->assertSame('previewing', $additionalBatch->status);
+        Queue::assertPushed(PrepareImportPreview::class, fn (PrepareImportPreview $job): bool => $job->importBatchId === $additionalBatch->id);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', $sourceBatch))
+            ->assertOk()
+            ->assertDontSee('このXLSXの別シートを取り込む');
+    }
+
+    public function test_additional_sheet_import_rejects_sheets_already_used_from_the_same_workbook(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        $sourcePath = 'imports/'.$organization->id.'/company-register.xlsx';
+        Storage::disk(config('opsdeck.import.disk'))->put($sourcePath, 'the workbook stays in private storage');
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'source_name' => '会社台帳',
+            'source_file_path' => $sourcePath,
+            'available_sheets_json' => ['社員一覧', '資産一覧'],
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'preview',
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.sheet.additional', $batch), ['sheet_name' => '社員一覧'])
+            ->assertStatus(409);
+
+        $this->assertSame(1, ImportBatch::query()->where('source_file_path', $sourcePath)->count());
+    }
+
+    public function test_viewer_cannot_create_an_additional_sheet_import(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$viewer, $organization] = $this->member(MembershipRole::Viewer);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        $sourcePath = 'imports/'.$organization->id.'/company-register.xlsx';
+        Storage::disk(config('opsdeck.import.disk'))->put($sourcePath, 'the workbook stays in private storage');
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'source_name' => '会社台帳',
+            'source_file_path' => $sourcePath,
+            'available_sheets_json' => ['社員一覧', '資産一覧'],
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'preview',
+        ]);
+
+        $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.sheet.additional', $batch), ['sheet_name' => '資産一覧'])
+            ->assertForbidden();
+
+        $this->assertSame(1, ImportBatch::query()->where('source_file_path', $sourcePath)->count());
     }
 
     public function test_xlsx_preview_streams_rows_into_preview_records(): void

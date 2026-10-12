@@ -7,25 +7,35 @@ use App\Enums\MembershipStatus;
 use App\Jobs\ExecuteImportBatch;
 use App\Jobs\PrepareImportMappingAnalysis;
 use App\Models\AuditLog;
+use App\Models\Contract;
 use App\Models\Department;
 use App\Models\Employee;
 use App\Models\ImportBatch;
+use App\Models\ImportProfile;
 use App\Models\ImportReviewCandidate;
 use App\Models\ImportRowResult;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireQuestion;
+use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Models\User;
+use App\Services\Import\ImportMappingAnalysisService;
+use App\Services\Import\ImportNormalizationSuggestionService;
+use App\Services\Import\ImportPreviewPreparationService;
+use App\Services\Import\ImportProfileService;
 use App\Services\ImportBatchExecutionService;
+use App\Services\ImportBatchRollbackService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Tests\TestCase;
 
 class ImportMappingTest extends TestCase
@@ -111,6 +121,90 @@ class ImportMappingTest extends TestCase
         $this->assertSame(1, $batch->inserted_rows);
     }
 
+    public function test_saas_assignment_preview_matches_existing_records_and_import_updates_them(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $service = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Slack', 'status' => 'active']);
+        $employee = Employee::query()->create(['organization_id' => $organization->id, 'name' => '担当者', 'email' => 'assignment-owner@example.test', 'employment_status' => 'active']);
+        $assignment = SaasAssignment::query()->create([
+            'organization_id' => $organization->id,
+            'saas_service_id' => $service->id,
+            'employee_id' => $employee->id,
+            'account_identifier' => 'account-001',
+            'license_name' => 'Old license',
+            'status' => 'active',
+            'mfa_status' => 'unknown',
+        ]);
+        $path = 'imports/'.$organization->id.'/existing-assignment.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "service_name,employee_email,account_identifier,license_name,status,mfa_status\nslack,ASSIGNMENT-OWNER@EXAMPLE.TEST,account-001,Premium,active,enabled\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Existing SaaS assignment',
+            'source_file_path' => $path,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+        ]);
+        app(ImportPreviewPreparationService::class)->prepare($batch->id);
+        $mapping = $batch->mappings()->create([
+            'target_type' => 'saas_assignments',
+            'column_map' => ['service_name' => 'service_name', 'employee_email' => 'employee_email', 'account_identifier' => 'account_identifier', 'license_name' => 'license_name', 'status' => 'status', 'mfa_status' => 'mfa_status'],
+            'normalization_rules' => [],
+            'status' => 'analyzing',
+            'created_by' => $user->id,
+        ]);
+        $batch->update(['mapping_id' => (string) $mapping->id, 'status' => 'analyzing']);
+
+        (new PrepareImportMappingAnalysis($batch->id, $mapping->id))->handle(app(ImportMappingAnalysisService::class));
+
+        $this->assertSame(1, $batch->refresh()->preview_updated_rows);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 2, 'action' => 'update_candidate']);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+
+        $this->assertSame(1, $batch->refresh()->updated_rows);
+        $this->assertSame(1, SaasAssignment::query()->where('organization_id', $organization->id)->count());
+        $this->assertSame('Premium', $assignment->refresh()->license_name);
+        $this->assertSame('enabled', $assignment->mfa_status);
+    }
+
+    public function test_saas_assignment_preview_rejects_references_from_another_organization(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        [, $otherOrganization] = $this->member(MembershipRole::Operator);
+        SaasService::query()->create(['organization_id' => $otherOrganization->id, 'name' => 'Remote SaaS', 'status' => 'active']);
+        Employee::query()->create(['organization_id' => $otherOrganization->id, 'name' => 'Remote owner', 'email' => 'remote-assignment@example.test', 'employment_status' => 'active']);
+        $path = 'imports/'.$organization->id.'/foreign-assignment.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "service_name,employee_email,account_identifier,status,mfa_status\nRemote SaaS,remote-assignment@example.test,remote-001,active,enabled\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Foreign SaaS assignment references',
+            'source_file_path' => $path,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+        ]);
+        app(ImportPreviewPreparationService::class)->prepare($batch->id);
+        $mapping = $batch->mappings()->create([
+            'target_type' => 'saas_assignments',
+            'column_map' => ['service_name' => 'service_name', 'employee_email' => 'employee_email', 'account_identifier' => 'account_identifier', 'status' => 'status', 'mfa_status' => 'mfa_status'],
+            'normalization_rules' => [],
+            'status' => 'analyzing',
+            'created_by' => $user->id,
+        ]);
+        $batch->update(['mapping_id' => (string) $mapping->id, 'status' => 'analyzing']);
+
+        (new PrepareImportMappingAnalysis($batch->id, $mapping->id))->handle(app(ImportMappingAnalysisService::class));
+
+        $this->assertSame(1, $batch->refresh()->preview_error_rows);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 2, 'action' => 'error']);
+        $this->assertSame(0, SaasAssignment::query()->where('organization_id', $organization->id)->count());
+    }
+
     public function test_operator_can_execute_evidence_metadata_import(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -188,6 +282,155 @@ class ImportMappingTest extends TestCase
         $this->assertDatabaseHas('contracts', ['organization_id' => $organization->id, 'contract_name' => 'Support', 'amount' => 120000]);
         $this->assertSame('completed', $batch->refresh()->status);
         $this->assertSame(1, $batch->inserted_rows);
+    }
+
+    public function test_contract_import_resolves_organization_scoped_relations_and_rollback_restores_changes(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $service = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Office Suite', 'status' => 'active']);
+        $owner = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Contract owner',
+            'email' => 'Owner-'.Str::random(8).'@example.test',
+            'employment_status' => 'active',
+        ]);
+        $existingContract = Contract::query()->create([
+            'organization_id' => $organization->id,
+            'saas_service_id' => $service->id,
+            'owner_employee_id' => $owner->id,
+            'vendor_name' => 'Acme',
+            'contract_name' => 'Existing support',
+            'contract_type' => 'software',
+            'billing_cycle' => 'annual',
+            'amount' => 100,
+            'currency' => 'JPY',
+            'auto_renew' => false,
+            'status' => 'active',
+        ]);
+        $ownerEmail = strtolower((string) $owner->email);
+        $path = 'imports/'.$organization->id.'/contract-relations.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "vendor_name,contract_name,billing_cycle,amount,currency,status,service_name,employee_email\nAcme,New support,annual,120000,JPY,active,office suite,{$ownerEmail}\nAcme,Existing support,annual,200,JPY,active,,\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Contract relations',
+            'source_file_path' => $path,
+            'headers_json' => ['vendor_name', 'contract_name', 'billing_cycle', 'amount', 'currency', 'status', 'service_name', 'employee_email'],
+            'status' => 'ready',
+            'executed_by' => $user->id,
+        ]);
+        $batch->mappings()->create([
+            'target_type' => 'contracts',
+            'column_map' => ['vendor_name' => 'vendor_name', 'contract_name' => 'contract_name', 'billing_cycle' => 'billing_cycle', 'amount' => 'amount', 'currency' => 'currency', 'status' => 'status', 'service_name' => 'service_name', 'employee_email' => 'employee_email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+
+        $newContract = Contract::query()->where('organization_id', $organization->id)->where('contract_name', 'New support')->firstOrFail();
+        $this->assertSame($service->id, $newContract->saas_service_id);
+        $this->assertSame($owner->id, $newContract->owner_employee_id);
+        $this->assertSame($service->id, $existingContract->refresh()->saas_service_id);
+        $this->assertSame($owner->id, $existingContract->owner_employee_id);
+        $this->assertSame('200.00', $existingContract->amount);
+        $this->assertSame('software', $existingContract->contract_type);
+        $this->assertFalse($existingContract->auto_renew);
+        $this->assertSame(1, $batch->refresh()->inserted_rows);
+        $this->assertSame(1, $batch->updated_rows);
+
+        $batch->update(['status' => 'rolling_back']);
+        app(ImportBatchRollbackService::class)->rollback($batch->id);
+
+        $this->assertSame('cancelled', $batch->refresh()->status);
+        $this->assertDatabaseMissing('contracts', ['id' => $newContract->id]);
+        $this->assertSame('100.00', $existingContract->refresh()->amount);
+        $this->assertSame($service->id, $existingContract->saas_service_id);
+        $this->assertSame($owner->id, $existingContract->owner_employee_id);
+    }
+
+    public function test_rollback_does_not_delete_an_inserted_record_edited_after_import(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $email = 'rollback-protection-'.Str::uuid().'@example.test';
+        $path = 'imports/'.$organization->id.'/rollback-protection.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "name,email\nImported employee,{$email}\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Rollback protection',
+            'source_file_path' => $path,
+            'headers_json' => ['name', 'email'],
+            'status' => 'ready',
+            'executed_by' => $user->id,
+        ]);
+        $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['name' => 'name', 'email' => 'email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+        $employee = Employee::query()->where('organization_id', $organization->id)->where('email', $email)->firstOrFail();
+        $afterSnapshot = $batch->rowResults()->where('target_id', $employee->id)->firstOrFail()->after_json;
+        $this->assertArrayHasKey('memo', $afterSnapshot);
+        $this->assertNull($afterSnapshot['memo']);
+        $employee->update(['memo' => 'Added after import']);
+        $batch->update(['status' => 'rolling_back']);
+
+        try {
+            app(ImportBatchRollbackService::class)->rollback($batch->id);
+            $this->fail('A post-import edit should prevent deleting the inserted record.');
+        } catch (HttpExceptionInterface $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+
+        $this->assertSame('Added after import', $employee->refresh()->memo);
+        $this->assertSame('rolling_back', $batch->refresh()->status);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'action' => 'inserted']);
+    }
+
+    public function test_contract_import_preview_rejects_relations_that_exist_only_in_another_organization(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        [, $otherOrganization] = $this->member(MembershipRole::Operator);
+        SaasService::query()->create(['organization_id' => $otherOrganization->id, 'name' => 'Remote SaaS', 'status' => 'active']);
+        Employee::query()->create(['organization_id' => $otherOrganization->id, 'name' => 'Remote owner', 'email' => 'remote-owner@example.test', 'employment_status' => 'active']);
+        $path = 'imports/'.$organization->id.'/foreign-contract-relations.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "vendor_name,contract_name,billing_cycle,amount,currency,status,service_name,employee_email\nAcme,Remote support,annual,120000,JPY,active,Remote SaaS,remote-owner@example.test\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Foreign contract relations',
+            'source_file_path' => $path,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+        ]);
+        app(ImportPreviewPreparationService::class)->prepare($batch->id);
+        $mapping = $batch->mappings()->create([
+            'target_type' => 'contracts',
+            'column_map' => ['vendor_name' => 'vendor_name', 'contract_name' => 'contract_name', 'billing_cycle' => 'billing_cycle', 'amount' => 'amount', 'currency' => 'currency', 'status' => 'status', 'service_name' => 'service_name', 'employee_email' => 'employee_email'],
+            'normalization_rules' => [],
+            'status' => 'analyzing',
+            'created_by' => $user->id,
+        ]);
+        $batch->update(['mapping_id' => (string) $mapping->id, 'status' => 'analyzing']);
+
+        (new PrepareImportMappingAnalysis($batch->id, $mapping->id))->handle(app(ImportMappingAnalysisService::class));
+
+        $this->assertSame('ready', $batch->refresh()->status);
+        $this->assertSame(1, $batch->preview_error_rows);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 2, 'action' => 'error']);
+        $this->assertDatabaseMissing('contracts', ['organization_id' => $organization->id, 'contract_name' => 'Remote support']);
     }
 
     public function test_contract_import_preview_flags_rows_that_have_invalid_amount_cycle_or_status(): void
@@ -290,6 +533,81 @@ class ImportMappingTest extends TestCase
         $this->assertSame('cancelled', $batch->refresh()->status);
     }
 
+    public function test_security_control_import_resolves_owner_within_organization_and_preserves_blank_owner(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        [, $otherOrganization] = $this->member(MembershipRole::Operator);
+        $currentOwner = Employee::query()->create(['organization_id' => $organization->id, 'name' => 'Current owner', 'email' => 'current-security-owner@example.test', 'employment_status' => 'active']);
+        $newOwner = Employee::query()->create(['organization_id' => $organization->id, 'name' => 'New owner', 'email' => 'new-security-owner@example.test', 'employment_status' => 'active']);
+        Employee::query()->create(['organization_id' => $organization->id, 'name' => 'Ambiguous owner one', 'email' => 'duplicate-security-owner@example.test', 'employment_status' => 'active']);
+        Employee::query()->create(['organization_id' => $organization->id, 'name' => 'Ambiguous owner two', 'email' => 'duplicate-security-owner@example.test', 'employment_status' => 'active']);
+        Employee::query()->create(['organization_id' => $otherOrganization->id, 'name' => 'Foreign owner', 'email' => 'foreign-security-owner@example.test', 'employment_status' => 'active']);
+        $unchangedControl = SecurityControl::query()->create([
+            'organization_id' => $organization->id,
+            'control_code' => 'AC-OLD',
+            'title' => 'Existing control',
+            'category' => 'access',
+            'description' => 'Existing description',
+            'status' => 'partial',
+            'owner_employee_id' => $currentOwner->id,
+        ]);
+        $changedControl = SecurityControl::query()->create([
+            'organization_id' => $organization->id,
+            'control_code' => 'AC-CHANGE',
+            'title' => 'Control to reassign',
+            'category' => 'access',
+            'description' => 'Existing description',
+            'status' => 'partial',
+            'owner_employee_id' => $currentOwner->id,
+        ]);
+        $path = 'imports/'.$organization->id.'/security-control-owners.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "control_code,title,category,description,status,owner_email\nAC-NEW,New control,access,New description,partial,CURRENT-SECURITY-OWNER@EXAMPLE.TEST\nAC-OLD,Existing control,access,Existing description,partial,\nAC-CHANGE,Control to reassign,access,Existing description,partial,new-security-owner@example.test\nAC-FOREIGN,Foreign owner,access,Foreign owner row,partial,foreign-security-owner@example.test\nAC-AMBIGUOUS,Ambiguous owner,access,Ambiguous owner row,partial,duplicate-security-owner@example.test\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Security control owners',
+            'source_file_path' => $path,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+        ]);
+        app(ImportPreviewPreparationService::class)->prepare($batch->id);
+        $mapping = $batch->mappings()->create([
+            'target_type' => 'security_controls',
+            'column_map' => ['control_code' => 'control_code', 'title' => 'title', 'category' => 'category', 'description' => 'description', 'status' => 'status', 'owner_email' => 'owner_email'],
+            'normalization_rules' => [],
+            'status' => 'analyzing',
+            'created_by' => $user->id,
+        ]);
+        $batch->update(['mapping_id' => (string) $mapping->id, 'status' => 'analyzing']);
+
+        (new PrepareImportMappingAnalysis($batch->id, $mapping->id))->handle(app(ImportMappingAnalysisService::class));
+
+        $this->assertSame(1, $batch->refresh()->preview_new_rows);
+        $this->assertSame(2, $batch->preview_updated_rows);
+        $this->assertSame(2, $batch->preview_error_rows);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 5, 'action' => 'error']);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 6, 'action' => 'error']);
+        $this->assertSame('ready', $batch->status);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+
+        $newControl = SecurityControl::query()->where('organization_id', $organization->id)->where('control_code', 'AC-NEW')->firstOrFail();
+        $this->assertSame($currentOwner->id, $newControl->owner_employee_id);
+        $this->assertSame($currentOwner->id, $unchangedControl->refresh()->owner_employee_id);
+        $this->assertSame($newOwner->id, $changedControl->refresh()->owner_employee_id);
+        $this->assertDatabaseMissing('security_controls', ['organization_id' => $organization->id, 'control_code' => 'AC-FOREIGN']);
+        $this->assertDatabaseMissing('security_controls', ['organization_id' => $organization->id, 'control_code' => 'AC-AMBIGUOUS']);
+        $this->assertSame(2, $batch->refresh()->error_rows);
+
+        $batch->update(['status' => 'rolling_back']);
+        app(ImportBatchRollbackService::class)->rollback($batch->id);
+
+        $this->assertSame($currentOwner->id, $changedControl->refresh()->owner_employee_id);
+        $this->assertDatabaseMissing('security_controls', ['id' => $newControl->id]);
+    }
+
     public function test_operator_can_execute_a_saas_service_import(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -340,6 +658,101 @@ class ImportMappingTest extends TestCase
         $this->assertDatabaseHas('departments', ['organization_id' => $organization->id, 'name' => '総務', 'code' => 'GA']);
         $this->assertSame('completed', $batch->refresh()->status);
         $this->assertSame(1, $batch->inserted_rows);
+    }
+
+    public function test_employee_import_preview_resolves_only_departments_in_the_current_organization(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        [, $otherOrganization] = $this->member(MembershipRole::Operator);
+        Department::query()->create(['organization_id' => $organization->id, 'name' => 'General Affairs', 'code' => 'GA']);
+        Department::query()->create(['organization_id' => $otherOrganization->id, 'name' => 'Sales', 'code' => 'SALES']);
+        Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Existing employee',
+            'email' => 'Existing-'.Str::random(8).'@example.test',
+            'employment_status' => 'active',
+        ]);
+
+        $path = 'imports/'.$organization->id.'/employees-with-departments.csv';
+        $existingEmail = (string) Employee::query()->where('organization_id', $organization->id)->value('email');
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "name,email,department\nAlice,alice-".Str::random(8)."@example.test, GENERAL AFFAIRS \nBob,bob-".Str::random(8)."@example.test,Sales\nExisting employee,".strtolower($existingEmail).",general affairs\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Employees with department references',
+            'source_file_path' => $path,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+        ]);
+        app(ImportPreviewPreparationService::class)->prepare($batch->id);
+        $mapping = $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['name' => 'name', 'email' => 'email', 'department' => 'department_name'],
+            'normalization_rules' => [],
+            'status' => 'analyzing',
+            'created_by' => $user->id,
+        ]);
+        $batch->update(['mapping_id' => (string) $mapping->id, 'status' => 'analyzing']);
+
+        (new PrepareImportMappingAnalysis($batch->id, $mapping->id))->handle(app(ImportMappingAnalysisService::class));
+
+        $this->assertSame('ready', $batch->refresh()->status);
+        $this->assertSame(1, $batch->preview_new_rows);
+        $this->assertSame(1, $batch->preview_updated_rows);
+        $this->assertSame(1, $batch->preview_error_rows);
+        $this->assertDatabaseHas('import_row_results', [
+            'import_batch_id' => $batch->id,
+            'source_row_number' => 3,
+            'action' => 'error',
+        ]);
+        $this->assertDatabaseHas('import_row_results', [
+            'import_batch_id' => $batch->id,
+            'source_row_number' => 4,
+            'action' => 'update_candidate',
+        ]);
+    }
+
+    public function test_employee_import_links_a_matching_department_and_blank_department_does_not_clear_existing_link(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $department = Department::query()->create(['organization_id' => $organization->id, 'name' => 'General Affairs', 'code' => 'GA']);
+        $existingEmployee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Existing employee',
+            'email' => 'existing-'.Str::random(8).'@example.test',
+            'department_id' => $department->id,
+            'employment_status' => 'active',
+        ]);
+        $path = 'imports/'.$organization->id.'/employee-department-reference.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "name,email,department\nNew employee,new-".Str::random(8)."@example.test,GENERAL AFFAIRS\nExisting employee,{$existingEmployee->email},\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Employee department reference',
+            'source_file_path' => $path,
+            'headers_json' => ['name', 'email', 'department'],
+            'status' => 'ready',
+            'executed_by' => $user->id,
+        ]);
+        $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['name' => 'name', 'email' => 'email', 'department' => 'department_name'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+
+        $newEmployee = Employee::query()->where('organization_id', $organization->id)->where('name', 'New employee')->firstOrFail();
+        $this->assertSame($department->id, $newEmployee->department_id);
+        $this->assertSame($department->id, $existingEmployee->refresh()->department_id);
+        $this->assertSame(1, $batch->refresh()->inserted_rows);
+        $this->assertSame(1, $batch->updated_rows);
     }
 
     public function test_operator_can_execute_a_ready_employee_import(): void
@@ -574,7 +987,84 @@ class ImportMappingTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', [$batch, 'ai_target_type' => 'contracts']))
             ->assertSee('amount: ¥1,000 → 1000')
+            ->assertSee('normalization_rules[amount]')
             ->assertDontSee('2,000');
+    }
+
+    public function test_normalization_rules_are_opt_in_strict_and_saved_with_reusable_profiles(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $path = 'imports/'.$organization->id.'/normalization-opt-in.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "amount\n\"¥1,000\"\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Contract amounts',
+            'source_file_path' => $path,
+            'headers_json' => ['amount'],
+            'status' => 'preview',
+        ]);
+
+        $normalizer = app(ImportNormalizationSuggestionService::class);
+        $this->assertSame(['amount' => '¥1,000'], $normalizer->apply('contracts', ['amount' => '¥1,000'], []));
+        $this->assertSame(['amount' => '1000'], $normalizer->apply('contracts', ['amount' => '¥1,000'], ['amount' => 'strip_amount_format']));
+        $this->assertSame(['started_at' => '03/04/2026'], $normalizer->apply('contracts', ['started_at' => '03/04/2026'], ['started_at' => 'normalize_iso_date']));
+        $this->assertSame(['started_at' => '2026-04-03'], $normalizer->apply('contracts', ['started_at' => '2026/4/3'], ['started_at' => 'normalize_iso_date']));
+        $this->expectException(ValidationException::class);
+        $normalizer->validateRules('contracts', ['name' => 'name'], ['name' => 'strip_amount_format']);
+    }
+
+    public function test_selected_normalization_rule_is_stored_on_mapping_and_profile_version(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $path = 'imports/'.$organization->id.'/normalization-profile.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "amount\n\"¥1,000\"\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Contract amounts',
+            'source_file_path' => $path,
+            'headers_json' => ['amount'],
+            'status' => 'preview',
+        ]);
+        ImportRowResult::query()->create([
+            'import_batch_id' => $batch->id,
+            'source_row_number' => 2,
+            'target_type' => 'unmapped',
+            'action' => 'preview',
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $batch), [
+                'target_type' => 'contracts',
+                'column_map' => ['amount' => 'amount'],
+                'normalization_rules' => ['amount' => 'strip_amount_format'],
+                'save_profile' => '1',
+                'profile_name' => 'Contract amounts',
+            ])->assertRedirect(route('imports.show', $batch));
+
+        $mapping = $batch->fresh()->mappings()->firstOrFail();
+        $this->assertSame(['amount' => 'strip_amount_format'], $mapping->normalization_rules);
+        $this->assertSame('1000', $batch->rowResults()->where('source_row_number', 2)->firstOrFail()->after_json['amount']);
+        $profile = $organization->importProfiles()->latest('id')->firstOrFail();
+        $this->assertSame(['amount' => 'strip_amount_format'], $profile->normalization_rules);
+
+        $nextBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'Next contract amounts',
+            'headers_json' => ['amount'],
+            'status' => 'preview',
+        ]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', [$nextBatch, 'profile_id' => $profile->id]))
+            ->assertOk()
+            ->assertSee('normalization_rules[amount]')
+            ->assertSee('checked', false);
     }
 
     public function test_duplicate_candidates_are_saved_and_can_be_reviewed_before_import(): void
@@ -698,6 +1188,215 @@ class ImportMappingTest extends TestCase
         $this->assertSame('analyzing', $mapping->refresh()->status);
         $this->assertSame(0, Employee::query()->where('organization_id', $organization->id)->count());
         Queue::assertPushed(PrepareImportMappingAnalysis::class, 2);
+    }
+
+    public function test_multi_row_import_header_range_is_saved_with_an_import_profile(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $headers = ['社員 / 氏名', '社員 / メール'];
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => '社員管理表',
+            'headers_json' => $headers,
+            'header_row_number' => 2,
+            'header_end_row_number' => 3,
+            'data_start_row_number' => 4,
+            'status' => 'preview',
+            'executed_by' => $user->id,
+        ]);
+        Queue::fake([PrepareImportMappingAnalysis::class]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $batch), [
+                'target_type' => 'employees',
+                'column_map' => ['社員 / 氏名' => 'name', '社員 / メール' => 'email'],
+                'save_profile' => '1',
+                'profile_name' => '複数段見出しの社員台帳',
+            ])
+            ->assertRedirect(route('imports.show', $batch));
+
+        $profile = ImportProfile::query()->where('organization_id', $organization->id)->firstOrFail();
+        $this->assertSame(2, $profile->header_row_number);
+        $this->assertSame(3, $profile->header_end_row_number);
+        $this->assertSame(4, $profile->data_start_row_number);
+        $this->assertSame(
+            app(ImportProfileService::class)->sourceSignature(null, $headers, 2, 4, 3),
+            $profile->source_signature,
+        );
+    }
+
+    public function test_operator_can_save_reuse_and_version_an_organization_scoped_import_profile(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        [, $otherOrganization] = $this->member(MembershipRole::Operator);
+        $headers = ['Employee name', 'Work email'];
+        $sourceSignature = app(ImportProfileService::class)->sourceSignature('Employees', $headers);
+        $profileFromOtherOrganization = ImportProfile::query()->create([
+            'organization_id' => $otherOrganization->id,
+            'profile_key' => (string) Str::uuid(),
+            'version' => 1,
+            'name' => 'Other company profile',
+            'target_type' => 'employees',
+            'source_signature' => $sourceSignature,
+            'header_row_number' => 1,
+            'data_start_row_number' => 2,
+            'selected_sheet_name' => 'Employees',
+            'source_headers' => $headers,
+            'column_map' => ['Employee name' => 'name', 'Work email' => 'email'],
+            'normalization_rules' => [],
+            'created_by' => $user->id,
+        ]);
+        $firstBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'source_name' => 'employee-register.xlsx',
+            'headers_json' => $headers,
+            'selected_sheet_name' => 'Employees',
+            'status' => 'preview',
+        ]);
+        Queue::fake([PrepareImportMappingAnalysis::class]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', [$firstBatch, 'profile_id' => $profileFromOtherOrganization->id]))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $firstBatch), [
+                'target_type' => 'employees',
+                'profile_id' => $profileFromOtherOrganization->id,
+                'column_map' => ['Employee name' => 'name', 'Work email' => 'email'],
+                'save_profile' => '1',
+            ])
+            ->assertNotFound();
+        $this->assertDatabaseMissing('import_profiles', ['organization_id' => $organization->id]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->from(route('imports.mapping', $firstBatch))
+            ->post(route('imports.mapping.store', $firstBatch), [
+                'target_type' => 'employees',
+                'column_map' => ['Employee name' => 'name', 'Work email' => 'email'],
+                'save_profile' => '1',
+            ])
+            ->assertSessionHasErrors('profile_name');
+        $this->assertDatabaseMissing('import_profiles', ['organization_id' => $organization->id]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $firstBatch), [
+                'target_type' => 'employees',
+                'column_map' => ['Employee name' => 'name', 'Work email' => 'email'],
+                'save_profile' => '1',
+                'profile_name' => '社員台帳',
+            ])
+            ->assertRedirect(route('imports.show', $firstBatch));
+
+        $firstProfileVersion = ImportProfile::query()->where('organization_id', $organization->id)->firstOrFail();
+        $this->assertSame(1, $firstProfileVersion->version);
+        $this->assertSame(1, $firstProfileVersion->header_end_row_number);
+        $this->assertSame($sourceSignature, $firstProfileVersion->source_signature);
+        $this->assertDatabaseHas('import_profiles', [
+            'id' => $firstProfileVersion->id,
+            'organization_id' => $organization->id,
+            'column_map' => json_encode(['Employee name' => 'name', 'Work email' => 'email']),
+        ]);
+
+        $secondBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'source_name' => 'employee-register-next-month.xlsx',
+            'headers_json' => $headers,
+            'selected_sheet_name' => 'Employees',
+            'status' => 'preview',
+        ]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', [$secondBatch, 'profile_id' => $firstProfileVersion->id]))
+            ->assertOk()
+            ->assertSee('社員台帳（社員・v1）')
+            ->assertSee('column_map[Employee name]')
+            ->assertSee('value="name"', false);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $secondBatch), [
+                'target_type' => 'employees',
+                'profile_id' => $firstProfileVersion->id,
+                'column_map' => ['Employee name' => 'name', 'Work email' => 'email'],
+                'save_profile' => '1',
+                'profile_name' => '社員台帳',
+            ])
+            ->assertRedirect(route('imports.show', $secondBatch));
+
+        $this->assertDatabaseHas('import_profiles', [
+            'organization_id' => $organization->id,
+            'profile_key' => $firstProfileVersion->profile_key,
+            'version' => 2,
+            'name' => '社員台帳',
+        ]);
+        $this->assertSame(2, $firstProfileVersion->newQuery()->where('profile_key', $firstProfileVersion->profile_key)->count());
+        $matchingProfiles = app(ImportProfileService::class)->matchingProfiles($organization, $sourceSignature);
+        $this->assertCount(2, $matchingProfiles);
+        $this->assertSame([2, 1], $matchingProfiles->pluck('version')->all());
+        $differentSourceSignature = app(ImportProfileService::class)->sourceSignature('Employees', ['Employee name', 'Contact email']);
+        $this->assertCount(0, app(ImportProfileService::class)->matchingProfiles($organization, $differentSourceSignature));
+        $differentHeaderRowSignature = app(ImportProfileService::class)->sourceSignature('Employees', $headers, 2);
+        $this->assertCount(0, app(ImportProfileService::class)->matchingProfiles($organization, $differentHeaderRowSignature));
+        $singleRowSignature = app(ImportProfileService::class)->sourceSignature('Employees', $headers, 1, 2, 1);
+        $this->assertSame($sourceSignature, $singleRowSignature);
+        $differentHeaderRangeSignature = app(ImportProfileService::class)->sourceSignature('Employees', $headers, 1, 4, 3);
+        $this->assertCount(0, app(ImportProfileService::class)->matchingProfiles($organization, $differentHeaderRangeSignature));
+        $differentDataStartRowSignature = app(ImportProfileService::class)->sourceSignature('Employees', $headers, 1, 3);
+        $this->assertCount(0, app(ImportProfileService::class)->matchingProfiles($organization, $differentDataStartRowSignature));
+    }
+
+    public function test_selected_multi_row_csv_headers_and_data_start_rows_are_used_by_preview_analysis_and_execution(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        $path = 'imports/'.$organization->id.'/employee-register.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "社員管理台帳\r\n2026年度\r\n社員,社員\r\nname,email\r\nnote,集計対象外\r\nAlice,alice@example.test\r\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => '社員管理台帳',
+            'source_file_path' => $path,
+            'header_row_number' => 3,
+            'header_end_row_number' => 4,
+            'data_start_row_number' => 6,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+        ]);
+
+        app(ImportPreviewPreparationService::class)->prepare($batch->id);
+        $batch->refresh();
+        $this->assertSame(['社員 / name', '社員 / email'], $batch->headers_json);
+        $this->assertSame(4, $batch->resolvedHeaderEndRowNumber());
+        $this->assertSame(6, $batch->data_start_row_number);
+        $this->assertSame(1, $batch->total_rows);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 6, 'action' => 'preview']);
+
+        Queue::fake([PrepareImportMappingAnalysis::class]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $batch), [
+                'target_type' => 'employees',
+                'column_map' => ['社員 / name' => 'name', '社員 / email' => 'email'],
+            ])
+            ->assertRedirect(route('imports.show', $batch));
+
+        $mapping = $batch->mappings()->latest('id')->firstOrFail();
+        (new PrepareImportMappingAnalysis($batch->id, $mapping->id))->handle(app(ImportMappingAnalysisService::class));
+        $this->assertSame('ready', $batch->refresh()->status);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 6, 'action' => 'new_candidate']);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+        $this->assertSame('completed', $batch->refresh()->status);
+        $this->assertDatabaseHas('employees', [
+            'organization_id' => $organization->id,
+            'name' => 'Alice',
+            'email' => 'alice@example.test',
+        ]);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $batch->id, 'source_row_number' => 6, 'action' => 'inserted']);
     }
 
     /** @return array{0: User, 1: Organization} */

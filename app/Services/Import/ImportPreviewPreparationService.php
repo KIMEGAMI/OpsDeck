@@ -47,6 +47,9 @@ class ImportPreviewPreparationService
 
                 $lockedBatch->update([
                     'headers_json' => $headers,
+                    'header_row_number' => $parsed['header_row_number'] ?? $lockedBatch->header_row_number,
+                    'header_end_row_number' => $parsed['header_end_row_number'] ?? $lockedBatch->resolvedHeaderEndRowNumber(),
+                    'data_start_row_number' => $parsed['data_start_row_number'] ?? $lockedBatch->resolvedDataStartRowNumber(),
                     'total_rows' => $parsed['total_rows'],
                     'status' => 'preview',
                 ]);
@@ -74,7 +77,7 @@ class ImportPreviewPreparationService
 
     /**
      * @param  resource  $stagingStream
-     * @return array{headers: list<string>, total_rows: int}
+     * @return array{headers: list<string>, total_rows: int, header_row_number?: int, header_end_row_number?: int, data_start_row_number?: int}
      */
     private function parseToStream(ImportBatch $importBatch, $stagingStream): array
     {
@@ -90,6 +93,9 @@ class ImportPreviewPreparationService
                     function (array $row) use ($stagingStream): void {
                         $this->writeSourceRowNumber($stagingStream, $row);
                     },
+                    headerRowNumber: (int) $importBatch->header_row_number,
+                    dataStartRowNumber: $importBatch->data_start_row_number,
+                    headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
                 );
             } finally {
                 fclose($sourceStream);
@@ -103,6 +109,9 @@ class ImportPreviewPreparationService
                 function (array $row) use ($stagingStream): void {
                     $this->writeSourceRowNumber($stagingStream, $row);
                 },
+                headerRowNumber: (int) $importBatch->header_row_number,
+                dataStartRowNumber: $importBatch->data_start_row_number,
+                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
             );
         }
 
@@ -118,6 +127,9 @@ class ImportPreviewPreparationService
                 function (array $row) use ($stagingStream): void {
                     $this->writeSourceRowNumber($stagingStream, $row);
                 },
+                headerRowNumber: (int) $importBatch->header_row_number,
+                dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
+                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
             );
         }
 

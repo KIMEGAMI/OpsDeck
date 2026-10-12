@@ -21,5 +21,8 @@ class DatabaseSchemaTest extends TestCase
         $this->assertTrue(Schema::hasTable('saas_assignments'));
         $indexNames = collect(Schema::getIndexes('stripe_webhook_events'))->pluck('name');
         $this->assertContains('stripe_webhook_pending_idx', $indexNames);
+        $aiUsageIndexes = collect(Schema::getIndexes('ai_usage_logs'));
+        $this->assertTrue($aiUsageIndexes->contains(static fn (array $index): bool => $index['name'] === 'ai_usage_organization_created_at_idx'
+            && $index['columns'] === ['organization_id', 'created_at']));
     }
 }

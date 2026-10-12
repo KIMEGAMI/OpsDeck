@@ -86,6 +86,7 @@ Route::middleware(['auth', 'organization.member'])->group(function (): void {
     Route::get('/saved-views/create', [SavedViewController::class, 'create'])->name('saved-views.create');
     Route::post('/saved-views', [SavedViewController::class, 'store'])->name('saved-views.store');
     Route::get('/saved-views/{savedView}', [SavedViewController::class, 'show'])->name('saved-views.show');
+    Route::delete('/saved-views/{savedView}', [SavedViewController::class, 'destroy'])->name('saved-views.destroy');
     Route::get('/weekly-summary', [WeeklySummaryController::class, 'show'])->name('weekly-summary.show');
     Route::put('/weekly-summary/preference', [WeeklySummaryController::class, 'updatePreference'])->name('weekly-summary.preference');
     Route::get('/help/recovery/{type}', [RecoveryGuideController::class, 'show'])->name('help.recovery');
@@ -123,6 +124,7 @@ Route::middleware(['auth', 'organization.member'])->group(function (): void {
     Route::post('/imports/google-sheets/spreadsheet', [ImportBatchController::class, 'selectGoogleSpreadsheet'])->name('imports.google-sheets.spreadsheet');
     Route::get('/imports/{importBatch}', [ImportBatchController::class, 'show'])->name('imports.show');
     Route::post('/imports/{importBatch}/sheet', [ImportBatchController::class, 'selectSheet'])->name('imports.sheet.store');
+    Route::post('/imports/{importBatch}/sheets', [ImportBatchController::class, 'storeAdditionalSheet'])->name('imports.sheet.additional');
     Route::post('/imports/{importBatch}/google-sheet', [ImportBatchController::class, 'selectGoogleSheet'])->name('imports.google-sheet.store');
     Route::post('/imports/{importBatch}/google-sheet/sync', [ImportBatchController::class, 'syncGoogleSheet'])->name('imports.google-sheet.sync');
     Route::get('/imports/{importBatch}/mapping', [ImportBatchController::class, 'mapping'])->name('imports.mapping');
@@ -153,12 +155,12 @@ Route::middleware(['auth', 'organization.member'])->group(function (): void {
     });
     Route::get('/billing', [BillingController::class, 'index'])->name('billing.index');
     Route::post('/billing/checkout', [BillingController::class, 'checkout'])->middleware('throttle:billing-checkout')->name('billing.checkout');
-    Route::post('/billing/portal', [BillingController::class, 'portal'])->name('billing.portal');
+    Route::post('/billing/portal', [BillingController::class, 'portal'])->middleware('throttle:billing-portal')->name('billing.portal');
     Route::post('/billing/cancellation-feedback', [CancellationFeedbackController::class, 'store'])->name('billing.cancellation-feedback.store');
     Route::get('/settings/organization', [OrganizationSettingsController::class, 'edit'])->name('settings.organization');
     Route::put('/settings/organization', [OrganizationSettingsController::class, 'update'])->name('settings.organization.update');
     Route::get('/settings/members', [OrganizationMemberController::class, 'index'])->name('settings.members');
-    Route::post('/settings/members/invitations', [OrganizationInvitationController::class, 'store'])->name('settings.members.invitations.store');
+    Route::post('/settings/members/invitations', [OrganizationInvitationController::class, 'store'])->middleware('throttle:invitation-create')->name('settings.members.invitations.store');
     Route::delete('/settings/members/invitations/{invitation}', [OrganizationInvitationController::class, 'revoke'])->name('settings.members.invitations.revoke');
     Route::put('/settings/members/{membership}', [OrganizationMemberController::class, 'update'])->name('settings.members.update');
     Route::post('/saas-assignments', [SaasAssignmentController::class, 'store'])->name('saas-assignments.store');
@@ -171,7 +173,7 @@ Route::middleware(['auth', 'organization.member'])->group(function (): void {
 });
 
 Route::get('/invitations/{token}', [OrganizationInvitationController::class, 'show'])->name('invitations.show');
-Route::post('/invitations/{token}', [OrganizationInvitationController::class, 'accept'])->name('invitations.accept');
+Route::post('/invitations/{token}', [OrganizationInvitationController::class, 'accept'])->middleware('throttle:invitation-accept')->name('invitations.accept');
 
 Route::get('/admin', AdminDashboardController::class)->middleware(['auth', 'platform.admin'])->name('admin.dashboard');
 Route::get('/admin/ai-cost', [AdminDashboardController::class, 'aiCost'])->middleware(['auth', 'platform.admin'])->name('admin.ai-cost');

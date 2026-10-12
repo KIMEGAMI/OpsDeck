@@ -66,6 +66,240 @@ class XlsxImportSourceTest extends TestCase
         }
     }
 
+    public function test_it_uses_the_requested_header_row_and_preserves_worksheet_row_numbers(): void
+    {
+        $worksheetRows = '<row r="1"><c r="A1" t="inlineStr"><is><t>社員管理台帳</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>2026年度</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>name</t></is></c><c r="B3" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="4"><c r="A4" t="inlineStr"><is><t>note</t></is></c><c r="B4" t="inlineStr"><is><t>集計対象外</t></is></c></row>'
+            .'<row r="5"><c r="A5" t="inlineStr"><is><t>Alice</t></is></c><c r="B5" t="inlineStr"><is><t>alice@example.test</t></is></c></row>';
+        $path = $this->createXlsxFile($this->minimalXlsxFiles($worksheetRows));
+
+        try {
+            $parsed = (new XlsxImportSource)->parse($path, null, 3, 5);
+
+            $this->assertSame(['name', 'email'], $parsed['headers']);
+            $this->assertSame(1, count($parsed['rows']));
+            $this->assertSame(5, $parsed['rows'][0]['source_row_number']);
+            $this->assertSame(['Alice', 'alice@example.test'], $parsed['rows'][0]['values']);
+        } finally {
+            unlink($path);
+        }
+    }
+
+    public function test_it_combines_multiple_header_rows_and_preserves_worksheet_row_numbers(): void
+    {
+        $worksheetRows = '<row r="2"><c r="A2" t="inlineStr"><is><t>社員</t></is></c><c r="B2" t="inlineStr"><is><t>社員</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>氏名</t></is></c><c r="B3" t="inlineStr"><is><t>メール</t></is></c></row>'
+            .'<row r="4"><c r="A4" t="inlineStr"><is><t>Alice</t></is></c><c r="B4" t="inlineStr"><is><t>alice@example.test</t></is></c></row>';
+        $path = $this->createXlsxFile($this->minimalXlsxFiles($worksheetRows));
+
+        try {
+            $rows = [];
+            $parsed = (new XlsxImportSource)->parseEach($path, null, static function (array $row) use (&$rows): void {
+                $rows[] = $row;
+            }, headerRowNumber: 2, dataStartRowNumber: 4, headerEndRowNumber: 3);
+
+            $this->assertSame(['社員 / 氏名', '社員 / メール'], $parsed['headers']);
+            $this->assertSame(2, $parsed['header_row_number']);
+            $this->assertSame(3, $parsed['header_end_row_number']);
+            $this->assertSame(4, $parsed['data_start_row_number']);
+            $this->assertSame(4, $rows[0]['source_row_number']);
+            $this->assertSame(['Alice', 'alice@example.test'], $rows[0]['values']);
+        } finally {
+            unlink($path);
+        }
+    }
+
+    public function test_it_rejects_formula_cells_in_imported_rows_but_ignores_pre_header_notes(): void
+    {
+        $metadataFormulaPath = $this->createXlsxFile($this->minimalXlsxFiles(
+            '<row r="1"><c r="A1"><f>SUM(1,1)</f><v>2</v></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>name</t></is></c></row>'
+            .'<row r="4"><c r="A4" t="inlineStr"><is><t>Alice</t></is></c></row>'
+        ));
+        $importFormulaPath = $this->createXlsxFile($this->minimalXlsxFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c></row>'
+            .'<row r="2"><c r="A2"><f>CONCAT("Al","ice")</f><v>Alice</v></c></row>'
+        ));
+
+        try {
+            $parsed = (new XlsxImportSource)->parse($metadataFormulaPath, null, 3);
+            $this->assertSame(['name'], $parsed['headers']);
+            $this->assertSame(['Alice'], $parsed['rows'][0]['values']);
+
+            try {
+                (new XlsxImportSource)->parse($importFormulaPath);
+                $this->fail('Formula cells in imported rows must not be silently treated as values.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(['見出し行または取込データに数式セルがあります。値に変換してから再度アップロードしてください。'], $exception->errors()['file']);
+            }
+        } finally {
+            unlink($metadataFormulaPath);
+            unlink($importFormulaPath);
+        }
+    }
+
+    public function test_it_rejects_duplicate_headers_after_trimming(): void
+    {
+        $path = $this->createXlsxFile($this->minimalXlsxFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>Employee name</t></is></c><c r="B1" t="inlineStr"><is><t> Employee name </t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>Alice</t></is></c><c r="B2" t="inlineStr"><is><t>Bob</t></is></c></row>'
+        ));
+
+        try {
+            (new XlsxImportSource)->parse($path);
+            $this->fail('Duplicate XLSX headers must be rejected after trimming.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['見出しに同じ名前、または複数の空欄があります。列名を一意にしてから再度アップロードしてください。'], $exception->errors()['file']);
+        } finally {
+            unlink($path);
+        }
+    }
+
+    public function test_it_rejects_merged_cells_in_imported_rows_but_ignores_pre_header_merges(): void
+    {
+        $metadataMergePath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>Employee table</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>name</t></is></c><c r="B3" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="4"><c r="A4" t="inlineStr"><is><t>Alice</t></is></c><c r="B4" t="inlineStr"><is><t>alice@example.test</t></is></c></row>',
+            '<mergeCell ref="A1:B1"/>',
+        ));
+        $duplicateHeaderMergePath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c><c r="B1" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>Alice</t></is></c><c r="B2" t="inlineStr"><is><t>alice@example.test</t></is></c></row>',
+            '<mergeCell ref="A1:B1"/>',
+        ));
+        $hierarchicalHeaderMergePath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>Employee</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>name</t></is></c><c r="B2" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>Alice</t></is></c><c r="B3" t="inlineStr"><is><t>alice@example.test</t></is></c></row>',
+            '<mergeCell ref="A1:B1"/>',
+        ));
+        $crossingHeaderMergePath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>Employee</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>name</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>Alice</t></is></c></row>',
+            '<mergeCell ref="A1:A3"/>',
+        ));
+        $overlappingHeaderMergePath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>Employee</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>name</t></is></c><c r="B2" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>Alice</t></is></c><c r="B3" t="inlineStr"><is><t>alice@example.test</t></is></c></row>',
+            '<mergeCell ref="A1:B1"/><mergeCell ref="B1:C1"/>',
+        ));
+        $dataMergePath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c><c r="B1" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>Alice</t></is></c><c r="B2" t="inlineStr"><is><t>alice@example.test</t></is></c></row>',
+            '<mergeCell ref="A2:B2"/>',
+        ));
+
+        try {
+            $parsed = (new XlsxImportSource)->parse($metadataMergePath, null, 3);
+            $this->assertSame(['name', 'email'], $parsed['headers']);
+            $this->assertSame(['Alice', 'alice@example.test'], $parsed['rows'][0]['values']);
+
+            $hierarchical = (new XlsxImportSource)->parseEach($hierarchicalHeaderMergePath, null, static function (array $row): void {}, headerRowNumber: 1, dataStartRowNumber: 3, headerEndRowNumber: 2);
+            $this->assertSame(['Employee / name', 'Employee / email'], $hierarchical['headers']);
+
+            try {
+                (new XlsxImportSource)->parseEach($crossingHeaderMergePath, null, static function (array $row): void {}, headerRowNumber: 1, dataStartRowNumber: 3, headerEndRowNumber: 2);
+                $this->fail('Merged ranges crossing from header to data must be rejected.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(['見出し範囲をまたぐ結合セルがあります。結合を解除するか、範囲を見直してください。'], $exception->errors()['file']);
+            }
+
+            try {
+                (new XlsxImportSource)->parseEach($overlappingHeaderMergePath, null, static function (array $row): void {}, headerRowNumber: 1, dataStartRowNumber: 3, headerEndRowNumber: 2);
+                $this->fail('Overlapping merged ranges must be rejected.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(['XLSXの結合セル範囲が重複しています。ファイル構造を確認してください。'], $exception->errors()['file']);
+            }
+
+            foreach ([
+                $duplicateHeaderMergePath => '見出しに同じ名前、または複数の空欄があります。列名を一意にしてから再度アップロードしてください。',
+                $dataMergePath => '見出し行または取込データに結合セルがあります。結合を解除してから再度アップロードしてください。',
+            ] as $path => $expectedMessage) {
+                try {
+                    (new XlsxImportSource)->parse($path);
+                    $this->fail('Merged cells in the selected import rows must be rejected.');
+                } catch (ValidationException $exception) {
+                    $this->assertSame([$expectedMessage], $exception->errors()['file']);
+                }
+            }
+        } finally {
+            unlink($metadataMergePath);
+            unlink($duplicateHeaderMergePath);
+            unlink($hierarchicalHeaderMergePath);
+            unlink($crossingHeaderMergePath);
+            unlink($overlappingHeaderMergePath);
+            unlink($dataMergePath);
+        }
+    }
+
+    public function test_it_rejects_hidden_rows_and_columns_with_data_in_the_import_range(): void
+    {
+        $hiddenMetadataPath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1" hidden="1"><c r="B1" t="inlineStr"><is><t>Internal note</t></is></c></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>name</t></is></c></row>'
+            .'<row r="4"><c r="A4" t="inlineStr"><is><t>Alice</t></is></c></row>',
+            '',
+            '<col min="2" max="2" hidden="1"/>',
+        ));
+        $hiddenRowPath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c></row>'
+            .'<row r="2" hidden="true"><c r="A2" t="inlineStr"><is><t>Alice</t></is></c></row>',
+            '',
+        ));
+        $hiddenColumnPath = $this->createXlsxFile($this->worksheetFiles(
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>name</t></is></c><c r="B1" t="inlineStr"><is><t>email</t></is></c></row>'
+            .'<row r="2"><c r="A2" t="inlineStr"><is><t>Alice</t></is></c><c r="B2" t="inlineStr"><is><t>alice@example.test</t></is></c></row>',
+            '',
+            '<col min="2" max="2" hidden="1"/>',
+        ));
+
+        try {
+            $parsed = (new XlsxImportSource)->parse($hiddenMetadataPath, null, 3);
+            $this->assertSame(['name'], $parsed['headers']);
+            $this->assertSame(['Alice'], $parsed['rows'][0]['values']);
+
+            foreach ([
+                $hiddenRowPath => '見出し行または取込データに非表示の行があります。表示してから再度アップロードしてください。',
+                $hiddenColumnPath => '見出し行または取込データに非表示の列があります。表示してから再度アップロードしてください。',
+            ] as $path => $expectedMessage) {
+                try {
+                    (new XlsxImportSource)->parse($path);
+                    $this->fail('Hidden row or column data must not be imported silently.');
+                } catch (ValidationException $exception) {
+                    $this->assertSame([$expectedMessage], $exception->errors()['file']);
+                }
+            }
+        } finally {
+            unlink($hiddenMetadataPath);
+            unlink($hiddenRowPath);
+            unlink($hiddenColumnPath);
+        }
+    }
+
+    public function test_it_reports_the_actual_header_row_when_defaulting_to_the_first_populated_worksheet_row(): void
+    {
+        $worksheetRows = '<row r="1"></row><row r="2"></row>'
+            .'<row r="3"><c r="A3" t="inlineStr"><is><t>name</t></is></c></row>'
+            .'<row r="4"><c r="A4" t="inlineStr"><is><t>Alice</t></is></c></row>';
+        $path = $this->createXlsxFile($this->minimalXlsxFiles($worksheetRows));
+
+        try {
+            $parsed = (new XlsxImportSource)->parseEach($path, null, static function (array $row): void {});
+
+            $this->assertSame(['name'], $parsed['headers']);
+            $this->assertSame(3, $parsed['header_row_number']);
+            $this->assertSame(4, $parsed['data_start_row_number']);
+            $this->assertSame(1, $parsed['total_rows']);
+        } finally {
+            unlink($path);
+        }
+    }
+
     public function test_it_rejects_malformed_worksheet_xml(): void
     {
         $files = $this->minimalXlsxFiles('');
@@ -200,5 +434,16 @@ class XlsxImportSourceTest extends TestCase
             'xl/_rels/workbook.xml.rels' => '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="worksheet"/></Relationships>',
             'xl/worksheets/sheet1.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'.$worksheetRow.'</sheetData></worksheet>',
         ];
+    }
+
+    /** @return array<string, string> */
+    private function worksheetFiles(string $worksheetRows, string $mergedCells, string $columns = ''): array
+    {
+        $files = $this->minimalXlsxFiles($worksheetRows);
+        $columnDefinitions = $columns === '' ? '' : '<cols>'.$columns.'</cols>';
+        $mergedCellDefinitions = $mergedCells === '' ? '' : '<mergeCells>'.$mergedCells.'</mergeCells>';
+        $files['xl/worksheets/sheet1.xml'] = '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'.$columnDefinitions.'<sheetData>'.$worksheetRows.'</sheetData>'.$mergedCellDefinitions.'</worksheet>';
+
+        return $files;
     }
 }

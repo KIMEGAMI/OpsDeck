@@ -14,7 +14,9 @@
             <dt>資産数</dt><dd>{{ $metrics['assets'] }}</dd>
             <dt>契約数</dt><dd>{{ $metrics['contracts'] }}</dd>
             <dt>AI利用回数</dt><dd>{{ $metrics['aiRequests'] }}</dd>
-            <dt>AI推定原価（JPY）</dt><dd>{{ number_format((float) $metrics['aiCostJpy'], 2) }}円</dd>
+            <dt>AI推定原価（USD）</dt><dd>${{ number_format((float) $metrics['aiCostUsd'], 6) }}</dd>
+            <dt>AI推定原価（JPY）</dt><dd>{{ $metrics['aiUsdToJpyRateConfigured'] ? number_format((float) $metrics['aiCostJpy'], 2).'円' : '為替レート未設定' }}</dd>
+            <dt>価格未登録モデルの利用回数</dt><dd>{{ $metrics['aiPricingUnavailableRequests'] }}</dd>
             <dt>Import件数</dt><dd>{{ $metrics['imports'] }}</dd>
             <dt>Import処理失敗率（完了・失敗した処理）</dt><dd>{{ $metrics['importFailureRate'] }}%</dd>
             <dt>Google Sheets接続数</dt><dd>{{ $metrics['googleSheetsConnections'] }}</dd>

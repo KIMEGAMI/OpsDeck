@@ -9,6 +9,7 @@ use App\Http\Requests\ImportBatch\ReviewImportCandidateRequest;
 use App\Http\Requests\ImportBatch\RollbackImportBatchRequest;
 use App\Http\Requests\ImportBatch\SelectGoogleSpreadsheetRequest;
 use App\Http\Requests\ImportBatch\SelectImportSheetRequest;
+use App\Http\Requests\ImportBatch\StoreAdditionalSheetImportRequest;
 use App\Http\Requests\ImportBatch\StoreImportBatchRequest;
 use App\Http\Requests\ImportBatch\StoreImportMappingRequest;
 use App\Http\Requests\ImportBatch\UpdateImportRowSelectionRequest;
@@ -39,6 +40,7 @@ use App\Services\ContractAmountValidator;
 use App\Services\Import\CsvImportSource;
 use App\Services\Import\GoogleSheetsImportSource;
 use App\Services\Import\ImportNormalizationSuggestionService;
+use App\Services\Import\ImportProfileService;
 use App\Services\Import\XlsxImportSource;
 use App\Services\ImportBatchExecutionService;
 use App\Services\ImportBatchRollbackService;
@@ -50,7 +52,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
@@ -192,9 +193,15 @@ class ImportBatchController extends Controller
         abort_unless($importBatch->status === 'sheet_selection' && $importBatch->source_type === 'google_sheets', 422, 'Google Sheetsのシート選択が必要なバッチではありません。');
         abort_unless(in_array($request->string('sheet_name')->toString(), $importBatch->available_sheets_json ?? [], true), 422, '選択したシートが存在しません。');
         GoogleSheetConnection::query()->where('organization_id', $importBatch->organization_id)->firstOrFail();
-        DB::transaction(function () use ($importBatch, $request): void {
+        $headerRowNumber = (int) $request->validated('header_row_number');
+        $headerEndRowNumber = (int) $request->validated('header_end_row_number');
+        $dataStartRowNumber = $request->validated('data_start_row_number');
+        DB::transaction(function () use ($importBatch, $request, $headerRowNumber, $headerEndRowNumber, $dataStartRowNumber): void {
             $claimed = ImportBatch::query()->whereKey($importBatch->id)->where('status', 'sheet_selection')->update([
                 'selected_sheet_name' => $request->string('sheet_name')->toString(),
+                'header_row_number' => $headerRowNumber,
+                'header_end_row_number' => $headerEndRowNumber,
+                'data_start_row_number' => $dataStartRowNumber,
                 'headers_json' => null,
                 'status' => 'previewing',
                 'total_rows' => 0,
@@ -245,6 +252,9 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $this->authorize('create', [ImportBatch::class, $organization]);
         $targetType = $request->validated('target_type');
+        $headerRowNumber = (int) ($request->validated('header_row_number') ?? config('opsdeck.import.default_header_row_number'));
+        $headerEndRowNumber = (int) ($request->validated('header_end_row_number') ?? $headerRowNumber);
+        $dataStartRowNumber = $request->validated('data_start_row_number');
         $showRouteParameters = $targetType === null ? [] : ['target_type' => $targetType];
         $disk = config('opsdeck.import.disk');
         $file = $request->file('file');
@@ -259,6 +269,9 @@ class ImportBatchController extends Controller
                 $batch = ImportBatch::query()->create([
                     'organization_id' => $organization->id, 'source_type' => 'xlsx',
                     'source_name' => $request->string('source_name')->toString(), 'source_file_path' => $path,
+                    'header_row_number' => $headerRowNumber,
+                    'header_end_row_number' => $headerEndRowNumber,
+                    'data_start_row_number' => $dataStartRowNumber,
                     'available_sheets_json' => $sheets, 'status' => 'sheet_selection', 'executed_by' => $request->user()->id,
                     'started_at' => now(),
                 ]);
@@ -277,6 +290,9 @@ class ImportBatchController extends Controller
                 'source_type' => 'csv',
                 'source_name' => $request->string('source_name')->toString(),
                 'source_file_path' => $path,
+                'header_row_number' => $headerRowNumber,
+                'header_end_row_number' => $headerEndRowNumber,
+                'data_start_row_number' => $dataStartRowNumber,
                 'status' => 'previewing',
                 'executed_by' => $request->user()->id,
                 'started_at' => now(),
@@ -300,6 +316,17 @@ class ImportBatchController extends Controller
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('view', $importBatch);
         $capabilities = $this->importCapabilities($organization);
+        $availableAdditionalSheets = [];
+        if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null && $importBatch->selected_sheet_name !== null) {
+            $usedSheetNames = ImportBatch::query()
+                ->where('organization_id', $organization->id)
+                ->where('source_type', 'xlsx')
+                ->where('source_file_path', $importBatch->source_file_path)
+                ->whereNotNull('selected_sheet_name')
+                ->pluck('selected_sheet_name')
+                ->all();
+            $availableAdditionalSheets = array_values(array_diff($importBatch->available_sheets_json ?? [], $usedSheetNames));
+        }
         $rowResults = $importBatch->rowResults()
             ->orderBy('source_row_number')
             ->orderBy('id')
@@ -326,7 +353,7 @@ class ImportBatchController extends Controller
             ? $requestedTargetType
             : null;
 
-        return view('imports.show', compact('importBatch', 'rowResults', 'selectableRowResults', 'reviewCandidates', 'capabilities', 'mapping', 'importTargetLabel', 'importFieldLabels', 'importActionLabels', 'importErrorLabels', 'importBatchStatusLabels', 'importSourceTypeLabels', 'importCandidateTypeLabels', 'importCandidateStatusLabels', 'targetTypeSuggestion'));
+        return view('imports.show', compact('organization', 'importBatch', 'rowResults', 'selectableRowResults', 'reviewCandidates', 'capabilities', 'availableAdditionalSheets', 'mapping', 'importTargetLabel', 'importFieldLabels', 'importActionLabels', 'importErrorLabels', 'importBatchStatusLabels', 'importSourceTypeLabels', 'importCandidateTypeLabels', 'importCandidateStatusLabels', 'targetTypeSuggestion'));
     }
 
     public function selectSheet(SelectImportSheetRequest $request, ImportBatch $importBatch): RedirectResponse
@@ -353,6 +380,78 @@ class ImportBatchController extends Controller
         return to_route('imports.show', $importBatch)->with('status', 'シートを選択しました。Previewをバックグラウンドで準備します。');
     }
 
+    public function storeAdditionalSheet(StoreAdditionalSheetImportRequest $request, ImportBatch $importBatch): RedirectResponse
+    {
+        $organization = $this->organization($request);
+        $importBatch = $this->scopedBatch($organization, $importBatch);
+        $this->authorize('create', [ImportBatch::class, $organization]);
+        $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
+        abort_unless(
+            $importBatch->source_type === 'xlsx'
+                && $importBatch->source_file_path !== null
+                && $importBatch->selected_sheet_name !== null
+                && is_array($importBatch->available_sheets_json),
+            422,
+            '別シートを作成できるXLSX Importではありません。',
+        );
+
+        $sheetName = $request->string('sheet_name')->toString();
+        abort_unless(in_array($sheetName, $importBatch->available_sheets_json, true), 422, '選択したシートが存在しません。');
+        abort_unless(
+            Storage::disk(config('opsdeck.import.disk'))->exists($importBatch->source_file_path),
+            404,
+            '取込元ファイルが見つかりません。再アップロードしてください。',
+        );
+        $headerRowNumber = (int) ($request->validated('header_row_number') ?? config('opsdeck.import.default_header_row_number'));
+        $headerEndRowNumber = (int) ($request->validated('header_end_row_number') ?? $headerRowNumber);
+        $dataStartRowNumber = $request->validated('data_start_row_number');
+
+        try {
+            $additionalBatch = DB::transaction(function () use ($importBatch, $organization, $sheetName, $headerRowNumber, $headerEndRowNumber, $dataStartRowNumber, $request): ImportBatch {
+                $sourceBatch = ImportBatch::query()
+                    ->where('organization_id', $organization->id)
+                    ->where('source_type', 'xlsx')
+                    ->where('source_file_path', $importBatch->source_file_path)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                abort_unless(in_array($sheetName, $sourceBatch->available_sheets_json ?? [], true), 422, '選択したシートが存在しません。');
+                $alreadySelected = ImportBatch::query()
+                    ->where('organization_id', $organization->id)
+                    ->where('source_type', 'xlsx')
+                    ->where('source_file_path', $sourceBatch->source_file_path)
+                    ->where('selected_sheet_name', $sheetName)
+                    ->exists();
+                abort_if($alreadySelected, 409, 'このファイルのシートはすでに別のImportバッチで使用されています。');
+
+                return ImportBatch::query()->create([
+                    'organization_id' => $organization->id,
+                    'source_type' => 'xlsx',
+                    'source_name' => $sourceBatch->source_name,
+                    'source_file_path' => $sourceBatch->source_file_path,
+                    'available_sheets_json' => $sourceBatch->available_sheets_json,
+                    'selected_sheet_name' => $sheetName,
+                    'header_row_number' => $headerRowNumber,
+                    'header_end_row_number' => $headerEndRowNumber,
+                    'data_start_row_number' => $dataStartRowNumber,
+                    'status' => 'previewing',
+                    'executed_by' => $request->user()->id,
+                    'started_at' => now(),
+                ]);
+            });
+
+            PrepareImportPreview::dispatch($additionalBatch->id)->afterCommit();
+        } catch (\Throwable $exception) {
+            if (isset($additionalBatch)) {
+                $this->markPreviewDispatchFailed($additionalBatch->id);
+            }
+            throw $exception;
+        }
+
+        return to_route('imports.show', $additionalBatch)->with('status', '別シートのImportを作成しました。既存バッチとは別にPreviewとマッピングを確認してください。');
+    }
+
     public function mapping(Request $request, ImportBatch $importBatch): View
     {
         $organization = $this->organization($request);
@@ -368,6 +467,16 @@ class ImportBatchController extends Controller
         if (! in_array($suggestedTargetType, $targetTypes, true)) {
             $suggestedTargetType = in_array($aiTargetType, $targetTypes, true) ? $aiTargetType : '';
         }
+        $profileService = app(ImportProfileService::class);
+        $sourceSignature = $profileService->sourceSignature($importBatch->selected_sheet_name, $importBatch->headers_json ?? [], (int) $importBatch->header_row_number, $importBatch->resolvedDataStartRowNumber(), $importBatch->resolvedHeaderEndRowNumber());
+        $profiles = $profileService->matchingProfiles($organization, $sourceSignature);
+        $selectedProfile = null;
+        if ($request->filled('profile_id')) {
+            $selectedProfile = $profiles->firstWhere('id', $request->integer('profile_id'));
+            abort_if($selectedProfile === null, 404);
+            $suggestedTargetType = $selectedProfile->target_type;
+        }
+        $initialColumnMap = $selectedProfile?->column_map ?? [];
         $normalizationSuggestions = [];
         foreach ($targetTypes as $targetType) {
             $aliases = config('opsdeck.import_column_aliases.'.$targetType, []);
@@ -375,7 +484,6 @@ class ImportBatchController extends Controller
         }
         if ($request->boolean('ai') && in_array($aiTargetType, $targetTypes, true)) {
             $this->authorize('update', $importBatch);
-            $this->rateLimitAiMappingSuggestions($request, $organization);
             $targetFields = array_values(array_unique(array_filter(config('opsdeck.import_column_aliases.'.$aiTargetType, []))));
             $aiSuggestions = app(ImportMappingSuggestionService::class)->suggest($organization, $importBatch->headers_json ?? [], $aiTargetType, $targetFields, $request->user()->id);
             foreach ($aiSuggestions as $header => $suggestion) {
@@ -385,35 +493,78 @@ class ImportBatchController extends Controller
                 }
             }
         }
-        if (in_array($aiTargetType, $targetTypes, true)) {
-            $aliases = config('opsdeck.import_column_aliases.'.$aiTargetType, []);
-            $columnMap = [];
+        $normalizationTargetType = in_array($suggestedTargetType, $targetTypes, true) ? $suggestedTargetType : $aiTargetType;
+        if (in_array($normalizationTargetType, $targetTypes, true)) {
+            $aliases = config('opsdeck.import_column_aliases.'.$normalizationTargetType, []);
+            $columnMap = $initialColumnMap;
             foreach ($importBatch->headers_json ?? [] as $header) {
-                if (isset($aliases[$header])) {
+                if (! isset($columnMap[$header]) && isset($aliases[$header])) {
                     $columnMap[$header] = $aliases[$header];
                 }
             }
-            $normalizationSuggestions = app(ImportNormalizationSuggestionService::class)->suggest($importBatch->headers_json ?? [], $this->sourceRowsForMapping($importBatch, $aiTargetType), $columnMap);
+            $normalizationSuggestions = app(ImportNormalizationSuggestionService::class)->suggest($normalizationTargetType, $importBatch->headers_json ?? [], $this->sourceRowsForMapping($importBatch, $normalizationTargetType), $columnMap);
         }
+        $suggestionByField = collect($normalizationSuggestions)->keyBy('field');
+        $normalizationRuleOptions = collect($targetTypes)->flatMap(function (string $targetType) use ($normalizationTargetType, $suggestionByField): array {
+            $suggestionsForTarget = $targetType === $normalizationTargetType ? $suggestionByField : collect();
 
-        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'normalizationSuggestions'));
+            return collect(config('opsdeck.import_normalization_rules.'.$targetType, []))
+                ->map(fn (string $rule, string $field): array => [
+                    'target_type' => $targetType,
+                    'field' => $field,
+                    'rule' => $rule,
+                    'label' => config('opsdeck.import_normalization_rule_labels.'.$rule, $rule),
+                    'suggestion' => $suggestionsForTarget->get($field),
+                ])
+                ->values()
+                ->all();
+        });
+
+        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'normalizationSuggestions', 'normalizationRuleOptions', 'normalizationTargetType', 'profiles', 'selectedProfile', 'initialColumnMap'));
     }
 
     public function saveMapping(StoreImportMappingRequest $request, ImportBatch $importBatch): RedirectResponse
     {
         $importBatch = $this->scopedBatch($this->organization($request), $importBatch);
+        $organization = $this->organization($request);
         $this->authorize('update', $importBatch);
         abort_unless(in_array($importBatch->status, ['preview', 'ready'], true), 422, 'Preview準備が完了してからマッピングを保存できます。');
+        $targetType = $request->string('target_type')->toString();
+        $columnMap = $request->validated('column_map');
+        $normalizationRules = app(ImportNormalizationSuggestionService::class)->validateRules(
+            $targetType,
+            $columnMap,
+            $request->validated('normalization_rules') ?? [],
+        );
 
         try {
-            DB::transaction(function () use ($importBatch, $request): void {
+            DB::transaction(function () use ($importBatch, $request, $organization, $targetType, $columnMap, $normalizationRules): void {
                 $lockedBatch = ImportBatch::query()->whereKey($importBatch->id)->lockForUpdate()->firstOrFail();
                 abort_unless(in_array($lockedBatch->status, ['preview', 'ready'], true), 409, 'このバッチはすでに処理中です。');
 
+                if ($request->boolean('save_profile')) {
+                    $profileService = app(ImportProfileService::class);
+                    $profileService->saveVersion(
+                        $organization,
+                        $request->filled('profile_id') ? (int) $request->validated('profile_id') : null,
+                        $profileService->sourceSignature($lockedBatch->selected_sheet_name, $lockedBatch->headers_json ?? [], (int) $lockedBatch->header_row_number, $lockedBatch->resolvedDataStartRowNumber(), $lockedBatch->resolvedHeaderEndRowNumber()),
+                        $lockedBatch->selected_sheet_name,
+                        (int) $lockedBatch->header_row_number,
+                        $lockedBatch->resolvedDataStartRowNumber(),
+                        $lockedBatch->resolvedHeaderEndRowNumber(),
+                        $lockedBatch->headers_json ?? [],
+                        $targetType,
+                        $request->string('profile_name')->toString(),
+                        $columnMap,
+                        $normalizationRules,
+                        (int) $request->user()->id,
+                    );
+                }
+
                 $mapping = $lockedBatch->mappings()->create([
-                    'target_type' => $request->string('target_type')->toString(),
-                    'column_map' => $request->validated('column_map'),
-                    'normalization_rules' => [],
+                    'target_type' => $targetType,
+                    'column_map' => $columnMap,
+                    'normalization_rules' => $normalizationRules,
                     'status' => 'analyzing',
                     'created_by' => $request->user()->id,
                 ]);
@@ -1031,18 +1182,6 @@ class ImportBatchController extends Controller
         return $organization;
     }
 
-    private function rateLimitAiMappingSuggestions(Request $request, Organization $organization): void
-    {
-        $rateLimitKey = 'opsdeck:ai-mapping-suggestions:'.hash('sha256', $organization->getKey().'|'.$request->user()->getAuthIdentifier());
-        $attempts = RateLimiter::hit($rateLimitKey, config('opsdeck.ai.mapping_suggestion_decay_seconds'));
-
-        abort_if(
-            $attempts > config('opsdeck.ai.mapping_suggestions_max_attempts'),
-            429,
-            'AI候補の取得回数が上限に達しました。しばらくしてから再度お試しください。',
-        );
-    }
-
     private function markPreviewDispatchFailed(int $importBatchId): void
     {
         ImportBatch::query()
@@ -1117,6 +1256,9 @@ class ImportBatchController extends Controller
                 $importBatch->selected_sheet_name,
                 $collectSampleRow,
                 $sampleRowLimit,
+                headerRowNumber: (int) $importBatch->header_row_number,
+                dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
+                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
             );
         } elseif ($importBatch->source_type === 'google_sheets' && $importBatch->source_external_id !== null && $importBatch->selected_sheet_name !== null) {
             $connection = GoogleSheetConnection::query()->where('organization_id', $importBatch->organization_id)->first();
@@ -1130,6 +1272,9 @@ class ImportBatchController extends Controller
                 $collectSampleRow,
                 $targetType === 'contracts',
                 $sampleRowLimit,
+                headerRowNumber: (int) $importBatch->header_row_number,
+                dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
+                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
             );
         } elseif ($importBatch->source_type === 'csv' && $importBatch->source_file_path !== null) {
             $disk = Storage::disk(config('opsdeck.import.disk'));
@@ -1142,7 +1287,14 @@ class ImportBatchController extends Controller
             }
 
             try {
-                app(CsvImportSource::class)->parseEachStream($sourceStream, $collectSampleRow, $sampleRowLimit);
+                app(CsvImportSource::class)->parseEachStream(
+                    $sourceStream,
+                    $collectSampleRow,
+                    $sampleRowLimit,
+                    headerRowNumber: (int) $importBatch->header_row_number,
+                    dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
+                    headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+                );
             } finally {
                 fclose($sourceStream);
             }

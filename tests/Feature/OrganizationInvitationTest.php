@@ -32,6 +32,47 @@ class OrganizationInvitationTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
     }
 
+    public function test_invitation_acceptance_is_rate_limited_for_invalid_tokens(): void
+    {
+        config(['opsdeck.invitations.accept_attempts_per_minute' => 2]);
+        $payload = [
+            'name' => '招待利用者',
+            'password' => 'secure-password-123',
+            'password_confirmation' => 'secure-password-123',
+        ];
+        $invitationUrl = route('invitations.accept', 'invalid-random-token');
+
+        $this->post($invitationUrl, $payload)->assertNotFound();
+        $this->post($invitationUrl, $payload)->assertNotFound();
+        $this->post($invitationUrl, $payload)->assertTooManyRequests();
+    }
+
+    public function test_invitation_creation_is_rate_limited_per_organization_without_queueing_invalid_requests(): void
+    {
+        config(['opsdeck.invitations.create_attempts_per_minute' => 1]);
+        Queue::fake();
+        [$owner, $organization] = $this->owner();
+        $administrator = User::factory()->create(['email' => 'invite-rate-limit-'.Str::uuid().'@example.test']);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $administrator->id,
+            'role' => MembershipRole::Admin,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $route = route('settings.members.invitations.store');
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->post($route, ['email' => 'invalid-address', 'role' => 'viewer'])
+            ->assertSessionHasErrors('email');
+        $this->actingAs($administrator)->withSession(['current_organization_id' => $organization->id])
+            ->post($route, ['email' => 'another-invalid-address', 'role' => 'viewer'])
+            ->assertTooManyRequests();
+
+        Queue::assertNotPushed(SendOrganizationInvitationEmail::class);
+        $this->assertSame(0, OrganizationInvitation::query()->where('organization_id', $organization->id)->count());
+    }
+
     public function test_owner_can_create_hashed_invitation_and_queue_email(): void
     {
         Queue::fake();

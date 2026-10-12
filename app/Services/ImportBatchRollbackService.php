@@ -89,6 +89,14 @@ class ImportBatchRollbackService
                 continue;
             }
 
+            if (is_bool($current) || is_bool($expected)) {
+                if (filter_var($current, FILTER_VALIDATE_BOOL) !== filter_var($expected, FILTER_VALIDATE_BOOL)) {
+                    return false;
+                }
+
+                continue;
+            }
+
             if ((string) $record->getRawOriginal($field) !== (string) $expected) {
                 return false;
             }

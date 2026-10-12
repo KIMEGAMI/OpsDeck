@@ -93,6 +93,27 @@ class BillingControllerTest extends TestCase
         Http::assertSentCount(4);
     }
 
+    public function test_customer_portal_attempts_are_rate_limited_per_organization(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active', 'stripe_customer_id' => 'cus_portal_'.Str::uuid()]);
+        config([
+            'opsdeck.billing.portal_attempts_per_minute' => 1,
+            'services.stripe.secret' => 'sk_test_secret',
+        ]);
+        Http::fake(['https://api.stripe.com/v1/billing_portal/sessions' => Http::response(['url' => 'https://billing.stripe.test/session'], 200)]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.portal'))
+            ->assertRedirect('https://billing.stripe.test/session');
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.portal'))
+            ->assertTooManyRequests();
+
+        Http::assertSentCount(1);
+    }
+
     public function test_checkout_retries_use_the_same_stripe_idempotency_key(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

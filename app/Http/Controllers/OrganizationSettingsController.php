@@ -7,6 +7,7 @@ use App\Models\AuditLog;
 use App\Models\OnboardingStep;
 use App\Models\Organization;
 use App\Services\OnboardingProgressService;
+use App\Services\PlanFeatureService;
 use App\Services\PlanUsageService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -21,7 +22,9 @@ class OrganizationSettingsController extends Controller
 
         $limits = app(PlanUsageService::class)->forOrganization($organization);
 
-        return view('settings.organization', compact('organization', 'limits'));
+        $aiEnabledAvailable = app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping');
+
+        return view('settings.organization', compact('organization', 'limits', 'aiEnabledAvailable'));
     }
 
     public function update(UpdateOrganizationSettingsRequest $request): RedirectResponse
@@ -29,6 +32,9 @@ class OrganizationSettingsController extends Controller
         $organization = $request->attributes->get('currentOrganization');
         $this->authorize('update', $organization);
         $attributes = $request->validated();
+        if (($attributes['ai_enabled'] ?? false) && ! app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping')) {
+            return back()->withErrors(['ai_enabled' => 'AI列マッピング候補はPremiumプランで利用できます。']);
+        }
 
         DB::transaction(function () use ($request, $organization, $attributes): void {
             $lockedOrganization = Organization::query()->whereKey($organization->id)->lockForUpdate()->firstOrFail();

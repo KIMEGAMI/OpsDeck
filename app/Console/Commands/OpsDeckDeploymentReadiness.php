@@ -77,6 +77,8 @@ class OpsDeckDeploymentReadiness extends Command
         $this->sharedCacheReadiness = null;
         $this->resendSendingDomainReadiness = null;
         $missingPhpExtensions = $phpExtensionReadiness->missingExtensions();
+        $databaseConnectionReady = $this->canConnectToDatabase();
+        $pendingMigrationCount = $databaseConnectionReady ? $migrationHealth->pendingCount() : null;
         $this->checks = [
             'environment' => app()->environment('production') ? 'pass' : 'fail',
             'app_key' => $this->hasValidApplicationKey() ? 'pass' : 'fail',
@@ -87,8 +89,10 @@ class OpsDeckDeploymentReadiness extends Command
             'production_logging' => $this->hasProductionLogging() ? 'pass' : 'fail',
             'php_extensions' => $missingPhpExtensions === [] ? 'pass' : 'fail',
             'database_driver' => in_array(config('database.default'), ['mysql', 'mariadb'], true) ? 'pass' : 'fail',
-            'database_connection' => $this->canConnectToDatabase() ? 'pass' : 'fail',
-            'database_migrations' => $migrationHealth->pendingCount() === 0 ? 'pass' : 'fail',
+            'database_connection' => $databaseConnectionReady ? 'pass' : 'fail',
+            'database_migrations' => $databaseConnectionReady
+                ? ($pendingMigrationCount === 0 ? 'pass' : 'fail')
+                : 'unverified',
             'database_backup_tool' => $this->hasDatabaseBackupTool($dumpBinaryLocator) ? 'pass' : 'fail',
             'database_restore_tool' => $this->hasDatabaseRestoreTool($dumpBinaryLocator) ? 'pass' : 'fail',
             'backup_restore_target' => $restoreTargetConfiguration->isReadyForRestoreTest() ? 'pass' : 'fail',
@@ -101,8 +105,11 @@ class OpsDeckDeploymentReadiness extends Command
                 ? ($this->hasCommercialInformation() ? 'pass' : 'fail')
                 : 'not_applicable',
         ];
+        if (config('opsdeck.ai.enabled')) {
+            $this->checks['ai_cost'] = $this->hasAiCostConfiguration() ? 'pass' : 'fail';
+        }
 
-        $ready = ! in_array('fail', $this->checks, true);
+        $ready = ! array_intersect(['fail', 'unverified'], $this->checks);
 
         if ($this->option('json')) {
             $this->line(json_encode([
@@ -131,7 +138,7 @@ class OpsDeckDeploymentReadiness extends Command
         $this->line('確認・修正する項目:');
 
         foreach ($this->checks as $check => $status) {
-            if ($status !== 'fail') {
+            if (! in_array($status, ['fail', 'unverified'], true)) {
                 continue;
             }
 
@@ -151,7 +158,9 @@ class OpsDeckDeploymentReadiness extends Command
                 'production_logging' => '本番ログをwarning以上にし、daily/monthlyの保存期間を設定するか、stderr/syslog等の監視可能な出力先へ送る',
                 'database_driver' => '環境変数 DB_CONNECTION を mysql または mariadb に設定する',
                 'database_connection' => 'DB_HOST / DB_PORT / DB_DATABASE / DB_USERNAME と Secret Manager上のDB_PASSWORDを確認し、DBサーバーの稼働・ネットワーク/ポート到達性も確認する',
-                'database_migrations' => '未適用マイグレーションを確認し、事前バックアップ後に php artisan migrate --force を実行する',
+                'database_migrations' => $status === 'unverified'
+                    ? 'DB接続失敗のため未確認です。先に接続先と対象DBが正しいことを確認し、再チェックしてください。未適用と確認できるまではマイグレーションを実行しないでください'
+                    : '未適用マイグレーションを確認し、対象DBと事前バックアップを確認したうえで php artisan migrate --force を実行する',
                 'database_backup_tool' => 'mysqldump または mariadb-dump を導入し、必要なら OPSDECK_DATABASE_DUMP_DIRECTORY を設定する',
                 'database_restore_tool' => 'mysql または mariadb クライアントと、接頭辞付きの専用復元DB設定を確認する',
                 'backup_restore_target' => 'OPSDECK_BACKUP_RESTORE_DB_*の設定値と接続疎通を確認し、接頭辞 opsdeck_restore_test_ の復元専用DBが空であること、ユーザーと接続ドライバーがアプリDBと分離・一致していることを確認する',
@@ -160,6 +169,7 @@ class OpsDeckDeploymentReadiness extends Command
                 'mail' => 'MAIL_MAILER=resend_idempotent、RESEND_IDEMPOTENT_MAIL_ENABLED=true、送信用RESEND_API_KEY、検査時のみ使うドメイン参照用RESEND_DOMAIN_CHECK_API_KEY、正の整数のRESEND_API_TIMEOUTを設定する。MAIL_FROM_ADDRESSのドメインがResendでverifiedかつsending=enabledであること、送信元アドレスとMAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する',
                 'failure_alert' => 'OPSDECK_PLATFORM_ADMIN_EMAILSに有効な管理者メールを設定し、共有Cacheとメール送信設定を確認する',
                 'stripe' => '本番用STRIPE_SECRET / STRIPE_PRICE_PREMIUM / STRIPE_WEBHOOK_SECRETを設定し、Stripe上のPremium Priceが有効なJPY月額価格であることを確認する',
+                'ai_cost' => 'OPSDECK_AI_USD_TO_JPY_RATE と OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS を設定し、利用モデルの入力・出力単価をAI事業者の最新料金表に合わせる',
                 'commercial_information' => 'OPSDECK_SELLER_NAME / OPSDECK_SELLER_ADDRESS / OPSDECK_SELLER_PHONE / OPSDECK_SELLER_REPRESENTATIVE に正確な販売者情報を設定する',
                 default => null,
             };
@@ -357,6 +367,42 @@ class OpsDeckDeploymentReadiness extends Command
         return $this->hasProductionMailTransport()
             && $this->usesSharedCache()
             && $this->isPositiveInteger(config('opsdeck.error_alerts.cooldown_seconds'));
+    }
+
+    private function hasAiCostConfiguration(): bool
+    {
+        $exchangeRate = config('opsdeck.ai.usd_to_jpy_rate');
+        $premiumBudget = config('opsdeck.ai.monthly_budget_jpy.premium');
+        $modelPrices = config('opsdeck.ai.model_prices_per_million_tokens');
+        if (! is_numeric($exchangeRate)
+            || (float) $exchangeRate <= 0
+            || ! is_numeric($premiumBudget)
+            || (float) $premiumBudget <= 0
+            || ! is_array($modelPrices)) {
+            return false;
+        }
+
+        $models = array_unique([
+            config('opsdeck.ai.models.fast'),
+            config('opsdeck.ai.models.deep'),
+        ]);
+        foreach ($models as $model) {
+            if (! is_string($model) || $model === '') {
+                return false;
+            }
+
+            $pricing = $modelPrices[$model] ?? null;
+            if (! is_array($pricing)
+                || ! is_numeric($pricing['input'] ?? null)
+                || ! is_numeric($pricing['output'] ?? null)
+                || (float) $pricing['input'] < 0
+                || (float) $pricing['output'] < 0
+                || ((float) $pricing['input'] === 0.0 && (float) $pricing['output'] === 0.0)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function hasHttpsWebhookUrl(mixed $url): bool

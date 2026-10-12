@@ -11,7 +11,13 @@
             <input id="timezone" name="timezone" value="{{ old('timezone', $organization->timezone) }}" required>
             <label for="company_size">会社規模</label>
             <input id="company_size" name="company_size" type="number" min="1" value="{{ old('company_size', $organization->company_size) }}">
-            <label><input name="ai_enabled" type="hidden" value="0"><input name="ai_enabled" type="checkbox" value="1" style="width:auto" @checked(old('ai_enabled', $organization->ai_enabled))> AI補助を有効にする</label>
+            @if ($aiEnabledAvailable)
+                <label><input name="ai_enabled" type="hidden" value="0"><input name="ai_enabled" type="checkbox" value="1" style="width:auto" @checked(old('ai_enabled', $organization->ai_enabled))> AI補助を有効にする</label>
+                <p class="muted">AI候補の費用は、組織のタイムゾーンにおける月ごとに500円相当の推定上限で制御します。換算レート・モデル単価が未設定の場合はAIを呼び出しません。</p>
+            @else
+                <input name="ai_enabled" type="hidden" value="0">
+                <p class="muted">AI列マッピング候補はPremiumプラン限定です。FreeプランではAIへデータを送信しません。</p>
+            @endif
             <h2>削減見積の会社別前提</h2>
             <p class="muted">未設定の場合は共通初期値（更新見直し率{{ config('opsdeck.cost_savings.renewal_negotiation_rate') * 100 }}%、未使用端末{{ number_format(config('opsdeck.cost_savings.unused_asset_monthly_jpy')) }}円/月）を使います。実績値ではなく見積用の仮定です。</p>
             <label for="cost_savings_renewal_rate_percent">更新時の見直し率（%）</label>

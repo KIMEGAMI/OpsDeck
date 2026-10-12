@@ -8,6 +8,7 @@ use App\Services\Import\GoogleSheetsImportSource;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -36,6 +37,23 @@ class GoogleSheetsImportSourceTest extends TestCase
         $this->assertSame(['名前', 'メール'], $streamed['headers']);
         $this->assertSame(1, $streamed['total_rows']);
         $this->assertSame(['Alice', 'alice@example.test'], $streamedRows[0]['values']);
+    }
+
+    public function test_it_rejects_duplicate_google_sheet_headers(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $organization = Organization::query()->create(['name' => 'Duplicate headers '.Str::random(8), 'slug' => 'duplicate-headers-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $connection = GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'token', 'refresh_token' => 'refresh']);
+        Http::fake(['https://sheets.googleapis.com/v4/spreadsheets/sheet-id/values/*' => Http::response([
+            'values' => [['Employee name', ' Employee name '], ['Alice', 'Bob']],
+        ], 200)]);
+
+        try {
+            (new GoogleSheetsImportSource)->parse($connection, 'sheet-id', 'Employees');
+            $this->fail('Duplicate Google Sheets headers must be rejected after trimming.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['見出しに同じ名前、または複数の空欄があります。列名を一意にしてから再度アップロードしてください。'], $exception->errors()['file']);
+        }
     }
 
     public function test_it_limits_mapping_samples_at_the_google_sheets_api(): void
@@ -86,6 +104,49 @@ class GoogleSheetsImportSourceTest extends TestCase
         $this->assertSame(['名前'], $parsed['headers']);
         $this->assertSame(3, $parsed['total_rows']);
         $this->assertSame([2, 4, 5], array_column($rows, 'source_row_number'));
+        $this->assertSame(["'社員一覧'!1:2", "'社員一覧'!3:4", "'社員一覧'!5:5"], $requestedRanges);
+    }
+
+    public function test_it_composes_multiple_header_rows_and_starts_data_at_the_selected_row(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config(['opsdeck.import.google_sheets_read_chunk_rows' => 2]);
+        $organization = Organization::query()->create(['name' => 'Multi header '.Str::random(8), 'slug' => 'multi-header-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $connection = GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'token', 'refresh_token' => 'refresh']);
+        $requestedRanges = [];
+        Http::fake(function (Request $request) use (&$requestedRanges) {
+            $path = (string) parse_url($request->url(), PHP_URL_PATH);
+            if (str_ends_with($path, '/spreadsheets/sheet-id')) {
+                return Http::response(['sheets' => [['properties' => ['title' => '社員一覧', 'gridProperties' => ['rowCount' => 5]]]]], 200);
+            }
+
+            $range = urldecode(substr($path, strpos($path, '/values/') + strlen('/values/')));
+            $requestedRanges[] = $range;
+
+            return match ($range) {
+                "'社員一覧'!1:2" => Http::response(['values' => [['注記'], ['社員', '部署']]], 200),
+                "'社員一覧'!3:4" => Http::response(['values' => [['名前', '名称'], ['Alice', '営業']]], 200),
+                "'社員一覧'!5:5" => Http::response(['values' => [['Bob', '経理']]], 200),
+                default => Http::response([], 404),
+            };
+        });
+        $rows = [];
+
+        $parsed = (new GoogleSheetsImportSource)->parseEach(
+            $connection,
+            'sheet-id',
+            '社員一覧',
+            static function (array $row, array $headers) use (&$rows): void {
+                $rows[] = ['row' => $row, 'headers' => $headers];
+            },
+            headerRowNumber: 2,
+            headerEndRowNumber: 3,
+            dataStartRowNumber: 4,
+        );
+
+        $this->assertSame(['社員 / 名前', '部署 / 名称'], $parsed['headers']);
+        $this->assertSame([4, 5], array_column(array_column($rows, 'row'), 'source_row_number'));
+        $this->assertSame(['社員 / 名前', '部署 / 名称'], $rows[0]['headers']);
         $this->assertSame(["'社員一覧'!1:2", "'社員一覧'!3:4", "'社員一覧'!5:5"], $requestedRanges);
     }
 

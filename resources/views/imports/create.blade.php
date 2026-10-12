@@ -11,6 +11,14 @@
             @if ($targetType !== null)<input type="hidden" name="target_type" value="{{ $targetType }}">@endif
             <label for="source_name">取込名</label>
             <input id="source_name" name="source_name" value="{{ old('source_name', $targetTypeLabel !== null ? $targetTypeLabel.'管理表' : '') }}" required maxlength="255">
+            <label for="header_row_number">見出し範囲の開始行</label>
+            <input id="header_row_number" type="number" name="header_row_number" value="{{ old('header_row_number', config('opsdeck.import.default_header_row_number')) }}" min="1" max="{{ config('opsdeck.import.max_header_row_number') }}" required>
+            <label for="header_end_row_number">見出し範囲の終了行</label>
+            <input id="header_end_row_number" type="number" name="header_end_row_number" value="{{ old('header_end_row_number', old('header_row_number', config('opsdeck.import.default_header_row_number'))) }}" min="{{ (int) old('header_row_number', config('opsdeck.import.default_header_row_number')) }}" max="{{ config('opsdeck.import.max_header_row_number') }}" required>
+            <p class="muted">1始まりです。見出しが1行なら開始行と終了行を同じ番号に、複数行なら範囲で指定します。XLSXの見出し範囲内に収まる結合セルは読み込みます。範囲をまたぐ結合やデータ行の結合は拒否されます（最大{{ number_format(config('opsdeck.import.max_header_row_number')) }}行）。</p>
+            <label for="data_start_row_number">データ開始行（任意）</label>
+            <input id="data_start_row_number" type="number" name="data_start_row_number" value="{{ old('data_start_row_number') }}" min="{{ (int) old('header_end_row_number', old('header_row_number', config('opsdeck.import.default_header_row_number'))) + 1 }}" max="{{ min(config('opsdeck.import.max_source_row_number'), config('opsdeck.import.xlsx_max_rows')) }}">
+            <p class="muted">見出し範囲の後に注記・小計などがある場合のみ指定してください。空欄なら見出し範囲の次の行から読み込みます（最大{{ number_format(min(config('opsdeck.import.max_source_row_number'), config('opsdeck.import.xlsx_max_rows'))) }}行）。</p>
             <label for="file">{{ $capabilities['xlsx_preview'] ? 'CSV / XLSXファイル' : 'CSVファイル' }}</label>
             <input id="file" type="file" name="file" accept="{{ $capabilities['xlsx_preview'] ? '.csv,.txt,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : '.csv,.txt,text/csv,text/plain' }}" required>
             <p class="muted">CSVはUTF-8（BOM付き可）またはShift_JIS（Windows-31J）に対応しています。文字化けや列ずれを避けるため、Previewで内容を必ず確認してください。</p>
@@ -19,12 +27,29 @@
             @endif
             <button type="submit">プレビューを作成</button>
         </form>
+        <script>
+            const headerStartInput = document.getElementById('header_row_number');
+            const headerEndInput = document.getElementById('header_end_row_number');
+            const dataStartInput = document.getElementById('data_start_row_number');
+            let previousHeaderStart = Number(headerStartInput.value);
+            const updateImportRowBounds = () => {
+                const headerStart = Number(headerStartInput.value || 1);
+                if (Number(headerEndInput.value) < headerStart || Number(headerEndInput.value) === previousHeaderStart) {
+                    headerEndInput.value = String(headerStart);
+                }
+                headerEndInput.min = String(headerStart);
+                dataStartInput.min = String(Number(headerEndInput.value || headerStart) + 1);
+                previousHeaderStart = headerStart;
+            };
+            headerStartInput.addEventListener('input', updateImportRowBounds);
+            headerEndInput.addEventListener('input', updateImportRowBounds);
+        </script>
         <h2>サンプルCSV</h2>
         <p class="muted">列名と値の形式を確認するためのサンプルです。実データは含まれていません。サンプル行をImportすると組織の業務データとして登録されるため、実データの代わりに取り込まないでください。</p>
         <h2>Excel・社内管理表を取り込む手順</h2>
         <ol>
             <li>元のExcelは変更せず、取り込むシートを{{ $capabilities['xlsx_preview'] ? 'CSVまたはXLSX' : 'CSV' }}としてコピーします。</li>
-            <li>取込名とファイルを選び、「プレビューを作成」を押します。ここでは業務データに登録・更新されません。</li>
+            <li>取込名・見出し範囲・必要ならデータ開始行・ファイルを選び、「プレビューを作成」を押します。ここでは業務データに登録・更新されません。</li>
             <li>Previewの準備後、Import詳細画面の「列マッピングを設定する」で対象データ種別と列の対応を設定します。</li>
             <li>マッピング分析後、新規・更新・確認待ち・エラーを確認し、必要な行だけを選択します。</li>
             @if ($capabilities['import_execution'])

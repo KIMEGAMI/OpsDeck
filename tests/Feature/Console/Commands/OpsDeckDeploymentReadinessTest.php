@@ -136,6 +136,45 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->assertSame(0, $exitCode, $actualOutput);
     }
 
+    public function test_it_fails_when_ai_is_enabled_without_complete_cost_configuration(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.usd_to_jpy_rate' => null,
+            'opsdeck.ai.model_prices_per_million_tokens' => [],
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"ai_cost":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_passes_ai_cost_readiness_when_all_active_model_prices_are_configured(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.usd_to_jpy_rate' => 150,
+            'opsdeck.ai.model_prices_per_million_tokens' => [
+                'gpt-6-luna' => ['input' => 0.10, 'output' => 0.50],
+                'gpt-6.1-sol' => ['input' => 2.00, 'output' => 10.00],
+            ],
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"ai_cost":"pass"')
+            ->assertExitCode(0);
+    }
+
     public function test_it_fails_readiness_when_idempotent_resend_is_enabled_without_an_api_key(): void
     {
         $this->configureReadyDeployment();
@@ -1054,13 +1093,13 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'services.stripe.prices.premium' => null,
             'services.stripe.webhook_secret' => null,
         ]);
-        DB::shouldReceive('connection')->twice()->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL'));
+        DB::shouldReceive('connection')->once()->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL'));
         $phpExtensionReadiness = $this->mock(PhpExtensionReadiness::class);
         $phpExtensionReadiness->shouldReceive('missingExtensions')->once()->andReturn([]);
         $this->app->instance(PhpExtensionReadiness::class, $phpExtensionReadiness);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"fail","app_key":"fail","debug":"fail","https_url":"fail","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"fail","php_extensions":"pass","database_driver":"fail","database_connection":"fail","database_migrations":"fail","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"fail","cache_lock":"fail","mail":"fail","failure_alert":"fail","stripe":"fail","commercial_information":"not_applicable"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"fail","app_key":"fail","debug":"fail","https_url":"fail","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"fail","php_extensions":"pass","database_driver":"fail","database_connection":"fail","database_migrations":"unverified","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"fail","cache_lock":"fail","mail":"fail","failure_alert":"fail","stripe":"fail","commercial_information":"not_applicable"}}')
             ->assertExitCode(1);
     }
 
@@ -1079,7 +1118,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'services.stripe.prices.premium' => null,
             'services.stripe.webhook_secret' => null,
         ]);
-        DB::shouldReceive('connection')->twice()->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL'));
+        DB::shouldReceive('connection')->once()->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL'));
         $phpExtensionReadiness = $this->mock(PhpExtensionReadiness::class);
         $phpExtensionReadiness->shouldReceive('missingExtensions')->once()->andReturn(['openssl']);
         $this->app->instance(PhpExtensionReadiness::class, $phpExtensionReadiness);
@@ -1090,7 +1129,9 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->expectsOutput('- production_logging: 本番ログをwarning以上にし、daily/monthlyの保存期間を設定するか、stderr/syslog等の監視可能な出力先へ送る')
             ->expectsOutput('- php_extensions: PHP拡張を有効化: openssl')
             ->expectsOutput('- database_connection: DB_HOST / DB_PORT / DB_DATABASE / DB_USERNAME と Secret Manager上のDB_PASSWORDを確認し、DBサーバーの稼働・ネットワーク/ポート到達性も確認する')
+            ->expectsOutput('- database_migrations: DB接続失敗のため未確認です。先に接続先と対象DBが正しいことを確認し、再チェックしてください。未適用と確認できるまではマイグレーションを実行しないでください')
             ->expectsOutput('秘密値はこのチェックでは表示しません。')
+            ->doesntExpectOutput('php artisan migrate --force')
             ->doesntExpectOutput('STRIPE_SECRET_SENTINEL')
             ->doesntExpectOutput('DB_PASSWORD_SENTINEL')
             ->assertExitCode(1);

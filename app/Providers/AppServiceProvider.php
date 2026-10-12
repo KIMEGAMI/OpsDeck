@@ -46,11 +46,21 @@ class AppServiceProvider extends ServiceProvider
             'sha256',
             (string) ($request->attributes->get('currentOrganization')?->getKey() ?? $request->user()?->getAuthIdentifier()),
         )));
+        RateLimiter::for('billing-portal', fn ($request) => Limit::perMinute(config('opsdeck.billing.portal_attempts_per_minute'))->by(hash(
+            'sha256',
+            (string) ($request->attributes->get('currentOrganization')?->getKey() ?? $request->user()?->getAuthIdentifier()),
+        )));
         RateLimiter::for('referrals', fn ($request) => Limit::perMinute(config('opsdeck.referrals.redirect_attempts_per_minute'))->by(hash('sha256', (string) $request->ip())));
         RateLimiter::for('support', fn ($request) => Limit::perMinutes(
             config('opsdeck.support.submission_decay_minutes'),
             config('opsdeck.support.submission_limit'),
         )->by(hash('sha256', (string) $request->ip())));
+        RateLimiter::for('invitation-accept', fn ($request) => Limit::perMinute(
+            config('opsdeck.invitations.accept_attempts_per_minute'),
+        )->by(hash('sha256', (string) $request->ip())));
+        RateLimiter::for('invitation-create', fn ($request) => Limit::perMinute(
+            config('opsdeck.invitations.create_attempts_per_minute'),
+        )->by(hash('sha256', (string) $request->attributes->get('currentOrganization')?->getKey())));
 
         ResetPassword::toMailUsing(static function (User $user, string $token): MailMessage {
             $resetPath = route('password.reset', [

@@ -40,6 +40,31 @@ class SavedViewControllerTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])->get(route('saved-views.create'))->assertForbidden();
     }
 
+    public function test_personal_and_shared_saved_views_have_distinct_delete_permissions(): void
+    {
+        [$creator, $organization] = $this->member(MembershipRole::Operator);
+        $admin = User::factory()->create(['email' => 'saved-admin-'.Str::uuid().'@example.test']);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $admin->id, 'role' => MembershipRole::Admin, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $viewer = User::factory()->create(['email' => 'saved-viewer-'.Str::uuid().'@example.test']);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $viewer->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $personalView = SavedView::query()->create(['organization_id' => $organization->id, 'created_by' => $creator->id, 'name' => '個人ビュー', 'view_key' => 'renewals', 'is_shared' => false]);
+        $sharedView = SavedView::query()->create(['organization_id' => $organization->id, 'created_by' => $creator->id, 'name' => '共有ビュー', 'view_key' => 'mfa_unknown', 'is_shared' => true]);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($creator)->withSession($session)->get(route('saved-views.index'))->assertOk()->assertSee('個人ビューを削除')->assertDontSee('共有ビューを削除');
+        $this->actingAs($admin)->withSession($session)->get(route('saved-views.index'))->assertOk()->assertSee('共有ビューを削除')->assertDontSee('個人ビューを削除');
+        $this->actingAs($admin)->withSession($session)->delete(route('saved-views.destroy', $personalView))->assertForbidden();
+        $this->actingAs($viewer)->withSession($session)->delete(route('saved-views.destroy', $sharedView))->assertForbidden();
+        $this->assertDatabaseHas('saved_views', ['id' => $personalView->id]);
+        $this->assertDatabaseHas('saved_views', ['id' => $sharedView->id]);
+
+        $this->actingAs($creator)->withSession($session)->delete(route('saved-views.destroy', $personalView))->assertRedirect(route('saved-views.index'));
+        $this->assertDatabaseMissing('saved_views', ['id' => $personalView->id]);
+
+        $this->actingAs($admin)->withSession($session)->delete(route('saved-views.destroy', $sharedView))->assertRedirect(route('saved-views.index'));
+        $this->assertDatabaseMissing('saved_views', ['id' => $sharedView->id]);
+    }
+
     public function test_renewal_saved_view_uses_the_organizations_local_date(): void
     {
         config(['app.timezone' => 'UTC']);

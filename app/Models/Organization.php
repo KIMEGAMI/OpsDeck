@@ -38,6 +38,11 @@ class Organization extends Model
         return $this->hasMany(RealizedSaving::class);
     }
 
+    public function importProfiles(): HasMany
+    {
+        return $this->hasMany(ImportProfile::class);
+    }
+
     protected function casts(): array
     {
         return [

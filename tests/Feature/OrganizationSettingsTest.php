@@ -17,9 +17,16 @@ use Tests\TestCase;
 
 class OrganizationSettingsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+    }
+
     public function test_owner_can_update_organization_settings(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code')]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('settings.organization'))
@@ -50,6 +57,20 @@ class OrganizationSettingsTest extends TestCase
         ], $auditLog->after_json['changed_fields']);
         $this->assertNull($auditLog->before_json);
         $this->assertStringNotContainsString('3200', json_encode($auditLog->toArray()));
+    }
+
+    public function test_free_plan_cannot_enable_ai_mapping(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->put(route('settings.organization.update'), [
+                'timezone' => $organization->timezone,
+                'ai_enabled' => true,
+            ])
+            ->assertSessionHasErrors('ai_enabled');
+
+        $this->assertFalse($organization->refresh()->ai_enabled);
     }
 
     public function test_viewer_cannot_update_organization_settings(): void

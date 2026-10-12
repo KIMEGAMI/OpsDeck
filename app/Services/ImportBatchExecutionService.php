@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Services\Import\CsvImportSource;
 use App\Services\Import\GoogleSheetsImportSource;
 use App\Services\Import\ImportFailureMessage;
+use App\Services\Import\ImportNormalizationSuggestionService;
 use App\Services\Import\XlsxImportSource;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -35,6 +36,8 @@ use Throwable;
 
 class ImportBatchExecutionService
 {
+    public function __construct(private ImportNormalizationSuggestionService $normalizationService) {}
+
     /**
      * @param  'ready'|'queued'  $expectedStatus
      */
@@ -129,6 +132,7 @@ class ImportBatchExecutionService
                             $values[$targetField] = trim((string) ($row[$headerIndexes[$sourceHeader]] ?? ''));
                         }
                     }
+                    $values = $this->normalizationService->apply($mapping->target_type, $values, $mapping->normalization_rules ?? []);
                     $values = $this->normalizeImportValues($mapping->target_type, $values);
                     $duplicateKey = $this->duplicateKey($mapping->target_type, $values);
                     $duplicateKeyHash = $duplicateKey === null ? null : hash('sha256', $duplicateKey);
@@ -234,6 +238,7 @@ class ImportBatchExecutionService
 
             $expectedValues[$targetField] = trim((string) ($sampleValues[$sourceHeader] ?? ''));
         }
+        $expectedValues = $this->normalizationService->apply($mapping->target_type, $expectedValues, $mapping->normalization_rules ?? []);
         $expectedValues = $this->normalizeImportValues($mapping->target_type, $expectedValues);
         ksort($expectedValues);
 
@@ -277,14 +282,14 @@ class ImportBatchExecutionService
         try {
             if ($importBatch->source_type === 'google_sheets') {
                 $connection = GoogleSheetConnection::query()->where('organization_id', $importBatch->organization_id)->firstOrFail();
-                $parsed = app(GoogleSheetsImportSource::class)->parseEach($connection, $importBatch->source_external_id, $importBatch->selected_sheet_name, $stageRow, $targetType === 'contracts');
+                $parsed = app(GoogleSheetsImportSource::class)->parseEach($connection, $importBatch->source_external_id, $importBatch->selected_sheet_name, $stageRow, $targetType === 'contracts', headerRowNumber: (int) $importBatch->header_row_number, dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(), headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber());
             } elseif ($importBatch->source_type === 'xlsx') {
-                $parsed = app(XlsxImportSource::class)->parseEach(Storage::disk($disk)->path($importBatch->source_file_path), $importBatch->selected_sheet_name, $stageRow);
+                $parsed = app(XlsxImportSource::class)->parseEach(Storage::disk($disk)->path($importBatch->source_file_path), $importBatch->selected_sheet_name, $stageRow, headerRowNumber: (int) $importBatch->header_row_number, dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(), headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber());
             } else {
                 $sourceStream = Storage::disk($disk)->readStream($importBatch->source_file_path);
                 abort_unless(is_resource($sourceStream), 422, 'CSVファイルを読み込めません。');
                 try {
-                    $parsed = app(CsvImportSource::class)->parseEachStream($sourceStream, $stageRow);
+                    $parsed = app(CsvImportSource::class)->parseEachStream($sourceStream, $stageRow, headerRowNumber: (int) $importBatch->header_row_number, dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(), headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber());
                 } finally {
                     fclose($sourceStream);
                 }
@@ -337,12 +342,30 @@ class ImportBatchExecutionService
             }
             $attributes = array_intersect_key($values, array_flip(['employee_number', 'name', 'email', 'employment_status', 'joined_at', 'left_at', 'job_title', 'memo']));
             $attributes['employment_status'] = $attributes['employment_status'] ?? config('opsdeck.employee_status.active');
+            $departmentName = trim((string) ($values['department_name'] ?? ''));
+            if ($departmentName !== '') {
+                $department = Department::query()
+                    ->where('organization_id', $importBatch->organization_id)
+                    ->whereRaw('LOWER(name) = ?', [mb_strtolower($departmentName)])
+                    ->first();
+                if ($department === null) {
+                    $result['action'] = 'error';
+                    $result['errors_json'] = ['row' => 'employee department name must match an organization department'];
+
+                    return [$result, 'error'];
+                }
+
+                $attributes['department_id'] = $department->id;
+            }
             foreach (['joined_at', 'left_at'] as $dateField) {
                 if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
                     $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
                 }
             }
-            $record = Employee::query()->where('organization_id', $importBatch->organization_id)->where('email', $attributes['email'])->first();
+            $record = Employee::query()
+                ->where('organization_id', $importBatch->organization_id)
+                ->whereRaw('LOWER(email) = ?', [strtolower($attributes['email'])])
+                ->first();
         } elseif ($targetType === 'departments') {
             if (($values['name'] ?? '') === '') {
                 $result['action'] = 'error';
@@ -392,11 +415,14 @@ class ImportBatchExecutionService
         } elseif ($targetType === 'saas_assignments') {
             $serviceName = $values['service_name'] ?? '';
             $employeeEmail = $values['employee_email'] ?? '';
-            $service = SaasService::query()->where('organization_id', $importBatch->organization_id)->where('name', $serviceName)->first();
-            $employee = $employeeEmail === '' ? null : Employee::query()->where('organization_id', $importBatch->organization_id)->where('email', $employeeEmail)->first();
+            $service = SaasService::query()
+                ->where('organization_id', $importBatch->organization_id)
+                ->whereRaw('LOWER(name) = ?', [mb_strtolower(trim($serviceName))])
+                ->first();
+            $employee = $employeeEmail === '' ? null : $this->findUniqueEmployeeByEmail($importBatch, $employeeEmail);
             if ($service === null || ($employeeEmail !== '' && $employee === null) || ! in_array($values['mfa_status'] ?? '', config('opsdeck.saas_assignment_mfa_statuses'), true)) {
                 $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'service_name, employee_email and mfa_status must resolve to valid organization data'];
+                $result['errors_json'] = ['row' => 'service_name, employee_email and mfa_status must resolve unambiguously to valid organization data'];
 
                 return [$result, 'error'];
             }
@@ -427,6 +453,18 @@ class ImportBatchExecutionService
                 return [$result, 'error'];
             }
             $attributes = array_intersect_key($values, array_flip(['control_code', 'title', 'category', 'description', 'status', 'review_frequency', 'last_reviewed_at', 'next_review_at', 'memo']));
+            $ownerEmail = trim((string) ($values['owner_email'] ?? ''));
+            if ($ownerEmail !== '') {
+                $owner = $this->findUniqueEmployeeByEmail($importBatch, $ownerEmail);
+                if ($owner === null) {
+                    $result['action'] = 'error';
+                    $result['errors_json'] = ['row' => 'security control owner email must match exactly one organization employee'];
+
+                    return [$result, 'error'];
+                }
+
+                $attributes['owner_employee_id'] = $owner->id;
+            }
             foreach (['last_reviewed_at', 'next_review_at'] as $dateField) {
                 if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
                     $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
@@ -483,7 +521,41 @@ class ImportBatchExecutionService
 
                 return [$result, 'error'];
             }
+            $serviceName = trim((string) ($values['service_name'] ?? ''));
+            if ($serviceName !== '') {
+                $service = SaasService::query()
+                    ->where('organization_id', $importBatch->organization_id)
+                    ->whereRaw('LOWER(name) = ?', [mb_strtolower($serviceName)])
+                    ->first();
+                if ($service === null) {
+                    $result['action'] = 'error';
+                    $result['errors_json'] = ['row' => 'contract service name must match an organization service'];
+
+                    return [$result, 'error'];
+                }
+
+                $attributes['saas_service_id'] = $service->id;
+            }
+            $ownerEmail = trim((string) ($values['employee_email'] ?? ''));
+            if ($ownerEmail !== '') {
+                $owner = $this->findUniqueEmployeeByEmail($importBatch, $ownerEmail);
+                if ($owner === null) {
+                    $result['action'] = 'error';
+                    $result['errors_json'] = ['row' => 'contract owner email must match exactly one organization employee'];
+
+                    return [$result, 'error'];
+                }
+
+                $attributes['owner_employee_id'] = $owner->id;
+            }
             $record = Contract::query()->where('organization_id', $importBatch->organization_id)->where('contract_name', $attributes['contract_name'])->where('vendor_name', $attributes['vendor_name'])->first();
+            if ($record !== null) {
+                foreach (['contract_type', 'currency', 'auto_renew'] as $defaultableField) {
+                    if (! array_key_exists($defaultableField, $values)) {
+                        unset($attributes[$defaultableField]);
+                    }
+                }
+            }
         } else {
             if (($values['title'] ?? '') === '' || ($values['evidence_type'] ?? '') === '') {
                 $result['action'] = 'error';
@@ -527,7 +599,7 @@ class ImportBatchExecutionService
             };
             $result['action'] = 'inserted';
             $result['target_id'] = $record->id;
-            $result['after_json'] = $this->snapshotAttributes($record, array_keys($attributes));
+            $result['after_json'] = $this->snapshotAllAttributes($record);
 
             return [$result, 'inserted'];
         }
@@ -549,7 +621,7 @@ class ImportBatchExecutionService
             'departments' => ($values['name'] ?? '') !== '' ? 'department:'.mb_strtolower($values['name']) : null,
             'assets' => ($values['asset_number'] ?? '') !== '' ? 'asset:'.mb_strtolower($values['asset_number']) : null,
             'saas_services' => ($values['name'] ?? '') !== '' ? 'saas:'.mb_strtolower($values['name']) : null,
-            'saas_assignments' => ($values['service_name'] ?? '').'|'.($values['employee_email'] ?? '').'|'.($values['account_identifier'] ?? ''),
+            'saas_assignments' => mb_strtolower(trim((string) ($values['service_name'] ?? ''))).'|'.strtolower(trim((string) ($values['employee_email'] ?? ''))).'|'.trim((string) ($values['account_identifier'] ?? '')),
             'contracts' => ($values['vendor_name'] ?? '').'|'.($values['contract_name'] ?? ''),
             'security_controls' => ($values['control_code'] ?? '') !== '' ? 'security-control:'.mb_strtolower($values['control_code']) : null,
             'evidence' => ($values['evidence_type'] ?? '').'|'.($values['title'] ?? ''),
@@ -563,7 +635,7 @@ class ImportBatchExecutionService
         foreach ($values as $field => $value) {
             $values[$field] = is_string($value) ? trim($value) : $value;
         }
-        foreach (['email', 'employee_email'] as $field) {
+        foreach (['email', 'employee_email', 'owner_email'] as $field) {
             if (isset($values[$field])) {
                 $values[$field] = strtolower($values[$field]);
             }
@@ -616,5 +688,24 @@ class ImportBatchExecutionService
         }
 
         return $snapshot;
+    }
+
+    /** @return array<string, mixed> */
+    private function snapshotAllAttributes(Model $record): array
+    {
+        $fields = array_values(array_unique([...$record->getFillable(), ...array_keys($record->getAttributes())]));
+
+        return $this->snapshotAttributes($record, $fields);
+    }
+
+    private function findUniqueEmployeeByEmail(ImportBatch $importBatch, string $email): ?Employee
+    {
+        $matches = Employee::query()
+            ->where('organization_id', $importBatch->organization_id)
+            ->whereRaw('LOWER(email) = ?', [strtolower(trim($email))])
+            ->limit(2)
+            ->get();
+
+        return $matches->count() === 1 ? $matches->first() : null;
     }
 }

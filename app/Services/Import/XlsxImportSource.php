@@ -30,22 +30,29 @@ class XlsxImportSource
     private const EXCEL_1904_MAXIMUM_SERIAL = 2957003;
 
     /** @return array{headers: list<string>, rows: list<array{source_row_number: int, values: list<string>}>} */
-    public function parse(string $path, ?string $sheetName = null): array
+    public function parse(string $path, ?string $sheetName = null, int $headerRowNumber = 1, ?int $dataStartRowNumber = null, ?int $headerEndRowNumber = null): array
     {
         $rows = [];
         $parsed = $this->parseEach($path, $sheetName, static function (array $row) use (&$rows): void {
             $rows[] = $row;
-        });
+        }, headerRowNumber: $headerRowNumber, dataStartRowNumber: $dataStartRowNumber, headerEndRowNumber: $headerEndRowNumber);
 
         return ['headers' => $parsed['headers'], 'rows' => $rows];
     }
 
     /**
      * @param  callable(array{source_row_number: int, values: list<string>}, list<string>): void  $onRow
-     * @return array{headers: list<string>, total_rows: int}
+     * @return array{headers: list<string>, total_rows: int, header_row_number: int, header_end_row_number: int, data_start_row_number: int}
      */
-    public function parseEach(string $path, ?string $sheetName, callable $onRow, ?int $maximumDataRows = null): array
+    public function parseEach(string $path, ?string $sheetName, callable $onRow, ?int $maximumDataRows = null, int $headerRowNumber = 1, ?int $dataStartRowNumber = null, ?int $headerEndRowNumber = null): array
     {
+        $headerEndRowNumber ??= $headerRowNumber;
+        if ($headerRowNumber < 1
+            || $headerEndRowNumber < $headerRowNumber
+            || $headerEndRowNumber > (int) config('opsdeck.import.max_header_row_number')) {
+            throw ValidationException::withMessages(['file' => '見出し行番号が許可範囲外です。']);
+        }
+        $this->assertDataStartRowNumberAllowed($headerEndRowNumber, $dataStartRowNumber);
         $archive = new ZipArchive;
         if ($archive->open($path) !== true) {
             throw new RuntimeException('XLSXファイルを開けません。');
@@ -57,14 +64,22 @@ class XlsxImportSource
             $sheetName ??= array_key_first($sheets);
             abort_unless(is_string($sheetName) && isset($sheets[$sheetName]), 422, '指定したXLSXシートが見つかりません。');
             $namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+            $worksheetStructure = $this->worksheetStructure($archive, $sheets[$sheetName], $namespace);
+            $mergedRows = $worksheetStructure['merged_rows'];
+            $mergedRanges = $worksheetStructure['merged_ranges'];
+            $hiddenColumns = $worksheetStructure['hidden_columns'];
             $dateStyles = $this->dateStyles($archive);
             $uses1904DateSystem = $this->uses1904DateSystem($archive);
             $headers = [];
+            $headerRows = [];
+            $resolvedHeaderRowNumber = null;
+            $resolvedHeaderEndRowNumber = null;
+            $mergedHeaderValues = [];
             $totalRows = 0;
             $maximumImportRows = max(1, (int) config('opsdeck.import.max_rows'));
             $cellCount = 0;
             $worksheetRowCount = 0;
-            $this->withArchiveEntryReader($archive, $sheets[$sheetName], function (XMLReader $reader) use (&$headers, &$totalRows, &$cellCount, &$worksheetRowCount, $namespace, $sharedStrings, $dateStyles, $uses1904DateSystem, $onRow, $maximumDataRows, $maximumImportRows): void {
+            $this->withArchiveEntryReader($archive, $sheets[$sheetName], function (XMLReader $reader) use (&$headers, &$headerRows, &$resolvedHeaderRowNumber, &$resolvedHeaderEndRowNumber, &$mergedHeaderValues, &$totalRows, &$cellCount, &$worksheetRowCount, $namespace, $sharedStrings, $dateStyles, $uses1904DateSystem, $onRow, $maximumDataRows, $maximumImportRows, $headerRowNumber, $headerEndRowNumber, $dataStartRowNumber, $mergedRows, $mergedRanges, $hiddenColumns): void {
                 while ($reader->read()) {
                     if ($reader->nodeType !== XMLReader::ELEMENT || $reader->localName !== 'row' || $reader->namespaceURI !== $namespace) {
                         continue;
@@ -73,30 +88,75 @@ class XlsxImportSource
                     $worksheetRowCount++;
                     $rowNumber = $reader->getAttribute('r');
                     $sourceRowNumber = $rowNumber === null ? $worksheetRowCount : (int) $rowNumber;
+                    $isHiddenRow = filter_var($reader->getAttribute('hidden') ?? false, FILTER_VALIDATE_BOOL);
                     $this->assertWorksheetRowWithinLimit($sourceRowNumber);
                     if ($worksheetRowCount > (int) config('opsdeck.import.xlsx_max_rows')) {
                         $this->rejectOversizedWorksheet();
                     }
 
-                    $values = $this->readWorksheetRow($reader, $namespace, $sharedStrings, $dateStyles, $uses1904DateSystem, $cellCount);
+                    $containsFormula = false;
+                    $values = $this->readWorksheetRow($reader, $namespace, $sharedStrings, $dateStyles, $uses1904DateSystem, $cellCount, $containsFormula);
                     ksort($values);
                     $rowValues = $values === [] ? [] : array_fill(0, (int) array_key_last($values) + 1, '');
                     foreach ($values as $column => $value) {
                         $rowValues[$column] = $value;
                     }
 
-                    if ($worksheetRowCount === 1) {
-                        $headers = array_map(static fn (string $header): string => trim($header), $rowValues);
+                    $autoDetectFirstHeader = $headerRowNumber === 1 && $headerEndRowNumber === 1 && $headers === [];
+                    if (($sourceRowNumber >= $headerRowNumber && $sourceRowNumber <= $headerEndRowNumber) || $autoDetectFirstHeader) {
+                        if ($autoDetectFirstHeader && count(array_filter($rowValues, static fn (string $value): bool => trim($value) !== '')) === 0) {
+                            continue;
+                        }
+                        $this->rejectFormulaRow($containsFormula);
+                        $this->rejectHiddenRow($isHiddenRow);
+                        $effectiveHeaderStart = $autoDetectFirstHeader ? $sourceRowNumber : $headerRowNumber;
+                        $effectiveHeaderEnd = $autoDetectFirstHeader ? $sourceRowNumber : $headerEndRowNumber;
+                        $rowValues = $this->expandMergedHeaderValues(
+                            $sourceRowNumber,
+                            $rowValues,
+                            $mergedRanges,
+                            $effectiveHeaderStart,
+                            $effectiveHeaderEnd,
+                            $mergedHeaderValues,
+                        );
+                        $this->rejectHiddenColumns($rowValues, $hiddenColumns);
+                        $headerRows[] = array_map(static fn (string $header): string => trim($header), $rowValues);
+                        if ($resolvedHeaderRowNumber === null) {
+                            $resolvedHeaderRowNumber = $sourceRowNumber;
+                        }
+                        if ($autoDetectFirstHeader || $sourceRowNumber === $headerEndRowNumber) {
+                            $resolvedHeaderEndRowNumber = $sourceRowNumber;
+                            $headerValidator = app(ImportHeaderValidator::class);
+                            $headers = $headerValidator->composeRows($headerRows);
+                            $headerValidator->assertUnique($headers);
+                        }
 
                         continue;
                     }
+                    if ($sourceRowNumber < $headerRowNumber) {
+                        continue;
+                    }
+                    if ($headers === []) {
+                        throw ValidationException::withMessages(['file' => '指定した行にXLSXヘッダーがありません。行番号を確認してください。']);
+                    }
+                    $minimumDataRowNumber = max(
+                        $dataStartRowNumber ?? (($resolvedHeaderEndRowNumber ?? $headerEndRowNumber) + 1),
+                        ($resolvedHeaderEndRowNumber ?? $headerEndRowNumber) + 1,
+                    );
+                    if ($sourceRowNumber < $minimumDataRowNumber) {
+                        continue;
+                    }
 
+                    $this->rejectFormulaRow($containsFormula);
+                    $this->rejectMergedRow($sourceRowNumber, $mergedRows);
                     if (count(array_filter($rowValues, static fn (string $value): bool => trim($value) !== '')) !== 0) {
                         if ($totalRows >= $maximumImportRows) {
                             throw ValidationException::withMessages([
                                 'file' => "XLSXの取込上限（{$maximumImportRows}行）を超えています。ファイルを分割して再度お試しください。",
                             ]);
                         }
+                        $this->rejectHiddenRow($isHiddenRow);
+                        $this->rejectHiddenColumns($values, $hiddenColumns);
                         $onRow(['source_row_number' => $sourceRowNumber, 'values' => $rowValues], $headers);
                         $totalRows++;
                         if ($maximumDataRows !== null && $totalRows >= max(1, $maximumDataRows)) {
@@ -106,7 +166,29 @@ class XlsxImportSource
                 }
             }, 'XLSXのシートを解析できません。');
 
-            return ['headers' => $headers, 'total_rows' => $totalRows];
+            if ($headers === [] && $headerRows !== [] && $resolvedHeaderRowNumber !== null) {
+                if ($headerRowNumber !== 1 || $headerEndRowNumber !== 1) {
+                    throw ValidationException::withMessages(['file' => '指定した見出し範囲がシート内にありません。行番号を確認してください。']);
+                }
+                $resolvedHeaderEndRowNumber = $resolvedHeaderRowNumber;
+                $headerValidator = app(ImportHeaderValidator::class);
+                $headers = $headerValidator->composeRows($headerRows);
+                $headerValidator->assertUnique($headers);
+            }
+            if ($headers === []) {
+                throw ValidationException::withMessages(['file' => '指定した行にXLSXヘッダーがありません。行番号を確認してください。']);
+            }
+
+            $resolvedHeader = $resolvedHeaderRowNumber ?? $headerRowNumber;
+            $resolvedHeaderEnd = $resolvedHeaderEndRowNumber ?? $resolvedHeader;
+
+            return [
+                'headers' => $headers,
+                'total_rows' => $totalRows,
+                'header_row_number' => $resolvedHeader,
+                'header_end_row_number' => $resolvedHeaderEnd,
+                'data_start_row_number' => max($dataStartRowNumber ?? $resolvedHeaderEnd + 1, $resolvedHeaderEnd + 1),
+            ];
         } finally {
             $archive->close();
         }
@@ -160,12 +242,24 @@ class XlsxImportSource
         }
     }
 
+    private function assertDataStartRowNumberAllowed(int $headerEndRowNumber, ?int $dataStartRowNumber): void
+    {
+        $maximumSourceRowNumber = min(
+            (int) config('opsdeck.import.max_source_row_number'),
+            (int) config('opsdeck.import.xlsx_max_rows'),
+        );
+        if ($dataStartRowNumber !== null
+            && ($dataStartRowNumber <= $headerEndRowNumber || $dataStartRowNumber > $maximumSourceRowNumber)) {
+            throw ValidationException::withMessages(['file' => 'データ開始行番号は見出し範囲の終了行より後、かつ許可範囲内で指定してください。']);
+        }
+    }
+
     /**
      * @param  array<int, string>  $sharedStrings
      * @param  array<int, bool>  $dateStyles
      * @return array<int, string>
      */
-    private function readWorksheetRow(XMLReader $reader, string $namespace, array $sharedStrings, array $dateStyles, bool $uses1904DateSystem, int &$cellCount): array
+    private function readWorksheetRow(XMLReader $reader, string $namespace, array $sharedStrings, array $dateStyles, bool $uses1904DateSystem, int &$cellCount, bool &$containsFormula): array
     {
         $rowDepth = $reader->depth;
         $values = [];
@@ -190,7 +284,7 @@ class XlsxImportSource
             $column = $this->columnIndex($reference);
             $cellType = $reader->getAttribute('t') ?? '';
             $styleIndex = (int) ($reader->getAttribute('s') ?? 0);
-            $value = $this->readWorksheetCellValue($reader, $cellType, $namespace);
+            $value = $this->readWorksheetCellValue($reader, $cellType, $namespace, $containsFormula);
             if ($cellType === 's') {
                 $value = $sharedStrings[(int) $value] ?? '';
             }
@@ -203,7 +297,7 @@ class XlsxImportSource
         return $values;
     }
 
-    private function readWorksheetCellValue(XMLReader $reader, string $cellType, string $namespace): string
+    private function readWorksheetCellValue(XMLReader $reader, string $cellType, string $namespace, bool &$containsFormula): string
     {
         if ($reader->isEmptyElement) {
             return '';
@@ -218,12 +312,188 @@ class XlsxImportSource
             if ($reader->nodeType !== XMLReader::ELEMENT || $reader->namespaceURI !== $namespace) {
                 continue;
             }
+            if ($reader->localName === 'f') {
+                $containsFormula = true;
+            }
             if (($cellType === 'inlineStr' && $reader->localName === 't') || ($cellType !== 'inlineStr' && $reader->localName === 'v')) {
                 $value .= $reader->readString();
             }
         }
 
         return $value;
+    }
+
+    private function rejectFormulaRow(bool $containsFormula): void
+    {
+        if ($containsFormula) {
+            throw ValidationException::withMessages(['file' => '見出し行または取込データに数式セルがあります。値に変換してから再度アップロードしてください。']);
+        }
+    }
+
+    /** @param array<int, true> $mergedRows */
+    private function rejectMergedRow(int $sourceRowNumber, array $mergedRows): void
+    {
+        if (isset($mergedRows[$sourceRowNumber])) {
+            throw ValidationException::withMessages(['file' => '見出し行または取込データに結合セルがあります。結合を解除してから再度アップロードしてください。']);
+        }
+    }
+
+    private function rejectHiddenRow(bool $isHiddenRow): void
+    {
+        if ($isHiddenRow) {
+            throw ValidationException::withMessages(['file' => '見出し行または取込データに非表示の行があります。表示してから再度アップロードしてください。']);
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $values
+     * @param  array<int, true>  $hiddenColumns
+     */
+    private function rejectHiddenColumns(array $values, array $hiddenColumns): void
+    {
+        foreach ($values as $column => $value) {
+            if (isset($hiddenColumns[$column]) && trim($value) !== '') {
+                throw ValidationException::withMessages(['file' => '見出し行または取込データに非表示の列があります。表示してから再度アップロードしてください。']);
+            }
+        }
+    }
+
+    /**
+     * @return array{merged_rows: array<int, true>, merged_ranges: list<array{start_row: int, end_row: int, start_column: int, end_column: int}>, hidden_columns: array<int, true>}
+     */
+    private function worksheetStructure(ZipArchive $archive, string $entryName, string $namespace): array
+    {
+        $mergedRows = [];
+        $mergedRanges = [];
+        $mergedCellCoordinates = [];
+        $hiddenColumns = [];
+        $maximumMergedItems = max(1, (int) config('opsdeck.import.xlsx_max_cells'));
+        $maximumColumns = max(1, (int) config('opsdeck.import.xlsx_max_columns'));
+        $mergedRangeCount = 0;
+        $mergedRowReferenceCount = 0;
+        $hiddenColumnDefinitionCount = 0;
+        $hiddenColumnReferenceCount = 0;
+        $mergedCellReferenceCount = 0;
+        $this->withArchiveEntryReader($archive, $entryName, function (XMLReader $reader) use (&$mergedRows, &$mergedRanges, &$mergedCellCoordinates, &$hiddenColumns, &$mergedRangeCount, &$mergedRowReferenceCount, &$mergedCellReferenceCount, &$hiddenColumnDefinitionCount, &$hiddenColumnReferenceCount, $maximumMergedItems, $maximumColumns, $namespace): void {
+            while ($reader->read()) {
+                if ($reader->nodeType !== XMLReader::ELEMENT || $reader->namespaceURI !== $namespace) {
+                    continue;
+                }
+
+                if ($reader->localName === 'mergeCell') {
+                    $reference = $reader->getAttribute('ref') ?? '';
+                    if (preg_match('/^([A-Z]+)([1-9][0-9]*):([A-Z]+)([1-9][0-9]*)$/i', $reference, $matches) !== 1) {
+                        throw new RuntimeException('XLSXの結合セル情報が不正です。');
+                    }
+                    $mergedRangeCount++;
+                    if ($mergedRangeCount > $maximumMergedItems) {
+                        $this->rejectOversizedWorksheet();
+                    }
+
+                    $firstRow = (int) $matches[2];
+                    $lastRow = (int) $matches[4];
+                    $firstColumn = $this->columnIndexFromLetters($matches[1]);
+                    $lastColumn = $this->columnIndexFromLetters($matches[3]);
+                    if ($firstRow > $lastRow || $firstColumn > $lastColumn) {
+                        throw new RuntimeException('XLSXの結合セル情報が不正です。');
+                    }
+                    $this->assertWorksheetRowWithinLimit($firstRow);
+                    $this->assertWorksheetRowWithinLimit($lastRow);
+                    $mergedCellCount = ($lastRow - $firstRow + 1) * ($lastColumn - $firstColumn + 1);
+                    if ($mergedCellCount > $maximumMergedItems - $mergedCellReferenceCount) {
+                        $this->rejectOversizedWorksheet();
+                    }
+                    $mergedCellReferenceCount += $mergedCellCount;
+                    $mergedRanges[] = [
+                        'start_row' => $firstRow,
+                        'end_row' => $lastRow,
+                        'start_column' => $firstColumn,
+                        'end_column' => $lastColumn,
+                    ];
+
+                    for ($rowNumber = $firstRow; $rowNumber <= $lastRow; $rowNumber++) {
+                        $mergedRowReferenceCount++;
+                        if ($mergedRowReferenceCount > $maximumMergedItems) {
+                            $this->rejectOversizedWorksheet();
+                        }
+                        $mergedRows[$rowNumber] = true;
+                        for ($column = $firstColumn; $column <= $lastColumn; $column++) {
+                            $coordinate = $rowNumber.':'.$column;
+                            if (isset($mergedCellCoordinates[$coordinate])) {
+                                throw ValidationException::withMessages(['file' => 'XLSXの結合セル範囲が重複しています。ファイル構造を確認してください。']);
+                            }
+                            $mergedCellCoordinates[$coordinate] = true;
+                        }
+                    }
+
+                    continue;
+                }
+
+                if ($reader->localName !== 'col' || ! filter_var($reader->getAttribute('hidden') ?? false, FILTER_VALIDATE_BOOL)) {
+                    continue;
+                }
+                $hiddenColumnDefinitionCount++;
+                if ($hiddenColumnDefinitionCount > $maximumMergedItems) {
+                    $this->rejectOversizedWorksheet();
+                }
+
+                $firstColumn = filter_var($reader->getAttribute('min'), FILTER_VALIDATE_INT);
+                $lastColumn = filter_var($reader->getAttribute('max'), FILTER_VALIDATE_INT);
+                if (! is_int($firstColumn) || ! is_int($lastColumn) || $firstColumn < 1 || $lastColumn < $firstColumn) {
+                    throw new RuntimeException('XLSXの非表示列情報が不正です。');
+                }
+                if ($firstColumn > $maximumColumns) {
+                    continue;
+                }
+
+                for ($column = $firstColumn; $column <= min($lastColumn, $maximumColumns); $column++) {
+                    $hiddenColumnReferenceCount++;
+                    if ($hiddenColumnReferenceCount > $maximumMergedItems) {
+                        $this->rejectOversizedWorksheet();
+                    }
+                    $hiddenColumns[$column - 1] = true;
+                    if (count($hiddenColumns) > $maximumColumns) {
+                        $this->rejectOversizedWorksheet();
+                    }
+                }
+            }
+        }, 'XLSXのシート構造を解析できません。');
+
+        return ['merged_rows' => $mergedRows, 'merged_ranges' => $mergedRanges, 'hidden_columns' => $hiddenColumns];
+    }
+
+    /**
+     * @param  array<int, string>  $rowValues
+     * @param  list<array{start_row: int, end_row: int, start_column: int, end_column: int}>  $mergedRanges
+     * @param  array<int, string>  $mergedHeaderValues
+     * @return array<int, string>
+     */
+    private function expandMergedHeaderValues(
+        int $sourceRowNumber,
+        array $rowValues,
+        array $mergedRanges,
+        int $headerStartRowNumber,
+        int $headerEndRowNumber,
+        array &$mergedHeaderValues,
+    ): array {
+        foreach ($mergedRanges as $rangeIndex => $range) {
+            if ($sourceRowNumber < $range['start_row'] || $sourceRowNumber > $range['end_row']) {
+                continue;
+            }
+            if ($range['start_row'] < $headerStartRowNumber || $range['end_row'] > $headerEndRowNumber) {
+                throw ValidationException::withMessages(['file' => '見出し範囲をまたぐ結合セルがあります。結合を解除するか、範囲を見直してください。']);
+            }
+
+            if ($sourceRowNumber === $range['start_row']) {
+                $mergedHeaderValues[$rangeIndex] = $rowValues[$range['start_column']] ?? '';
+            }
+            $value = $mergedHeaderValues[$rangeIndex] ?? '';
+            for ($columnIndex = $range['start_column']; $columnIndex <= $range['end_column']; $columnIndex++) {
+                $rowValues[$columnIndex] = $value;
+            }
+        }
+
+        return $rowValues;
     }
 
     /**
@@ -439,8 +709,14 @@ class XlsxImportSource
         }
 
         $this->assertWorksheetRowWithinLimit((int) $matches[2]);
+
+        return $this->columnIndexFromLetters($matches[1]);
+    }
+
+    private function columnIndexFromLetters(string $columnLetters): int
+    {
         $index = 0;
-        foreach (str_split(strtoupper($matches[1])) as $letter) {
+        foreach (str_split(strtoupper($columnLetters)) as $letter) {
             $index = ($index * 26) + ord($letter) - 64;
             if ($index > (int) config('opsdeck.import.xlsx_max_columns')) {
                 $this->rejectOversizedWorksheet();

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\DeleteSavedViewRequest;
 use App\Http\Requests\StoreSavedViewRequest;
 use App\Models\Asset;
 use App\Models\Contract;
@@ -52,6 +53,13 @@ class SavedViewController extends Controller
         $rows = $this->rows($savedView->view_key, $organization);
 
         return view('saved-views.show', ['savedView' => $savedView, 'rows' => $rows, 'label' => config('opsdeck.saved_view_types.'.$savedView->view_key)]);
+    }
+
+    public function destroy(DeleteSavedViewRequest $request, SavedView $savedView): RedirectResponse
+    {
+        $savedView->delete();
+
+        return to_route('saved-views.index')->with('status', '定型ビューを削除しました。');
     }
 
     private function rows(string $key, Organization $organization): LengthAwarePaginator

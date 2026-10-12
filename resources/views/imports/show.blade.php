@@ -3,6 +3,8 @@
         <h1>{{ $importBatch->source_name }}</h1>
         @if (session('status'))<p role="status">{{ session('status') }}</p>@endif
         <p>状態: {{ $importBatchStatusLabels[$importBatch->status] ?? $importBatch->status }} / 種別: {{ $importSourceTypeLabels[$importBatch->source_type] ?? $importBatch->source_type }} / データ行数: {{ $importBatch->total_rows }}</p>
+        @if ($importBatch->selected_sheet_name !== null)<p class="muted">対象シート: {{ $importBatch->selected_sheet_name }}</p>@endif
+        @if (in_array($importBatch->source_type, ['csv', 'xlsx', 'google_sheets'], true))<p class="muted">見出し行: {{ $importBatch->header_row_number }}〜{{ $importBatch->resolvedHeaderEndRowNumber() }} / データ開始行: {{ $importBatch->resolvedDataStartRowNumber() }}</p>@endif
         @if ($importBatch->status === 'queued')
             <p role="status">Importは処理待ちです。準備ができると自動で実行されます。この画面を更新すると状態を確認できます。</p>
         @elseif ($importBatch->status === 'previewing')
@@ -21,9 +23,57 @@
             <p><a href="{{ route('imports.show', $importBatch) }}">状態を更新</a></p>
         @endif
         @if ($importBatch->status === 'sheet_selection' && (($importBatch->source_type === 'xlsx' && $capabilities['xlsx_preview']) || ($importBatch->source_type === 'google_sheets' && $capabilities['google_sheets'])))
-            <form method="post" action="{{ $importBatch->source_type === 'google_sheets' ? route('imports.google-sheet.store', $importBatch) : route('imports.sheet.store', $importBatch) }}"><input type="hidden" name="_token" value="{{ csrf_token() }}"><label for="sheet_name">シート</label><select id="sheet_name" name="sheet_name" required>@foreach (($importBatch->available_sheets_json ?? []) as $sheet)<option value="{{ $sheet }}">{{ $sheet }}</option>@endforeach</select><button type="submit">シートを選択</button></form>
+            <form method="post" action="{{ $importBatch->source_type === 'google_sheets' ? route('imports.google-sheet.store', $importBatch) : route('imports.sheet.store', $importBatch) }}"><input type="hidden" name="_token" value="{{ csrf_token() }}"><label for="sheet_name">シート</label><select id="sheet_name" name="sheet_name" required>@foreach (($importBatch->available_sheets_json ?? []) as $sheet)<option value="{{ $sheet }}">{{ $sheet }}</option>@endforeach</select>
+                @if ($importBatch->source_type === 'google_sheets')
+                    <label for="google_header_row_number">見出し範囲の開始行</label>
+                    <input id="google_header_row_number" type="number" name="header_row_number" value="{{ old('header_row_number', config('opsdeck.import.default_header_row_number')) }}" min="1" max="{{ config('opsdeck.import.max_header_row_number') }}" required>
+                    <label for="google_header_end_row_number">見出し範囲の終了行</label>
+                    <input id="google_header_end_row_number" type="number" name="header_end_row_number" value="{{ old('header_end_row_number', old('header_row_number', config('opsdeck.import.default_header_row_number'))) }}" min="{{ (int) old('header_row_number', config('opsdeck.import.default_header_row_number')) }}" max="{{ config('opsdeck.import.max_header_row_number') }}" required>
+                    <label for="google_data_start_row_number">データ開始行（任意）</label>
+                    <input id="google_data_start_row_number" type="number" name="data_start_row_number" value="{{ old('data_start_row_number') }}" min="{{ (int) old('header_end_row_number', old('header_row_number', config('opsdeck.import.default_header_row_number'))) + 1 }}" max="{{ config('opsdeck.import.max_source_row_number') }}">
+                @endif
+                <button type="submit">シートを選択</button></form>
         @elseif ($importBatch->status === 'sheet_selection')
             <p class="muted">この形式のImportはPremiumプランで利用できます。<a href="{{ route('billing.index') }}">プランを確認する</a></p>
+        @endif
+        @if ($availableAdditionalSheets !== [] && $capabilities['xlsx_preview'])
+            @can('create', [App\Models\ImportBatch::class, $organization])
+                <details>
+                    <summary>このXLSXの別シートを取り込む</summary>
+                    <p class="muted">別シートは独立したImportバッチとしてPreview・マッピング・承認を行います。異なる台帳の列や社員・資産などの関係を自動で結合しません。</p>
+                    <form method="post" action="{{ route('imports.sheet.additional', $importBatch) }}">
+                        @csrf
+                        <label for="additional_sheet_name">未使用のシート</label>
+                        <select id="additional_sheet_name" name="sheet_name" required>
+                            @foreach ($availableAdditionalSheets as $sheet)<option value="{{ $sheet }}">{{ $sheet }}</option>@endforeach
+                        </select>
+                        <label for="additional_header_row_number">見出し範囲の開始行</label>
+                        <input id="additional_header_row_number" type="number" name="header_row_number" value="{{ old('header_row_number', config('opsdeck.import.default_header_row_number')) }}" min="1" max="{{ config('opsdeck.import.max_header_row_number') }}" required>
+                        <label for="additional_header_end_row_number">見出し範囲の終了行</label>
+                        <input id="additional_header_end_row_number" type="number" name="header_end_row_number" value="{{ old('header_end_row_number', old('header_row_number', config('opsdeck.import.default_header_row_number'))) }}" min="{{ (int) old('header_row_number', config('opsdeck.import.default_header_row_number')) }}" max="{{ config('opsdeck.import.max_header_row_number') }}" required>
+                        <label for="additional_data_start_row_number">データ開始行（任意）</label>
+                        <input id="additional_data_start_row_number" type="number" name="data_start_row_number" value="{{ old('data_start_row_number') }}" min="{{ (int) old('header_end_row_number', old('header_row_number', config('opsdeck.import.default_header_row_number'))) + 1 }}" max="{{ min(config('opsdeck.import.max_source_row_number'), config('opsdeck.import.xlsx_max_rows')) }}">
+                        <button type="submit">別シートのPreviewを作成</button>
+                    </form>
+                    <script>
+                        const additionalHeaderStart = document.getElementById('additional_header_row_number');
+                        const additionalHeaderEnd = document.getElementById('additional_header_end_row_number');
+                        const additionalDataStart = document.getElementById('additional_data_start_row_number');
+                        let previousAdditionalHeaderStart = Number(additionalHeaderStart.value);
+                        const updateAdditionalImportRowBounds = () => {
+                            const headerStart = Number(additionalHeaderStart.value || 1);
+                            if (Number(additionalHeaderEnd.value) < headerStart || Number(additionalHeaderEnd.value) === previousAdditionalHeaderStart) {
+                                additionalHeaderEnd.value = String(headerStart);
+                            }
+                            additionalHeaderEnd.min = String(headerStart);
+                            additionalDataStart.min = String(Number(additionalHeaderEnd.value || headerStart) + 1);
+                            previousAdditionalHeaderStart = headerStart;
+                        };
+                        additionalHeaderStart.addEventListener('input', updateAdditionalImportRowBounds);
+                        additionalHeaderEnd.addEventListener('input', updateAdditionalImportRowBounds);
+                    </script>
+                </details>
+            @endcan
         @endif
         <dl><dt>新規登録</dt><dd>{{ $importBatch->inserted_rows }}</dd><dt>更新</dt><dd>{{ $importBatch->updated_rows }}</dd><dt>スキップ</dt><dd>{{ $importBatch->skipped_rows }}</dd><dt>エラー</dt><dd>{{ $importBatch->error_rows }}</dd></dl>
         @if ($importBatch->status === 'failed' || (in_array($importBatch->status, ['completed', 'cancelled'], true) && $importBatch->error_rows > 0))

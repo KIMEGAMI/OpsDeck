@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AiUsageLog;
 use App\Models\Contract;
 use App\Models\ImportBatch;
 use App\Models\Organization;
@@ -85,6 +86,58 @@ class AdminDashboardTest extends TestCase
             ->assertSee('全件一括再試行は避けてください')
             ->assertSee('メール配信の手動確認')
             ->assertSee(route('admin.mail-delivery-reviews.index'));
+    }
+
+    public function test_ai_cost_pages_show_token_costs_and_do_not_invent_missing_fx_or_model_prices(): void
+    {
+        AiUsageLog::query()->delete();
+        $user = User::factory()->create(['email' => 'platform-ai-cost-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$user->email], 'opsdeck.ai.usd_to_jpy_rate' => null]);
+        $organization = Organization::query()->create(['name' => 'AI cost reporting', 'slug' => 'ai-cost-reporting-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        AiUsageLog::query()->create([
+            'organization_id' => $organization->id,
+            'provider' => 'openai',
+            'model' => 'gpt-6-luna',
+            'purpose' => 'import_column_mapping',
+            'input_tokens' => 100000,
+            'output_tokens' => 20000,
+            'estimated_cost_usd' => 0.02,
+            'estimated_cost_jpy' => 0,
+            'success' => true,
+        ]);
+        AiUsageLog::query()->create([
+            'organization_id' => $organization->id,
+            'provider' => 'openai',
+            'model' => 'custom-model-without-price',
+            'purpose' => 'import_column_mapping',
+            'input_tokens' => 100000,
+            'output_tokens' => 20000,
+            'estimated_cost_usd' => 0,
+            'estimated_cost_jpy' => 0,
+            'success' => true,
+            'error_code' => 'pricing_unavailable',
+        ]);
+
+        $this->actingAs($user)->get(route('admin.dashboard'))
+            ->assertOk()
+            ->assertSee('AI推定原価（USD）')
+            ->assertSee('為替レート未設定')
+            ->assertSee('価格未登録モデルの利用回数')
+            ->assertSee('1');
+        $this->actingAs($user)->get(route('admin.ai-cost'))
+            ->assertOk()
+            ->assertSee('入力tokens')
+            ->assertSee('100,000')
+            ->assertSee('$0.020000')
+            ->assertSee('価格が未登録のモデル')
+            ->assertSee('custom-model-without-price')
+            ->assertSee('—');
+
+        config(['opsdeck.ai.usd_to_jpy_rate' => 150.5]);
+        AiUsageLog::query()->where('model', 'gpt-6-luna')->update(['estimated_cost_jpy' => 3.01]);
+        $this->actingAs($user)->get(route('admin.dashboard'))
+            ->assertOk()
+            ->assertSee('3.01円');
     }
 
     public function test_platform_admin_can_find_an_import_failure_by_the_reference_shown_to_the_member(): void

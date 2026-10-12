@@ -15,6 +15,7 @@ class GoogleSheetDiffPreviewPreparationService
     public function __construct(
         private GoogleSheetsImportSource $googleSheetsImportSource,
         private ImportBatchExecutionService $executionService,
+        private ImportNormalizationSuggestionService $normalizationService,
     ) {}
 
     public function prepare(int $sourceBatchId, int $diffBatchId): void
@@ -67,6 +68,7 @@ class GoogleSheetDiffPreviewPreparationService
                             $values[$targetField] = trim((string) ($row['values'][$headerIndexes[$sourceHeader]] ?? ''));
                         }
                     }
+                    $values = $this->normalizationService->apply($mapping->target_type, $values, $mapping->normalization_rules ?? []);
                     $values = $this->executionService->normalizeImportValues($mapping->target_type, $values);
                     $key = $this->executionService->duplicateKey($mapping->target_type, $values);
                     if ($key !== null) {
@@ -86,6 +88,9 @@ class GoogleSheetDiffPreviewPreparationService
                     ]);
                 },
                 $mapping->target_type === 'contracts',
+                headerRowNumber: (int) $sourceBatch->header_row_number,
+                dataStartRowNumber: $sourceBatch->resolvedDataStartRowNumber(),
+                headerEndRowNumber: $sourceBatch->resolvedHeaderEndRowNumber(),
             );
             $headers = $parsed['headers'];
             $headerIndexes = array_flip($headers);

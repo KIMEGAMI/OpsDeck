@@ -37,43 +37,55 @@ class GoogleSheetsImportSource
     }
 
     /** @return array{headers: list<string>, rows: list<array{source_row_number: int, values: list<string>}>} */
-    public function parse(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName, bool $forContracts = false, ?int $maximumDataRows = null): array
+    public function parse(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName, bool $forContracts = false, ?int $maximumDataRows = null, int $headerRowNumber = 1, ?int $headerEndRowNumber = null, ?int $dataStartRowNumber = null): array
     {
         $rows = [];
         $parsed = $this->parseEachInRanges($connection, $spreadsheetId, $sheetName, static function (array $row) use (&$rows): void {
             $rows[] = $row;
-        }, $forContracts, $maximumDataRows, false);
+        }, $forContracts, $maximumDataRows, false, $headerRowNumber, $headerEndRowNumber, $dataStartRowNumber);
 
         return ['headers' => $parsed['headers'], 'rows' => $rows];
     }
 
     /**
      * @param  callable(array{source_row_number: int, values: list<string>}, list<string>): void  $onRow
-     * @return array{headers: list<string>, total_rows: int}
+     * @return array{headers: list<string>, total_rows: int, header_row_number: int, header_end_row_number: int, data_start_row_number: int}
      */
-    public function parseEach(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName, callable $onRow, bool $forContracts = false, ?int $maximumDataRows = null): array
+    public function parseEach(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName, callable $onRow, bool $forContracts = false, ?int $maximumDataRows = null, int $headerRowNumber = 1, ?int $headerEndRowNumber = null, ?int $dataStartRowNumber = null): array
     {
-        return $this->parseEachInRanges($connection, $spreadsheetId, $sheetName, $onRow, $forContracts, $maximumDataRows, true);
+        return $this->parseEachInRanges($connection, $spreadsheetId, $sheetName, $onRow, $forContracts, $maximumDataRows, true, $headerRowNumber, $headerEndRowNumber, $dataStartRowNumber);
     }
 
     /**
      * @param  callable(array{source_row_number: int, values: list<string>}, list<string>): void  $onRow
-     * @return array{headers: list<string>, total_rows: int}
+     * @return array{headers: list<string>, total_rows: int, header_row_number: int, header_end_row_number: int, data_start_row_number: int}
      */
-    private function parseEachInRanges(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName, callable $onRow, bool $forContracts, ?int $maximumDataRows, bool $fetchInChunks): array
+    private function parseEachInRanges(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName, callable $onRow, bool $forContracts, ?int $maximumDataRows, bool $fetchInChunks, int $headerRowNumber, ?int $headerEndRowNumber, ?int $dataStartRowNumber): array
     {
+        $headerEndRowNumber ??= $headerRowNumber;
+        $dataStartRowNumber ??= $headerEndRowNumber + 1;
+        $maximumHeaderRowNumber = (int) config('opsdeck.import.max_header_row_number');
+        $maximumSourceRowNumber = (int) config('opsdeck.import.max_source_row_number');
+        if ($headerRowNumber < 1 || $headerEndRowNumber < $headerRowNumber || $headerEndRowNumber > $maximumHeaderRowNumber) {
+            throw ValidationException::withMessages(['header_row_number' => '見出し範囲は設定された上限内で指定してください。']);
+        }
+        if ($dataStartRowNumber <= $headerEndRowNumber || $dataStartRowNumber > $maximumSourceRowNumber) {
+            throw ValidationException::withMessages(['data_start_row_number' => 'データ開始行は見出し範囲より後、設定された上限以内で指定してください。']);
+        }
+
         $query = ['majorDimension' => 'ROWS'];
         if ($forContracts) {
             $query['valueRenderOption'] = 'UNFORMATTED_VALUE';
             $query['dateTimeRenderOption'] = 'SERIAL_NUMBER';
         }
         $rowCount = $maximumDataRows !== null
-            ? max(1, $maximumDataRows) + 1
+            ? $dataStartRowNumber + max(1, $maximumDataRows) - 1
             : ($fetchInChunks ? $this->sheetRowCount($connection, $spreadsheetId, $sheetName) : null);
         $chunkSize = $rowCount === null || ! $fetchInChunks
             ? $rowCount
             : max(1, (int) config('opsdeck.import.google_sheets_read_chunk_rows'));
         $headers = [];
+        $headerRows = [];
         $totalRows = 0;
         $maximumImportRows = max(1, (int) config('opsdeck.import.max_rows'));
         $valuesUrl = 'https://sheets.googleapis.com/v4/spreadsheets/'.rawurlencode($spreadsheetId).'/values/';
@@ -84,10 +96,20 @@ class GoogleSheetsImportSource
             $rows = $this->request($connection, $valuesUrl.rawurlencode($range), $query)->json('values', []);
             foreach ($rows as $index => $row) {
                 $sourceRowNumber = $startRow + $index;
-                if ($sourceRowNumber === 1) {
-                    $headers = array_map(static fn (mixed $value): string => trim((string) $value, " \t\n\r\0\x0B\xEF\xBB\xBF"), $row);
+                if ($sourceRowNumber >= $headerRowNumber && $sourceRowNumber <= $headerEndRowNumber) {
+                    $headerRows[$sourceRowNumber] = array_map(static fn (mixed $value): string => trim((string) $value, " \t\n\r\0\x0B\xEF\xBB\xBF"), $row);
+                    if ($sourceRowNumber === $headerEndRowNumber) {
+                        $headers = app(ImportHeaderValidator::class)->composeRows(array_values($headerRows));
+                        app(ImportHeaderValidator::class)->assertUnique($headers);
+                    }
 
                     continue;
+                }
+                if ($sourceRowNumber < $dataStartRowNumber) {
+                    continue;
+                }
+                if ($headers === []) {
+                    throw ValidationException::withMessages(['file' => '指定した見出し範囲をGoogle Sheetsから読み取れません。行番号を確認してください。']);
                 }
                 if (count(array_filter($row, static fn (mixed $value): bool => trim((string) $value) !== '')) === 0) {
                     continue;
@@ -122,7 +144,17 @@ class GoogleSheetsImportSource
             $startRow = $endRow + 1;
         }
 
-        return ['headers' => $headers, 'total_rows' => $totalRows];
+        if ($headers === []) {
+            throw ValidationException::withMessages(['file' => '指定した見出し範囲をGoogle Sheetsから読み取れません。行番号を確認してください。']);
+        }
+
+        return [
+            'headers' => $headers,
+            'total_rows' => $totalRows,
+            'header_row_number' => $headerRowNumber,
+            'header_end_row_number' => $headerEndRowNumber,
+            'data_start_row_number' => $dataStartRowNumber,
+        ];
     }
 
     private function sheetRowCount(GoogleSheetConnection $connection, string $spreadsheetId, string $sheetName): int

@@ -43,7 +43,10 @@ class AdminDashboardController extends Controller
                 'assets' => Asset::query()->count(),
                 'contracts' => Contract::query()->count(),
                 'aiRequests' => AiUsageLog::query()->count(),
+                'aiCostUsd' => AiUsageLog::query()->sum('estimated_cost_usd'),
                 'aiCostJpy' => AiUsageLog::query()->sum('estimated_cost_jpy'),
+                'aiPricingUnavailableRequests' => AiUsageLog::query()->where('error_code', 'pricing_unavailable')->count(),
+                'aiUsdToJpyRateConfigured' => is_numeric(config('opsdeck.ai.usd_to_jpy_rate')) && (float) config('opsdeck.ai.usd_to_jpy_rate') > 0,
                 'imports' => $importMetrics['total'],
                 'importFailureRate' => $importMetrics['rate'],
                 'googleSheetsConnections' => GoogleSheetConnection::query()->whereNull('revoked_at')->count(),
@@ -56,12 +59,14 @@ class AdminDashboardController extends Controller
     public function aiCost(): View
     {
         $usage = AiUsageLog::query()
-            ->selectRaw('provider, model, COUNT(*) as request_count, SUM(estimated_cost_jpy) as cost_jpy')
+            ->selectRaw('provider, model, COUNT(*) as request_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as cost_usd, SUM(estimated_cost_jpy) as cost_jpy, SUM(CASE WHEN error_code = ? THEN 1 ELSE 0 END) as unpriced_request_count', ['pricing_unavailable'])
             ->groupBy('provider', 'model')
-            ->orderByDesc('cost_jpy')
+            ->orderByDesc('cost_usd')
             ->get();
 
-        return view('admin.ai-cost', compact('usage'));
+        $usdToJpyRateConfigured = is_numeric(config('opsdeck.ai.usd_to_jpy_rate')) && (float) config('opsdeck.ai.usd_to_jpy_rate') > 0;
+
+        return view('admin.ai-cost', compact('usage', 'usdToJpyRateConfigured'));
     }
 
     public function queueErrors(): View
