@@ -472,8 +472,8 @@ class ImportMappingTest extends TestCase
             ->where('action', AuditLog::ImportBatchExecuted)
             ->firstOrFail();
         $this->assertSame($user->id, $auditLog->actor_user_id);
-        $this->assertSame(['status' => 'queued', 'source_type' => 'csv', 'target_type' => 'employees', 'total_rows' => 1], $auditLog->before_json);
-        $this->assertSame(['status' => 'completed', 'inserted_rows' => 1, 'updated_rows' => 0, 'skipped_rows' => 0, 'error_rows' => 0], $auditLog->after_json);
+        $this->assertEqualsCanonicalizing(['status' => 'queued', 'source_type' => 'csv', 'target_type' => 'employees', 'total_rows' => 1], $auditLog->before_json);
+        $this->assertEqualsCanonicalizing(['status' => 'completed', 'inserted_rows' => 1, 'updated_rows' => 0, 'skipped_rows' => 0, 'error_rows' => 0], $auditLog->after_json);
         $this->assertStringNotContainsString($email, json_encode([$auditLog->before_json, $auditLog->after_json], JSON_THROW_ON_ERROR));
         $this->assertSame(1, AuditLog::query()->where('entity_type', ImportBatch::class)->where('entity_id', $batch->id)->where('action', AuditLog::ImportBatchExecuted)->count());
     }
