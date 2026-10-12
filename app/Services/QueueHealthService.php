@@ -11,8 +11,8 @@ class QueueHealthService
 {
     public function staleQueuedJobs(): ?int
     {
-        $connectionName = (string) config('queue.default');
-        $driver = (string) config('queue.connections.'.$connectionName.'.driver', $connectionName);
+        $connectionName = $this->defaultQueueConnectionName();
+        $driver = $this->queueDriver($connectionName);
         if ($driver === 'sync' && ! app()->environment('production')) {
             return 0;
         }
@@ -41,8 +41,8 @@ class QueueHealthService
 
     public function backlogStatus(?int $knownStaleQueuedJobs = null): string
     {
-        $connectionName = (string) config('queue.default');
-        $driver = (string) config('queue.connections.'.$connectionName.'.driver', $connectionName);
+        $connectionName = $this->defaultQueueConnectionName();
+        $driver = $this->queueDriver($connectionName);
         if ($driver === 'sync' && ! app()->environment('production')) {
             return 'not_applicable';
         }
@@ -87,7 +87,8 @@ class QueueHealthService
 
     public function importTimeoutStatus(): string
     {
-        $driver = (string) config('queue.default');
+        $connectionName = $this->defaultQueueConnectionName();
+        $driver = $this->queueDriver($connectionName);
         if ($driver === 'sync') {
             return app()->environment('production') ? 'invalid' : 'not_applicable';
         }
@@ -95,7 +96,7 @@ class QueueHealthService
             return 'unknown';
         }
 
-        $retryAfter = config('queue.connections.'.$driver.'.retry_after');
+        $retryAfter = config('queue.connections.'.$connectionName.'.retry_after');
         $jobTimeouts = [
             (int) config('opsdeck.import.job_timeout_seconds'),
             (int) config('services.stripe.webhook_job_timeout_seconds'),
@@ -110,7 +111,8 @@ class QueueHealthService
 
     public function workerStatus(): string
     {
-        $driver = (string) config('queue.default');
+        $connectionName = $this->defaultQueueConnectionName();
+        $driver = $this->queueDriver($connectionName);
         if ($driver === 'sync') {
             return app()->environment('production') ? 'invalid' : 'not_applicable';
         }
@@ -118,14 +120,24 @@ class QueueHealthService
             return 'unknown';
         }
 
-        $queueName = (string) config('queue.connections.'.$driver.'.queue', 'default');
+        $queueName = (string) config('queue.connections.'.$connectionName.'.queue', 'default');
         $heartbeatCutoff = now()->subMinutes((int) config('opsdeck.queue.stale_after_minutes'));
         $isFresh = DB::table('queue_worker_heartbeats')
-            ->where('connection_name', $driver)
+            ->where('connection_name', $connectionName)
             ->where('queue_name', $queueName)
             ->where('last_seen_at', '>', $heartbeatCutoff)
             ->exists();
 
         return $isFresh ? 'ok' : 'stale';
+    }
+
+    private function defaultQueueConnectionName(): string
+    {
+        return (string) config('queue.default');
+    }
+
+    private function queueDriver(string $connectionName): string
+    {
+        return (string) config('queue.connections.'.$connectionName.'.driver', $connectionName);
     }
 }

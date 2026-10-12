@@ -62,6 +62,35 @@ class QueueWorkerHeartbeatTest extends TestCase
         }
     }
 
+    public function test_custom_queue_connection_name_uses_its_driver_and_heartbeat_configuration(): void
+    {
+        config([
+            'queue.default' => 'primary',
+            'queue.connections.primary.driver' => 'redis',
+            'queue.connections.primary.queue' => 'priority',
+            'queue.connections.primary.retry_after' => 180,
+            'opsdeck.queue.stale_after_minutes' => 10,
+            'opsdeck.import.job_timeout_seconds' => 120,
+            'services.stripe.webhook_job_timeout_seconds' => 90,
+        ]);
+
+        try {
+            DB::table('queue_worker_heartbeats')->insert([
+                'worker_key' => hash('sha256', 'custom-connection-worker'),
+                'connection_name' => 'primary',
+                'queue_name' => 'priority',
+                'last_seen_at' => now(),
+            ]);
+
+            $health = app(QueueHealthService::class);
+
+            $this->assertSame('ok', $health->workerStatus());
+            $this->assertSame('ok', $health->importTimeoutStatus());
+        } finally {
+            DB::table('queue_worker_heartbeats')->delete();
+        }
+    }
+
     public function test_synchronous_nonproduction_queue_does_not_require_a_worker(): void
     {
         config(['queue.default' => 'sync']);
