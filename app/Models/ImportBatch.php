@@ -14,7 +14,7 @@ class ImportBatch extends Model
     use HasFactory;
 
     protected $fillable = [
-        'organization_id', 'source_type', 'source_name', 'source_file_path', 'source_external_id', 'mapping_id',
+        'organization_id', 'source_type', 'source_name', 'source_file_path', 'source_file_sha256', 'source_external_id', 'mapping_id',
         'headers_json', 'available_sheets_json', 'selected_sheet_name', 'header_row_number', 'header_end_row_number', 'data_start_row_number', 'status', 'total_rows', 'inserted_rows', 'updated_rows', 'skipped_rows', 'error_rows', 'preview_new_rows', 'preview_updated_rows', 'preview_confirmation_rows', 'preview_error_rows', 'executed_by',
         'started_at', 'completed_at', 'failure_message', 'errors_reviewed_at', 'errors_reviewed_by', 'diff_source_batch_id',
     ];

@@ -17,6 +17,7 @@ class ImportPreviewPreparationService
         private CsvImportSource $csvImportSource,
         private XlsxImportSource $xlsxImportSource,
         private GoogleSheetsImportSource $googleSheetsImportSource,
+        private ImportSourceIntegrityService $sourceIntegrityService,
         private ImportPreviewRowWriter $previewRowWriter,
         private ProductEventRecorder $productEventRecorder,
     ) {}
@@ -81,6 +82,8 @@ class ImportPreviewPreparationService
      */
     private function parseToStream(ImportBatch $importBatch, $stagingStream): array
     {
+        $this->sourceIntegrityService->assertUnchanged($importBatch);
+
         if ($importBatch->source_type === 'csv' && $importBatch->source_file_path !== null) {
             $sourceStream = Storage::disk(config('opsdeck.import.disk'))->readStream($importBatch->source_file_path);
             if (! is_resource($sourceStream)) {

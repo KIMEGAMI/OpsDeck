@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ config('app.name') }}</title>
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
     <style>
         :root { color-scheme: light; font-family: system-ui, sans-serif; background: #f4f7fb; color: #172033; }
         :focus-visible { outline: 3px solid #005f73; outline-offset: 2px; }
@@ -43,7 +44,7 @@
         .dashboard-announcements .card { max-height: 22rem; overflow-y: auto; }
         .dashboard-announcements article + article { border-top: 1px solid #d9e2ec; margin-top: 1rem; padding-top: 1rem; }
         @media (max-width: 64rem) { .dashboard-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-        @media (max-width: 48rem) { header { padding: .85rem 1rem; } .nav-section-admin { margin-left: 0; } .app-navigation { gap: .6rem; } .dashboard-metrics, .dashboard-columns, .dashboard-links { grid-template-columns: 1fr; } }
+        @media (max-width: 48rem) { header { padding: .85rem 1rem; } .nav-section-admin { margin-left: 0; } .app-navigation { gap: .6rem; } .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric-card { padding: .75rem; } .metric-value { font-size: clamp(1rem, 4vw, 1.4rem); overflow-wrap: anywhere; } .dashboard-columns, .dashboard-links { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>

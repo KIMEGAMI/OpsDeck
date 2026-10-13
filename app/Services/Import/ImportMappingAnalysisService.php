@@ -33,6 +33,7 @@ class ImportMappingAnalysisService
         private ImportBatchExecutionService $executionService,
         private ContractAmountValidator $contractAmountValidator,
         private ImportNormalizationSuggestionService $normalizationService,
+        private ImportSourceIntegrityService $sourceIntegrityService,
     ) {}
 
     public function analyze(int $importBatchId, int $mappingId): void
@@ -159,6 +160,8 @@ class ImportMappingAnalysisService
      */
     private function forEachSourceRow(ImportBatch $importBatch, string $targetType, callable $onRow): void
     {
+        $this->sourceIntegrityService->assertUnchanged($importBatch);
+
         if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null && $importBatch->selected_sheet_name !== null) {
             $this->xlsxImportSource->parseEach(
                 Storage::disk(config('opsdeck.import.disk'))->path($importBatch->source_file_path),

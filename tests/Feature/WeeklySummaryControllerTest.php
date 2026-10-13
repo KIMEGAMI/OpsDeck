@@ -45,6 +45,7 @@ class WeeklySummaryControllerTest extends TestCase
             ->assertOk()
             ->assertSee('週次サマリー')
             ->assertSee('週次サマリーを受け取る')
+            ->assertSee('管理者のお知らせメールを受け取る')
             ->assertSee('期間中に発生したこと')
             ->assertSee('集計時点で対応が必要な項目')
             ->assertSee('発生状況の集計期間：')
@@ -64,6 +65,26 @@ class WeeklySummaryControllerTest extends TestCase
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->put(route('weekly-summary.preference'), ['weekly_summary_enabled' => '0'])->assertRedirect(route('weekly-summary.show'));
         $this->assertDatabaseHas('user_notification_preferences', ['user_id' => $user->id, 'organization_id' => $organization->id, 'weekly_summary_enabled' => 0]);
+    }
+
+    public function test_member_can_opt_out_of_announcement_emails_while_keeping_weekly_summaries(): void
+    {
+        [$user, $organization] = $this->member();
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('weekly-summary.preference'), [
+                'weekly_summary_enabled' => '1',
+                'announcement_enabled' => '0',
+            ])
+            ->assertRedirect(route('weekly-summary.show'));
+
+        $this->assertDatabaseHas('user_notification_preferences', [
+            'user_id' => $user->id,
+            'organization_id' => $organization->id,
+            'weekly_summary_enabled' => 1,
+            'announcement_enabled' => 0,
+        ]);
     }
 
     public function test_premium_summary_links_open_their_protected_pages(): void

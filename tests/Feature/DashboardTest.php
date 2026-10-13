@@ -27,11 +27,12 @@ class DashboardTest extends TestCase
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->ownerOrganization();
-        $layout = file_get_contents(resource_path('views/layouts/app.blade.php'));
+        $layout = file_get_contents(resource_path('views/components/layouts/app.blade.php'));
 
         $this->assertIsString($layout);
         $this->assertStringContainsString('font-size: clamp(1rem, 4vw, 1.4rem);', $layout);
         $this->assertStringContainsString('overflow-wrap: anywhere;', $layout);
+        $this->assertStringContainsString("@vite(['resources/css/app.css', 'resources/js/app.js'])", $layout);
 
         $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])

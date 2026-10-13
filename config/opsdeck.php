@@ -18,6 +18,9 @@ return [
     ],
     'admin_mail_from_address' => env('OPSDECK_ADMIN_MAIL_FROM_ADDRESS', 'info@kimegami.jp'),
     'support_email' => env('OPSDECK_SUPPORT_EMAIL', 'support@kimegami.jp'),
+    'security' => [
+        'hsts_max_age_seconds' => max(0, (int) env('OPSDECK_SECURITY_HSTS_MAX_AGE_SECONDS', 31536000)),
+    ],
     'error_alerts' => [
         'cooldown_seconds' => max(1, (int) env('OPSDECK_SERVER_ERROR_ALERT_COOLDOWN_SECONDS', 300)),
     ],

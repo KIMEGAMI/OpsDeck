@@ -41,6 +41,7 @@ use App\Services\Import\CsvImportSource;
 use App\Services\Import\GoogleSheetsImportSource;
 use App\Services\Import\ImportNormalizationSuggestionService;
 use App\Services\Import\ImportProfileService;
+use App\Services\Import\ImportSourceIntegrityService;
 use App\Services\Import\XlsxImportSource;
 use App\Services\ImportBatchExecutionService;
 use App\Services\ImportBatchRollbackService;
@@ -258,6 +259,7 @@ class ImportBatchController extends Controller
         $showRouteParameters = $targetType === null ? [] : ['target_type' => $targetType];
         $disk = config('opsdeck.import.disk');
         $file = $request->file('file');
+        $sourceFileSha256 = app(ImportSourceIntegrityService::class)->hashUploadedFile($file);
         if (strtolower($file->getClientOriginalExtension()) === 'xlsx') {
             $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
         }
@@ -269,6 +271,7 @@ class ImportBatchController extends Controller
                 $batch = ImportBatch::query()->create([
                     'organization_id' => $organization->id, 'source_type' => 'xlsx',
                     'source_name' => $request->string('source_name')->toString(), 'source_file_path' => $path,
+                    'source_file_sha256' => $sourceFileSha256,
                     'header_row_number' => $headerRowNumber,
                     'header_end_row_number' => $headerEndRowNumber,
                     'data_start_row_number' => $dataStartRowNumber,
@@ -290,6 +293,7 @@ class ImportBatchController extends Controller
                 'source_type' => 'csv',
                 'source_name' => $request->string('source_name')->toString(),
                 'source_file_path' => $path,
+                'source_file_sha256' => $sourceFileSha256,
                 'header_row_number' => $headerRowNumber,
                 'header_end_row_number' => $headerEndRowNumber,
                 'data_start_row_number' => $dataStartRowNumber,
@@ -430,6 +434,7 @@ class ImportBatchController extends Controller
                     'source_type' => 'xlsx',
                     'source_name' => $sourceBatch->source_name,
                     'source_file_path' => $sourceBatch->source_file_path,
+                    'source_file_sha256' => $sourceBatch->source_file_sha256,
                     'available_sheets_json' => $sourceBatch->available_sheets_json,
                     'selected_sheet_name' => $sheetName,
                     'header_row_number' => $headerRowNumber,
@@ -1239,6 +1244,7 @@ class ImportBatchController extends Controller
     /** @return list<array<string, string|int>> */
     private function sourceRowsForMapping(ImportBatch $importBatch, ?string $targetType = null): array
     {
+        app(ImportSourceIntegrityService::class)->assertUnchanged($importBatch);
         $sampleRowLimit = max(1, (int) config('opsdeck.import.normalization_sample_rows'));
         $rows = [];
         $collectSampleRow = static function (array $row, array $headers) use (&$rows, $sampleRowLimit): void {

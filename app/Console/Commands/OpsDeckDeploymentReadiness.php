@@ -84,6 +84,7 @@ class OpsDeckDeploymentReadiness extends Command
             'app_key' => $this->hasValidApplicationKey() ? 'pass' : 'fail',
             'debug' => config('app.debug') === false ? 'pass' : 'fail',
             'https_url' => $this->hasHttpsApplicationUrl() ? 'pass' : 'fail',
+            'hsts' => $this->hasConfiguredHsts() ? 'pass' : 'fail',
             'session_cookie_security' => $this->hasSecureSessionCookies() ? 'pass' : 'fail',
             'private_file_storage' => $this->hasPrivateSensitiveFileStorage() ? 'pass' : 'fail',
             'production_logging' => $this->hasProductionLogging() ? 'pass' : 'fail',
@@ -153,6 +154,7 @@ class OpsDeckDeploymentReadiness extends Command
                 'app_key' => 'Laravelの暗号方式に合う APP_KEY を安全に生成して設定する',
                 'debug' => '環境変数 APP_DEBUG を false に設定する',
                 'https_url' => '環境変数 APP_URL に https:// から始まる公開URLを設定する',
+                'hsts' => 'OPSDECK_SECURITY_HSTS_MAX_AGE_SECONDS に正の秒数を設定する',
                 'session_cookie_security' => 'SESSION_SECURE_COOKIE=true、SESSION_HTTP_ONLY=true、SESSION_SAME_SITE=lax を設定する',
                 'private_file_storage' => 'Import/Evidenceの保存先を非公開ディスクにし、S3はvisibility=privateとバケットの公開拒否、SFTPは非公開権限を設定する',
                 'production_logging' => '本番ログをwarning以上にし、daily/monthlyの保存期間を設定するか、stderr/syslog等の監視可能な出力先へ送る',
@@ -208,6 +210,12 @@ class OpsDeckDeploymentReadiness extends Command
 
         return str_contains($domain, '.')
             && filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
+    }
+
+    private function hasConfiguredHsts(): bool
+    {
+        return is_numeric(config('opsdeck.security.hsts_max_age_seconds'))
+            && (int) config('opsdeck.security.hsts_max_age_seconds') > 0;
     }
 
     private function hasSecureSessionCookies(): bool

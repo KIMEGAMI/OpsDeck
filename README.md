@@ -46,7 +46,7 @@ Copy-Item .env.example .env
 php artisan key:generate
 if (-not (Test-Path database/database.sqlite)) { New-Item -ItemType File database/database.sqlite | Out-Null }
 php artisan migrate
-npm install --ignore-scripts
+npm ci --ignore-scripts
 npm run build
 php artisan serve --host=127.0.0.1 --port=8000
 ```

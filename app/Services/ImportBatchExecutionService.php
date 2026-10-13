@@ -24,6 +24,7 @@ use App\Services\Import\CsvImportSource;
 use App\Services\Import\GoogleSheetsImportSource;
 use App\Services\Import\ImportFailureMessage;
 use App\Services\Import\ImportNormalizationSuggestionService;
+use App\Services\Import\ImportSourceIntegrityService;
 use App\Services\Import\XlsxImportSource;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -265,6 +266,8 @@ class ImportBatchExecutionService
     /** @return array{0: list<string>, 1: resource} */
     private function stageSourceRows(ImportBatch $importBatch, string $targetType): array
     {
+        app(ImportSourceIntegrityService::class)->assertUnchanged($importBatch);
+
         $disk = (string) config('opsdeck.import.disk');
         $stagingStream = tmpfile();
         if (! is_resource($stagingStream)) {

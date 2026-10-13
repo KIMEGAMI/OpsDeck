@@ -784,6 +784,41 @@ class ImportMappingTest extends TestCase
         $this->assertSame(2, ImportRowResult::query()->where('import_batch_id', $batch->id)->count());
     }
 
+    public function test_changed_source_file_is_rejected_before_import_data_is_written(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $sourceContents = "name,email\nAlice,integrity-".Str::uuid()."@example.test\n";
+        $path = 'imports/'.$organization->id.'/employees.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, $sourceContents);
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'employees',
+            'source_file_path' => $path,
+            'source_file_sha256' => hash('sha256', $sourceContents),
+            'headers_json' => ['name', 'email'],
+            'status' => 'ready',
+        ]);
+        $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['name' => 'name', 'email' => 'email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "name,email\nMallory,changed-".Str::uuid()."@example.test\n");
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.execute', $batch), ['confirm' => '1'])
+            ->assertRedirect();
+
+        $this->assertSame('failed', $batch->refresh()->status);
+        $this->assertSame('取込元ファイルが変更されているため処理を停止しました。ファイルを再アップロードして再度お試しください。', $batch->failure_message);
+        $this->assertDatabaseMissing('employees', ['organization_id' => $organization->id, 'name' => 'Mallory']);
+    }
+
     public function test_employee_import_preserves_rfc_csv_quotes_and_backslashes(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

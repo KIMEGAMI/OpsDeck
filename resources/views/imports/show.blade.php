@@ -76,6 +76,9 @@
             @endcan
         @endif
         <dl><dt>新規登録</dt><dd>{{ $importBatch->inserted_rows }}</dd><dt>更新</dt><dd>{{ $importBatch->updated_rows }}</dd><dt>スキップ</dt><dd>{{ $importBatch->skipped_rows }}</dd><dt>エラー</dt><dd>{{ $importBatch->error_rows }}</dd></dl>
+        @if ($importBatch->source_file_sha256 !== null)
+            <dl><dt>元ファイル SHA-256</dt><dd><code>{{ $importBatch->source_file_sha256 }}</code></dd></dl>
+        @endif
         @if ($importBatch->status === 'failed' || (in_array($importBatch->status, ['completed', 'cancelled'], true) && $importBatch->error_rows > 0))
             @if ($importBatch->errors_reviewed_at === null)
                 @can('update', $importBatch)
@@ -120,6 +123,9 @@
             <p class="muted">Importの実行はPremiumプランで利用できます。<a href="{{ route('billing.index') }}">プランを確認する</a></p>
         @endif
         @if ($importBatch->status === 'completed')
+            @if ($importBatch->inserted_rows + $importBatch->updated_rows > 0)
+                <p><a href="{{ route('impact-report.show') }}">導入効果レポートでImport前後を確認する</a></p>
+            @endif
             @if ($importBatch->source_type === 'google_sheets')
                 <form method="post" action="{{ route('imports.google-sheet.sync', $importBatch) }}">
                     @csrf

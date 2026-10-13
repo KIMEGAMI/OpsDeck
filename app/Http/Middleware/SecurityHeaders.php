@@ -20,6 +20,10 @@ class SecurityHeaders
         $response->headers->set('X-Frame-Options', 'DENY');
         $response->headers->set('Referrer-Policy', 'strict-origin-when-cross-origin');
         $response->headers->set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+        $hstsMaxAgeSeconds = max(0, (int) config('opsdeck.security.hsts_max_age_seconds', 0));
+        if (config('app.env') === 'production' && $request->isSecure() && $hstsMaxAgeSeconds > 0) {
+            $response->headers->set('Strict-Transport-Security', 'max-age='.$hstsMaxAgeSeconds);
+        }
 
         return $response;
     }

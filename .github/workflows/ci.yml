@@ -13,7 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify GitHub Actions are pinned
+        run: |
+          if grep -Eh '^[[:space:]]*uses:' .github/workflows/*.yml | grep -Ev '^[[:space:]]*uses:[[:space:]]+[^[:space:]@]+@[0-9a-f]{40}[[:space:]]+#.+$'; then
+            echo "Every GitHub Action must use a full commit SHA and a version comment."
+            exit 1
+          fi
 
       - name: Check secrets are not committed
         run: |
@@ -27,7 +36,7 @@ jobs:
           fi
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: '8.4'
           extensions: mbstring, bcmath, pdo_sqlite
@@ -107,10 +116,12 @@ jobs:
       OPSDECK_BACKUP_RESTORE_DB_PASSWORD: ''
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: '8.4'
           extensions: mbstring, bcmath, pdo_mysql
@@ -215,10 +226,12 @@ jobs:
       OPSDECK_BACKUP_RESTORE_DB_PASSWORD: ''
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: '8.4'
           extensions: mbstring, bcmath, pdo_mysql
@@ -292,15 +305,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP for framework asset sources
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+
+      - name: Install PHP dependencies for framework asset sources
+        run: composer install --no-interaction --prefer-dist --no-progress
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
       - name: Install frontend dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Build frontend
         run: npm run build

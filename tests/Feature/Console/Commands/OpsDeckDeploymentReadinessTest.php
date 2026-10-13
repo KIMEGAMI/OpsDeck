@@ -132,7 +132,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
         $actualOutput = trim($this->app[Kernel::class]->output());
 
-        $this->assertSame('{"status":"ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}', $actualOutput);
+        $this->assertSame('{"status":"ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}', $actualOutput);
         $this->assertSame(0, $exitCode, $actualOutput);
     }
 
@@ -280,6 +280,22 @@ class OpsDeckDeploymentReadinessTest extends TestCase
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
             ->expectsOutputToContain('"https_url":"fail"')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_fails_readiness_when_production_hsts_is_disabled(): void
+    {
+        $this->configureReadyDeployment();
+        config(['opsdeck.security.hsts_max_age_seconds' => 0]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check')
+            ->expectsOutputToContain('https_url: pass')
+            ->expectsOutputToContain('hsts: fail')
+            ->expectsOutputToContain('- hsts: OPSDECK_SECURITY_HSTS_MAX_AGE_SECONDS に正の秒数を設定する')
             ->assertExitCode(1);
     }
 
@@ -855,7 +871,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"fail","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"fail","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -868,7 +884,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"fail","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"fail","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -882,7 +898,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"fail"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"fail"}}')
             ->assertExitCode(1);
     }
 
@@ -895,7 +911,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"fail","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"fail","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -908,7 +924,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"fail","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"fail","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -922,7 +938,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"fail","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"fail","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -936,7 +952,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"fail","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"fail","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -950,7 +966,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -964,7 +980,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -978,7 +994,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"fail","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -992,7 +1008,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1005,7 +1021,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1018,7 +1034,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1032,7 +1048,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1045,7 +1061,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"fail","mail":"pass","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"fail","mail":"pass","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1058,7 +1074,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"fail","mail":"pass","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"fail","mail":"pass","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1071,7 +1087,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"fail","mail":"pass","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"fail","mail":"pass","failure_alert":"fail","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1099,7 +1115,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->app->instance(PhpExtensionReadiness::class, $phpExtensionReadiness);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"fail","app_key":"fail","debug":"fail","https_url":"fail","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"fail","php_extensions":"pass","database_driver":"fail","database_connection":"fail","database_migrations":"unverified","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"fail","cache_lock":"fail","mail":"fail","failure_alert":"fail","stripe":"fail","commercial_information":"not_applicable"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"fail","app_key":"fail","debug":"fail","https_url":"fail","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"fail","php_extensions":"pass","database_driver":"fail","database_connection":"fail","database_migrations":"unverified","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"fail","cache_lock":"fail","mail":"fail","failure_alert":"fail","stripe":"fail","commercial_information":"not_applicable"}}')
             ->assertExitCode(1);
     }
 
@@ -1146,7 +1162,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"fail","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"fail","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1160,7 +1176,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
             ->assertExitCode(1);
     }
 
@@ -1171,6 +1187,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'app.key' => 'base64:'.base64_encode(random_bytes(32)),
             'app.debug' => false,
             'app.url' => 'https://opsdeck.example.test',
+            'opsdeck.security.hsts_max_age_seconds' => 31536000,
             'session.secure' => true,
             'session.http_only' => true,
             'session.same_site' => 'lax',

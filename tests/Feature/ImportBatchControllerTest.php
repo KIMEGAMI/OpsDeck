@@ -535,12 +535,13 @@ class ImportBatchControllerTest extends TestCase
         Storage::fake(config('opsdeck.import.disk'));
         [$user, $organization] = $this->member(MembershipRole::Operator);
         $employeeCountBefore = Employee::query()->count();
+        $sourceContents = "社員管理台帳\n2026年度\nname,email\nnote,集計対象外\nAlice,a@example.test\nBob,b@example.test\n";
 
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.store'), [
             'source_name' => '社員CSV',
             'header_row_number' => 3,
             'data_start_row_number' => 5,
-            'file' => UploadedFile::fake()->createWithContent('employees.csv', "社員管理台帳\n2026年度\nname,email\nnote,集計対象外\nAlice,a@example.test\nBob,b@example.test\n"),
+            'file' => UploadedFile::fake()->createWithContent('employees.csv', $sourceContents),
         ]);
 
         $response->assertRedirect();
@@ -552,8 +553,14 @@ class ImportBatchControllerTest extends TestCase
         $this->assertSame(2, $batch->total_rows);
         $this->assertSame(2, ImportRowResult::query()->where('import_batch_id', $batch->id)->count());
         $this->assertSame([5, 6], $batch->rowResults()->orderBy('source_row_number')->pluck('source_row_number')->all());
+        $this->assertSame(hash('sha256', $sourceContents), $batch->source_file_sha256);
         $this->assertDatabaseCount('employees', $employeeCountBefore);
         Storage::disk(config('opsdeck.import.disk'))->assertExists($batch->source_file_path);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', $batch))
+            ->assertOk()
+            ->assertSee('元ファイル SHA-256')
+            ->assertSee($batch->source_file_sha256);
     }
 
     public function test_unchanged_sample_csv_row_cannot_be_imported_as_business_data(): void
@@ -664,9 +671,16 @@ class ImportBatchControllerTest extends TestCase
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', $failedRowsBatch))
+            ->assertDontSee('導入効果レポートでImport前後を確認する');
 
         $successfulBatch = $runImport('valid-employees', "name,email\nValid,valid-".Str::uuid().'@example.test'."\n");
         $this->assertSame(1, $successfulBatch->inserted_rows);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', $successfulBatch))
+            ->assertSee('導入効果レポートでImport前後を確認する')
+            ->assertSee(route('impact-report.show'));
         $this->assertDatabaseHas('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_import_completed',
