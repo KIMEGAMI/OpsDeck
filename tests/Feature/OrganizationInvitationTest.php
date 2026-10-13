@@ -19,6 +19,7 @@ use App\Models\User;
 use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -93,6 +94,74 @@ class OrganizationInvitationTest extends TestCase
         Mail::assertSent(OrganizationInvitationMail::class, fn (OrganizationInvitationMail $mail): bool => $mail->hasTo($email)
             && $mail->headers()->text[ResendIdempotentTransport::IDEMPOTENCY_HEADER]
                 === app(ResendIdempotencyKeyFactory::class)->forOrganizationInvitation($invitation->getKey(), $job->token));
+        $this->assertNotNull($invitation->fresh()->invitation_email_sent_at);
+    }
+
+    public function test_invitation_email_retry_after_resend_window_expires_requires_manual_review_without_another_request(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['api.resend.com/emails' => Http::response(['message' => 'temporary failure'], 503)]);
+        config([
+            'mail.default' => 'resend_idempotent',
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => 'test-api-key',
+        ]);
+        [$owner, $organization] = $this->owner();
+        $token = Str::random(64);
+        $invitation = $this->invitation(
+            $owner,
+            $organization,
+            'resend-retry-'.Str::uuid().'@example.test',
+            ['expires_at' => now()->addDays(config('opsdeck.invitation_expiry_days'))],
+            $token,
+        );
+        $job = new SendOrganizationInvitationEmail($invitation, $token);
+
+        try {
+            $job->handle();
+            $this->fail('A rejected provider response should be retried by the queue.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame(
+                'Organization invitation email delivery failed: Symfony\\Component\\Mailer\\Exception\\TransportException',
+                $exception->getMessage(),
+            );
+            $this->assertNull($exception->getPrevious());
+        }
+
+        $this->assertNotNull($invitation->fresh()->resend_idempotency_started_at);
+        $this->assertNotNull($invitation->fresh()->invitation_email_failed_at);
+        Http::assertSentCount(1);
+
+        $this->travel(25)->hours();
+        $this->assertTrue(now()->greaterThan($invitation->fresh()->resend_idempotency_started_at->copy()->addHours(24)));
+        $job->handle();
+
+        $reviewInvitation = $invitation->fresh();
+        $this->assertNotNull($reviewInvitation->invitation_email_manual_review_at);
+        $this->assertNull($reviewInvitation->invitation_email_sent_at);
+        Http::assertSentCount(1);
+    }
+
+    public function test_invitation_email_conflict_enters_manual_review_without_queue_retry(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['api.resend.com/emails' => Http::response(['name' => 'invalid_idempotent_request'], 409)]);
+        config([
+            'mail.default' => 'resend_idempotent',
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => 'test-api-key',
+        ]);
+        [$owner, $organization] = $this->owner();
+        $token = Str::random(64);
+        $invitation = $this->invitation($owner, $organization, 'resend-conflict-'.Str::uuid().'@example.test', [], $token);
+
+        (new SendOrganizationInvitationEmail($invitation, $token))->handle();
+
+        $reviewInvitation = $invitation->fresh();
+        $this->assertNotNull($reviewInvitation->invitation_email_failed_at);
+        $this->assertNotNull($reviewInvitation->invitation_email_manual_review_at);
+        $this->assertNull($reviewInvitation->invitation_email_sent_at);
+        Http::assertSentCount(1);
     }
 
     public function test_owner_can_invite_multiple_members_in_the_same_organization(): void
@@ -246,6 +315,50 @@ class OrganizationInvitationTest extends TestCase
         $this->get(route('invitations.show', $acceptedToken))->assertGone();
         $this->get(route('invitations.show', $expiredToken))->assertGone();
         $this->get(route('invitations.show', $revokedToken))->assertGone();
+    }
+
+    public function test_owner_can_distinguish_invitation_email_delivery_statuses_in_history(): void
+    {
+        [$owner, $organization] = $this->owner();
+        $acceptedEmail = 'delivery-accepted-'.Str::uuid().'@example.test';
+        $manualReviewEmail = 'delivery-review-'.Str::uuid().'@example.test';
+        $failedEmail = 'delivery-failed-'.Str::uuid().'@example.test';
+        $unknownEmail = 'delivery-unknown-'.Str::uuid().'@example.test';
+        $untrackedEmail = 'delivery-untracked-'.Str::uuid().'@example.test';
+
+        $this->invitation($owner, $organization, $acceptedEmail, [
+            'invitation_email_sent_at' => now(),
+            'invitation_email_manual_review_at' => now(),
+        ]);
+        $this->invitation($owner, $organization, $manualReviewEmail, [
+            'invitation_email_failed_at' => now(),
+            'invitation_email_manual_review_at' => now(),
+        ]);
+        $this->invitation($owner, $organization, $failedEmail, ['invitation_email_failed_at' => now()]);
+        $this->invitation($owner, $organization, $unknownEmail, ['resend_idempotency_started_at' => now()]);
+        $this->invitation($owner, $organization, $untrackedEmail);
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('settings.members'))
+            ->assertOk()
+            ->assertSeeInOrder([
+                $untrackedEmail,
+                '送信状況未記録',
+                $unknownEmail,
+                '送信結果未確定（確認が必要）',
+                '重複を避けるため、新しい招待は作成しないでください。',
+                'mailto:'.config('opsdeck.support_email'),
+                $failedEmail,
+                '送信エラー（自動再試行または確認が必要）',
+                $manualReviewEmail,
+                '配信状況の確認待ち（再送停止）',
+                '確認完了まで同じ宛先へ再招待しないでください。',
+                'mailto:'.config('opsdeck.support_email'),
+                $acceptedEmail,
+                '送信受付済み',
+            ])
+            ->assertSee('<div class="table-scroll" role="region" aria-label="招待履歴" tabindex="0">', false)
+            ->assertSee('メール事業者が受付した状態で、受信箱への到達を保証するものではありません。');
     }
 
     public function test_owner_can_revoke_a_pending_invitation_and_the_action_is_audited(): void
@@ -481,7 +594,7 @@ class OrganizationInvitationTest extends TestCase
         return [$owner, $organization];
     }
 
-    /** @param array{expires_at?: mixed, accepted_at?: mixed, revoked_at?: mixed} $overrides */
+    /** @param array{expires_at?: mixed, accepted_at?: mixed, revoked_at?: mixed, invitation_email_sent_at?: mixed, invitation_email_failed_at?: mixed, invitation_email_manual_review_at?: mixed, resend_idempotency_started_at?: mixed} $overrides */
     private function invitation(User $owner, Organization $organization, string $email, array $overrides = [], ?string $token = null): OrganizationInvitation
     {
         return OrganizationInvitation::query()->create(array_merge([

@@ -9,6 +9,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class QuestionnaireAnswer extends Model
 {
+    public const DRAFT_STATUS = 'draft';
+
+    public const APPROVED_STATUS = 'approved';
+
     /** @use HasFactory<QuestionnaireAnswerFactory> */
     use HasFactory;
 

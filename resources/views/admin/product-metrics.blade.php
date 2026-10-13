@@ -14,6 +14,7 @@
             <dt>登録組織数（全期間）</dt><dd>{{ $activation['registered'] }}</dd>
             <dt>登録後7日経過</dt><dd>{{ $activation['eligible'] }}</dd>
             <dt>7日以内に初回Preview到達した組織数</dt><dd>{{ $activation['previewed'] }}</dd>
+            <dt>7日以内のPreview到達率</dt><dd>{{ $activation['preview_activation_rate'] }}%</dd>
             <dt>7日以内に初回Import完了した組織数</dt><dd>{{ $activation['activated'] }}</dd>
             <dt>Activation率</dt><dd>{{ $activation['activation_rate'] }}%</dd>
             <dt>Previewから完了への転換率</dt><dd>{{ $activation['preview_to_completion_rate'] }}%</dd>
@@ -29,7 +30,8 @@
         <p>現在の解約状態比率：{{ $cancellation['current_rate'] }}%（対象{{ $cancellation['current_total'] }}組織 / 解約状態{{ $cancellation['current_cancelled'] }}組織）</p>
         <p>紹介転換率：{{ $referrals['rate'] }}%（クリック{{ $referrals['clicks'] }}件 / 登録{{ $referrals['registrations'] }}件）</p>
         <p>お知らせ既読率：{{ $announcementReadRate['rate'] }}%（送信対象{{ $announcementReadRate['recipients'] }}件 / 既読{{ $announcementReadRate['reads'] }}件）</p>
-        <p>招待参加転換率：{{ $invitationMetrics['rate'] }}%（招待{{ $invitationMetrics['sent'] }}件 / 参加{{ $invitationMetrics['joined'] }}件）</p>
+        <p>招待登録から参加への転換率：{{ $invitationMetrics['rate'] }}%（招待登録{{ $invitationMetrics['created'] }}件 / 参加{{ $invitationMetrics['joined'] }}件）</p>
+        <p class="muted">この転換率は招待登録を基準にしています。メール事業者による配信成功数とは異なります。</p>
         <table>
             <thead><tr><th>イベント</th><th>発生件数</th><th>組織数</th></tr></thead>
             <tbody>
@@ -49,7 +51,7 @@
             @forelse ($supportStatuses as $status)<tr><td>{{ $status->status }}</td><td>{{ $status->request_count }}</td></tr>@empty<tr><td colspan="2">問い合わせはありません。</td></tr>@endforelse
         </tbody></table>
         <h2>メール配信</h2>
-        <dl><dt>お知らせ成功率</dt><dd>{{ $deliveryRates['announcement'] }}%</dd><dt>週次サマリー成功率</dt><dd>{{ $deliveryRates['weekly_summary'] }}%</dd><dt>お知らせ失敗</dt><dd>{{ $deliveryFailures['announcement'] }}</dd><dt>お知らせ手動確認</dt><dd>{{ $deliveryFailures['announcement_manual_review'] }}</dd><dt>週次サマリー失敗</dt><dd>{{ $deliveryFailures['weekly_summary'] }}</dd><dt>週次サマリー手動確認</dt><dd>{{ $deliveryFailures['weekly_summary_manual_review'] }}</dd></dl>
+        <dl><dt>お知らせ成功率</dt><dd>{{ $deliveryRates['announcement'] }}%</dd><dt>週次サマリー成功率</dt><dd>{{ $deliveryRates['weekly_summary'] }}%</dd><dt>招待メール成功率（追跡済み結果）</dt><dd>{{ $deliveryRates['invitation_email'] }}%</dd><dt>お知らせ失敗</dt><dd>{{ $deliveryFailures['announcement'] }}</dd><dt>お知らせ手動確認</dt><dd>{{ $deliveryFailures['announcement_manual_review'] }}</dd><dt>週次サマリー失敗</dt><dd>{{ $deliveryFailures['weekly_summary'] }}</dd><dt>週次サマリー手動確認</dt><dd>{{ $deliveryFailures['weekly_summary_manual_review'] }}</dd><dt>招待メール失敗</dt><dd>{{ $deliveryFailures['invitation_email'] }}</dd><dt>招待メール手動確認</dt><dd>{{ $deliveryFailures['invitation_email_manual_review'] }}</dd></dl>
         <h2>問い合わせ</h2>
         <table><thead><tr><th>カテゴリ</th><th>件数</th></tr></thead><tbody>
             @forelse ($supportCategories as $category)<tr><td>{{ $category->category }}</td><td>{{ $category->request_count }}</td></tr>@empty<tr><td colspan="2">問い合わせはありません。</td></tr>@endforelse

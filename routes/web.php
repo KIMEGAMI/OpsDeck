@@ -189,6 +189,7 @@ Route::get('/admin/health', [AdminDashboardController::class, 'health'])->middle
 Route::get('/admin/mail-delivery-reviews', [AdminMailDeliveryReviewController::class, 'index'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.index');
 Route::post('/admin/mail-delivery-reviews/announcements/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveAnnouncement'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.announcements.resolve');
 Route::post('/admin/mail-delivery-reviews/weekly-summaries/{delivery}/resolve', [AdminMailDeliveryReviewController::class, 'resolveWeeklySummary'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.weekly-summaries.resolve');
+Route::post('/admin/mail-delivery-reviews/invitations/{invitation}/resolve', [AdminMailDeliveryReviewController::class, 'resolveInvitation'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.mail-delivery-reviews.invitations.resolve');
 Route::get('/admin/product-metrics', AdminProductMetricsController::class)->middleware(['auth', 'verified', 'platform.admin'])->name('admin.product-metrics');
 Route::get('/admin/product-metrics.csv', [AdminProductMetricsController::class, 'export'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.product-metrics.export');
 Route::get('/admin/support', [SupportRequestController::class, 'adminIndex'])->middleware(['auth', 'verified', 'platform.admin'])->name('admin.support.index');

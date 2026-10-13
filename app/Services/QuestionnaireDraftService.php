@@ -16,7 +16,7 @@ class QuestionnaireDraftService
         $answer = $question->answers()->latest()->first();
         abort_if($answer?->approved_at !== null, 422, '承認済み回答はAIで上書きできません。');
         $fact = $this->factFor($organization, $question->question_text);
-        $attributes = ['answer_text' => $fact['answer_text'], 'answer_choice' => null, 'answer_status' => 'draft', 'source_type' => $fact['source_type'], 'approved_by' => null, 'approved_at' => null];
+        $attributes = ['answer_text' => $fact['answer_text'], 'answer_choice' => null, 'answer_status' => QuestionnaireAnswer::DRAFT_STATUS, 'source_type' => $fact['source_type'], 'approved_by' => null, 'approved_at' => null];
         if ($answer === null) {
             return $question->answers()->create($attributes);
         }

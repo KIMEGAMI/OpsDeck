@@ -15,6 +15,12 @@ class BackupRestoreTargetConfiguration
      */
     public function isSafelyConfigured(): bool
     {
+        return $this->configurationIssues() === [];
+    }
+
+    /** @return list<string> */
+    public function configurationIssues(): array
+    {
         $restoreConnectionName = (string) config('opsdeck.backup.restore_connection');
         $defaultConnectionName = (string) config('database.default');
         $restoreConfiguration = config('database.connections.'.$restoreConnectionName);
@@ -22,7 +28,7 @@ class BackupRestoreTargetConfiguration
         if ($restoreConnectionName === ''
             || $restoreConnectionName === $defaultConnectionName
             || ! is_array($restoreConfiguration)) {
-            return false;
+            return ['restore_connection_not_separate'];
         }
 
         $databaseName = $restoreConfiguration['database'] ?? null;
@@ -50,19 +56,33 @@ class BackupRestoreTargetConfiguration
             && (filter_var($host, FILTER_VALIDATE_IP) !== false
                 || filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false);
 
-        return in_array($driver, ['mysql', 'mariadb'], true)
-            && $driver === $defaultDriver
-            && is_string($databaseName)
-            && strlen($databaseName) <= 64
-            && str_starts_with($databaseName, self::DATABASE_PREFIX)
-            && preg_match('/\Aopsdeck_restore_test_[a-z0-9_]+\z/', $databaseName) === 1
-            && is_string($username)
-            && trim($username) !== ''
-            && $username !== $defaultUsername
-            && ($hasSocket || $isValidHost)
-            && $hasValidPort
-            && ($isLocalTarget || ($hasVerifiedTls && ! $sslVerificationDisabled))
-            && $databaseName !== config('database.connections.'.$defaultConnectionName.'.database');
+        $issues = [];
+        if (! in_array($driver, ['mysql', 'mariadb'], true) || $driver !== $defaultDriver) {
+            $issues[] = 'restore_driver_must_match_mysql_application_driver';
+        }
+        if (! is_string($databaseName)
+            || strlen($databaseName) > 64
+            || ! str_starts_with($databaseName, self::DATABASE_PREFIX)
+            || preg_match('/\Aopsdeck_restore_test_[a-z0-9_]+\z/', $databaseName) !== 1) {
+            $issues[] = 'restore_database_name_must_use_reserved_prefix';
+        }
+        if ($databaseName === config('database.connections.'.$defaultConnectionName.'.database')) {
+            $issues[] = 'restore_database_must_differ_from_application_database';
+        }
+        if (! is_string($username) || trim($username) === '' || $username === $defaultUsername) {
+            $issues[] = 'restore_database_user_must_be_dedicated';
+        }
+        if (! $hasSocket && ! $isValidHost) {
+            $issues[] = 'restore_database_host_or_socket_is_invalid';
+        }
+        if (! $hasValidPort) {
+            $issues[] = 'restore_database_port_is_invalid';
+        }
+        if (! $isLocalTarget && (! $hasVerifiedTls || $sslVerificationDisabled)) {
+            $issues[] = 'remote_restore_database_requires_verified_tls';
+        }
+
+        return $issues;
     }
 
     /**
@@ -70,8 +90,16 @@ class BackupRestoreTargetConfiguration
      */
     public function isReadyForRestoreTest(): bool
     {
+        return $this->readinessStatus() === 'ready';
+    }
+
+    /**
+     * Return a secret-free reason for restore-target readiness.
+     */
+    public function readinessStatus(): string
+    {
         if (! $this->isSafelyConfigured()) {
-            return false;
+            return 'unsafe_configuration';
         }
 
         try {
@@ -80,9 +108,11 @@ class BackupRestoreTargetConfiguration
             $connection->getPdo();
             $schema = $connection->getSchemaBuilder();
 
-            return $schema->getTableListing() === [] && $schema->getViews() === [];
+            return $schema->getTableListing() === [] && $schema->getViews() === []
+                ? 'ready'
+                : 'target_not_empty';
         } catch (Throwable) {
-            return false;
+            return 'connection_unavailable';
         }
     }
 }

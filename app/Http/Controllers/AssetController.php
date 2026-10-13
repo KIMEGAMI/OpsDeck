@@ -13,6 +13,7 @@ use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
@@ -22,11 +23,21 @@ class AssetController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('view', $organization);
-        $filters = $request->validate(['search' => ['nullable', 'string', 'max:'.config('opsdeck.validation.name_max_length')]]);
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:'.config('opsdeck.validation.name_max_length')],
+            'statuses' => ['sometimes', 'array'],
+            'statuses.*' => ['string', Rule::in(config('opsdeck.asset_statuses', []))],
+            'unassigned' => ['sometimes', 'boolean'],
+            'needs_attention' => ['sometimes', 'boolean'],
+        ]);
         $assets = Asset::query()->where('organization_id', $organization->id)
             ->when($filters['search'] ?? null, function ($query, string $search): void {
                 $query->where(fn ($query) => $query->where('asset_number', 'like', '%'.$search.'%')->orWhere('manufacturer', 'like', '%'.$search.'%')->orWhere('model', 'like', '%'.$search.'%'));
-            })->orderBy('asset_number')->paginate(config('opsdeck.pagination.per_page'))->withQueryString();
+            })
+            ->when($filters['statuses'] ?? [], fn ($query, array $statuses) => $query->whereIn('status', $statuses))
+            ->when($request->boolean('unassigned'), fn ($query) => $query->whereDoesntHave('assignments', fn ($assignmentQuery) => $assignmentQuery->whereNull('returned_at')))
+            ->when($request->boolean('needs_attention'), fn ($query) => $query->needsAttention())
+            ->orderBy('asset_number')->paginate(config('opsdeck.pagination.per_page'))->withQueryString();
 
         return view('assets.index', compact('assets', 'filters', 'organization'));
     }

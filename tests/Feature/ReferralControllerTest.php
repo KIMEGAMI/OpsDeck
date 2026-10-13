@@ -32,7 +32,7 @@ class ReferralControllerTest extends TestCase
         $this->get(route('referrals.redirect', $referral->code))->assertRedirect(route('register'))->assertSessionHas('referral_code', $referral->code);
 
         $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 2]);
-        $this->assertSame(2, ProductEvent::query()
+        $this->assertSame(0, ProductEvent::query()
             ->where('organization_id', $organization->id)
             ->where('event_key', 'referral_clicked')
             ->count());
@@ -54,7 +54,7 @@ class ReferralControllerTest extends TestCase
         $this->get(route('referrals.redirect', $referral->code))->assertTooManyRequests();
 
         $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 1]);
-        $this->assertSame(1, ProductEvent::query()->where('organization_id', $organization->id)->where('event_key', 'referral_clicked')->count());
+        $this->assertSame(0, ProductEvent::query()->where('organization_id', $organization->id)->where('event_key', 'referral_clicked')->count());
     }
 
     public function test_referral_registration_is_recorded_without_referrer_personal_data(): void

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -23,5 +24,17 @@ class Asset extends Model
     public function assignments(): HasMany
     {
         return $this->hasMany(AssetAssignment::class);
+    }
+
+    public function scopeNeedsAttention(Builder $query): Builder
+    {
+        return $query->whereNotIn('status', config('opsdeck.asset_non_operational_statuses', []))
+            ->where(function (Builder $query): void {
+                $query->whereDoesntHave('assignments', fn (Builder $assignmentQuery): Builder => $assignmentQuery->whereNull('returned_at'))
+                    ->orWhereHas('assignments', fn (Builder $assignmentQuery): Builder => $assignmentQuery
+                        ->whereNull('returned_at')
+                        ->whereHas('employee', fn (Builder $employeeQuery): Builder => $employeeQuery
+                            ->where('employment_status', '!=', config('opsdeck.employee_status.active'))));
+            });
     }
 }

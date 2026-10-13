@@ -18,14 +18,23 @@ use Throwable;
 #[Description('Create a non-destructive database and evidence backup')]
 class OpsDeckBackup extends Command
 {
+    private const RESTRICTIVE_UMASK = 0077;
+
+    private const PRIVATE_DIRECTORY_MODE = 0700;
+
     /**
      * Execute the console command.
      */
     public function handle(DatabaseDumpBinaryLocator $dumpBinaryLocator): int
     {
         $backupRoot = rtrim((string) config('opsdeck.backup.path'), DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.now()->format('Ymd_His').'_'.bin2hex(random_bytes(4));
-        File::ensureDirectoryExists($backupRoot);
+        $previousUmask = DIRECTORY_SEPARATOR === '\\' ? null : umask(self::RESTRICTIVE_UMASK);
         try {
+            File::ensureDirectoryExists($backupRoot);
+            if (DIRECTORY_SEPARATOR !== '\\' && ! chmod($backupRoot, self::PRIVATE_DIRECTORY_MODE)) {
+                throw new RuntimeException('バックアップディレクトリのアクセス権を制限できません。');
+            }
+
             $backupDisk = Storage::build(['driver' => 'local', 'root' => $backupRoot]);
             $databaseBackup = $this->backupDatabase($backupRoot, $dumpBinaryLocator);
             $databaseChecksum = hash_file('sha256', $backupRoot.DIRECTORY_SEPARATOR.$databaseBackup['file']);
@@ -54,6 +63,10 @@ class OpsDeckBackup extends Command
             }
 
             return self::FAILURE;
+        } finally {
+            if (is_int($previousUmask)) {
+                umask($previousUmask);
+            }
         }
         $this->info('Backup created: '.$backupRoot);
 

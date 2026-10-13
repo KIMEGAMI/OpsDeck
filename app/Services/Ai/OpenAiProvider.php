@@ -17,7 +17,7 @@ class OpenAiProvider implements AiProvider
         $headers = array_values(array_unique($headers));
         $targetFields = array_values(array_unique($targetFields));
         if ($headers === [] || $targetFields === []) {
-            return ['suggestions' => array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => '利用できる列名または候補項目がありません。', 'requires_review' => true, 'question' => null]), 'input_tokens' => 0, 'output_tokens' => 0];
+            return ['suggestions' => array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => '利用できる列名または候補項目がありません。', 'requires_review' => true, 'question' => null]), 'input_tokens' => 0, 'cached_input_tokens' => 0, 'cache_write_input_tokens' => 0, 'output_tokens' => 0];
         }
 
         $response = Http::withToken(config('opsdeck.ai.api_key'))
@@ -100,7 +100,16 @@ class OpenAiProvider implements AiProvider
             ];
         }
 
-        return ['suggestions' => $suggestions, 'input_tokens' => (int) $response->json('usage.input_tokens', 0), 'output_tokens' => (int) $response->json('usage.output_tokens', 0)];
+        $usage = $response->json('usage', []);
+        $inputTokenDetails = is_array($usage['input_tokens_details'] ?? null) ? $usage['input_tokens_details'] : [];
+
+        return [
+            'suggestions' => $suggestions,
+            'input_tokens' => max(0, (int) ($usage['input_tokens'] ?? 0)),
+            'cached_input_tokens' => max(0, (int) ($inputTokenDetails['cached_tokens'] ?? 0)),
+            'cache_write_input_tokens' => max(0, (int) ($inputTokenDetails['cache_write_tokens'] ?? 0)),
+            'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+        ];
     }
 
     private function apiEndpoint(): string

@@ -110,6 +110,70 @@ class CostDashboardTest extends TestCase
             ->assertSee('会社別前提を設定');
     }
 
+    public function test_savings_candidates_exclude_contracts_already_pending_cancellation_or_not_set_to_auto_renew(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $this->travelTo('2026-10-09 12:00:00');
+        $suffix = Str::lower(Str::random(8));
+        $organization = Organization::query()->create([
+            'name' => 'Savings Eligibility '.$suffix,
+            'slug' => 'savings-eligibility-'.$suffix,
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => 'active',
+        ]);
+        $baseAttributes = [
+            'organization_id' => $organization->id,
+            'vendor_name' => 'Savings eligibility vendor',
+            'contract_type' => 'service',
+            'billing_cycle' => 'annual',
+            'amount' => 120000,
+            'currency' => 'JPY',
+            'renewal_date' => today()->addDays(10),
+        ];
+        $unusedSaasService = SaasService::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Cancellation in progress',
+            'status' => 'active',
+        ]);
+        Contract::query()->create($baseAttributes + [
+            'contract_name' => 'Automatic renewal',
+            'auto_renew' => true,
+            'status' => 'active',
+        ]);
+        Contract::query()->create($baseAttributes + [
+            'contract_name' => 'Manual renewal',
+            'auto_renew' => false,
+            'status' => 'active',
+        ]);
+        Contract::query()->create($baseAttributes + [
+            'contract_name' => 'Cancellation already requested',
+            'saas_service_id' => $unusedSaasService->id,
+            'auto_renew' => true,
+            'status' => 'pending_cancel',
+        ]);
+        Contract::query()->create(array_merge($baseAttributes, [
+            'contract_name' => 'Foreign cancellation already requested',
+            'billing_cycle' => 'monthly',
+            'amount' => 100,
+            'currency' => 'USD',
+            'auto_renew' => true,
+            'status' => 'pending_cancel',
+        ]));
+
+        $estimate = app(CostSavingsEstimator::class)->estimate(
+            $organization,
+            Contract::query()->where('organization_id', $organization->id)->whereIn('status', ['active', 'pending_cancel'])->get(),
+        );
+
+        $this->assertSame(1, $estimate['renewal_candidate_count']);
+        $this->assertSame(['Automatic renewal'], array_column($estimate['renewal_candidates'], 'contract_name'));
+        $this->assertSame(12000, $estimate['renewal_negotiation_jpy']);
+        $this->assertSame(0, $estimate['unused_saas_jpy']);
+        $this->assertSame([], $estimate['unused_saas_candidates']);
+        $this->assertSame([], $estimate['assumptions']['unconverted_foreign_contracts_by_currency']);
+    }
+
     public function test_unused_saas_contract_is_not_counted_as_both_cancellation_and_renewal_savings(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -128,6 +192,11 @@ class CostDashboardTest extends TestCase
             ->assertOk()
             ->assertSee('<p><strong>121,000円</strong></p>', false)
             ->assertSee('未使用SaaSの見直し余地：121,000円')
+            ->assertSee(route('saas-services.show', $saasService), false)
+            ->assertSee('未使用SaaS候補の内訳')
+            ->assertSee('Unused annual service')
+            ->assertSee('Unused low-cost service')
+            ->assertSee('121,000.00')
             ->assertSee('更新時の見直し余地：0円');
     }
 
@@ -189,12 +258,39 @@ class CostDashboardTest extends TestCase
         Contract::query()->create(['organization_id' => $organization->id, 'vendor_name' => 'One time vendor', 'contract_name' => 'One-time setup', 'contract_type' => 'service', 'billing_cycle' => 'one_time', 'amount' => 1000000, 'currency' => 'JPY', 'auto_renew' => false, 'status' => 'active', 'renewal_date' => now()->addDays(10)]);
         $saasService = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Unassigned one-time SaaS', 'status' => 'active']);
         Contract::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $saasService->id, 'vendor_name' => 'Other cycle vendor', 'contract_name' => 'Unspecified billing cycle', 'contract_type' => 'service', 'billing_cycle' => 'other', 'amount' => 50000, 'currency' => 'JPY', 'auto_renew' => false, 'status' => 'active']);
-        Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'AVAILABLE-'.$suffix, 'asset_type' => 'pc', 'status' => 'in_stock']);
+        $availableAsset = Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'AVAILABLE-'.$suffix, 'asset_type' => 'pc', 'model' => 'Candidate model', 'status' => 'in_stock']);
         Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'LOST-'.$suffix, 'asset_type' => 'pc', 'status' => 'lost']);
         Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'RETIRED-'.$suffix, 'asset_type' => 'pc', 'status' => 'retired']);
         Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'DISPOSED-'.$suffix, 'asset_type' => 'pc', 'status' => 'disposed']);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('costs.dashboard'))->assertOk()->assertSee('10,000.00')->assertSee('USD')->assertSee('Support')->assertSee('Acme')->assertSee('削減可能額の概算')->assertSee('12,000円')->assertSee('<p><strong>72,000円</strong></p>', false)->assertSee('未使用SaaSの見直し余地：0円')->assertSee('未使用端末の見直し余地：60,000円')->assertSee('対象端末（在庫・修理中）')->assertSee('為替レート未設定のため概算に含めていない外貨継続契約：USD：1件');
+        $session = ['current_organization_id' => $organization->id];
+        $this->actingAs($user)->withSession($session)->get(route('costs.dashboard'))
+            ->assertOk()
+            ->assertSee('10,000.00')
+            ->assertSee('USD')
+            ->assertSee('Support')
+            ->assertSee('Acme')
+            ->assertSee('削減可能額の概算')
+            ->assertSee('12,000円')
+            ->assertSee('<p><strong>72,000円</strong></p>', false)
+            ->assertSee('未使用SaaSの見直し余地：0円')
+            ->assertSee('未使用端末の見直し余地：60,000円')
+            ->assertSee('対象端末（在庫・修理中）')
+            ->assertSee(route('assets.show', $availableAsset), false)
+            ->assertSee('Candidate model')
+            ->assertSee('5,000円')
+            ->assertDontSee('LOST-'.$suffix)
+            ->assertDontSee('RETIRED-'.$suffix)
+            ->assertDontSee('DISPOSED-'.$suffix)
+            ->assertSee('為替レート未設定のため概算に含めていない外貨継続契約：USD：1件');
+
+        $this->actingAs($user)->withSession($session)
+            ->get(route('assets.index', ['statuses' => array_keys(config('opsdeck.cost_savings.unused_asset_statuses')), 'unassigned' => 1]))
+            ->assertOk()
+            ->assertSee('AVAILABLE-'.$suffix)
+            ->assertDontSee('LOST-'.$suffix)
+            ->assertDontSee('RETIRED-'.$suffix)
+            ->assertDontSee('DISPOSED-'.$suffix);
     }
 
     public function test_free_plan_keeps_basic_costs_but_hides_premium_savings_and_renewal_opportunities(): void
@@ -300,7 +396,9 @@ class CostDashboardTest extends TestCase
             ->assertSee('Ends soon')
             ->assertSee('Renews soon')
             ->assertSee('Both dates soon')
-            ->assertDontSee('Neither date soon')
+            ->assertSee('更新交渉の候補契約（4件）')
+            ->assertSee('自動更新が有効で解約予定ではないJPY継続契約')
+            ->assertSee('Neither date soon')
             ->assertSee(today()->addDays(10)->toDateString());
 
         $metrics = app(ImpactReportMetricsService::class)->current($organization);
@@ -319,7 +417,7 @@ class CostDashboardTest extends TestCase
             $organization = Organization::query()->create(['name' => 'Cost Timezone '.$suffix, 'slug' => 'cost-timezone-'.$suffix, 'timezone' => 'Pacific/Kiritimati', 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
             OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
             $localToday = CarbonImmutable::today($organization->timezone);
-            Contract::query()->create([
+            $renewalContract = Contract::query()->create([
                 'organization_id' => $organization->id,
                 'vendor_name' => 'Timezone vendor',
                 'contract_name' => 'Timezone renewal',
@@ -335,7 +433,12 @@ class CostDashboardTest extends TestCase
             $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
                 ->get(route('costs.dashboard'))
                 ->assertOk()
-                ->assertSee('更新時の見直し余地：10,000円');
+                ->assertSee('更新時の見直し余地：10,000円')
+                ->assertSee('更新交渉の候補契約（1件）')
+                ->assertSee(route('contracts.show', $renewalContract), false)
+                ->assertSee('Timezone renewal')
+                ->assertSee('100,000.00')
+                ->assertSee('10,000円');
 
             $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
                 ->get(route('reminders.renewals'))

@@ -3,6 +3,7 @@
 namespace App\Http\Requests\QuestionnaireAnswer;
 
 use App\Models\Organization;
+use App\Models\QuestionnaireAnswer;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -26,7 +27,7 @@ class StoreQuestionnaireAnswerRequest extends FormRequest
             'question_id' => ['required', 'integer'],
             'answer_text' => ['nullable', 'string'],
             'answer_choice' => ['nullable', 'string', 'max:'.$maximum],
-            'answer_status' => ['required', 'string', 'max:'.$maximum],
+            'answer_status' => ['required', Rule::in([QuestionnaireAnswer::DRAFT_STATUS])],
             'source_type' => ['required', Rule::in(config('opsdeck.questionnaire_answer_source_types'))],
         ];
     }

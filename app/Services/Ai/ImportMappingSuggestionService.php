@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\RateLimiter;
 
 class ImportMappingSuggestionService
 {
-    public function __construct(private AiProvider $provider, private AiUsageBudgetService $budgetService) {}
+    public function __construct(private AiProvider $provider, private AiUsageBudgetService $budgetService, private AiModelPricing $modelPricing) {}
 
     /** @return array<string, array{field: string|null, confidence: float, reason: string, requires_review: bool, question: string|null, source: string}> */
     public function suggest(Organization $organization, array $headers, string $targetType, array $targetFields, ?int $userId = null): array
@@ -42,7 +42,14 @@ class ImportMappingSuggestionService
 
             return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => 'AIサービスから候補を取得できませんでした。列名を確認して手動で設定してください。', 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
         }
-        $this->budgetService->settle($fastReservation, $result['input_tokens'], $result['output_tokens'], true);
+        $this->budgetService->settle(
+            $fastReservation,
+            $result['input_tokens'],
+            $result['output_tokens'],
+            true,
+            cachedInputTokens: $result['cached_input_tokens'],
+            cacheWriteInputTokens: $result['cache_write_input_tokens'],
+        );
 
         $suggestions = $this->restoreOriginalHeaders($result['suggestions'], $headers, $providerHeaders);
         $escalationModel = (string) config('opsdeck.ai.models.deep');
@@ -63,7 +70,14 @@ class ImportMappingSuggestionService
 
             try {
                 $escalated = $this->provider->suggestColumnMapping($providerHeaders, $targetType, $targetFields, $escalationModel, (string) config('opsdeck.ai.escalation_reasoning_effort'));
-                $this->budgetService->settle($escalationReservation, $escalated['input_tokens'], $escalated['output_tokens'], true);
+                $this->budgetService->settle(
+                    $escalationReservation,
+                    $escalated['input_tokens'],
+                    $escalated['output_tokens'],
+                    true,
+                    cachedInputTokens: $escalated['cached_input_tokens'],
+                    cacheWriteInputTokens: $escalated['cache_write_input_tokens'],
+                );
                 $escalatedSuggestions = $this->restoreOriginalHeaders($escalated['suggestions'], $headers, $providerHeaders);
                 foreach ($escalationHeaders as $header) {
                     $candidate = $escalatedSuggestions[$header] ?? null;
@@ -95,12 +109,7 @@ class ImportMappingSuggestionService
         return $budgetJpy <= 0
             || ! is_numeric($rate)
             || (float) $rate <= 0
-            || ! is_array($pricing)
-            || ! is_numeric($pricing['input'] ?? null)
-            || ! is_numeric($pricing['output'] ?? null)
-            || (float) $pricing['input'] < 0
-            || (float) $pricing['output'] < 0
-            || ((float) $pricing['input'] === 0.0 && (float) $pricing['output'] === 0.0)
+            || ! $this->modelPricing->hasValidRates($pricing)
             ? 'budget_configuration_unavailable'
             : 'monthly_budget_exceeded';
     }

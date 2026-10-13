@@ -835,7 +835,7 @@ class ImportBatchController extends Controller
 
                 return [$result, 'error'];
             }
-            $attributes = ['question_id' => $question->id, 'answer_text' => $values['answer_text'] ?? null, 'answer_choice' => $values['answer_choice'] ?? null, 'answer_status' => 'draft', 'source_type' => $values['source_type']];
+            $attributes = ['question_id' => $question->id, 'answer_text' => $values['answer_text'] ?? null, 'answer_choice' => $values['answer_choice'] ?? null, 'answer_status' => QuestionnaireAnswer::DRAFT_STATUS, 'source_type' => $values['source_type']];
             $record = QuestionnaireAnswer::query()->where('question_id', $question->id)->latest('id')->first();
         } elseif ($targetType === 'contracts') {
             if (($values['contract_name'] ?? '') === '' || ($values['vendor_name'] ?? '') === '' || ! in_array($values['billing_cycle'] ?? '', config('opsdeck.contract_billing_cycles'), true) || ! in_array($values['status'] ?? '', config('opsdeck.contract_statuses'), true)) {

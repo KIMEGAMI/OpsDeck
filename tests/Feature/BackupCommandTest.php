@@ -13,6 +13,10 @@ use Tests\TestCase;
 #[Group('sqlite-only')]
 class BackupCommandTest extends TestCase
 {
+    private const TEST_BASE_UMASK = 0027;
+
+    private const GROUP_AND_WORLD_PERMISSION_MASK = 0077;
+
     public function test_backup_verification_rejects_evidence_files_that_were_changed_after_backup(): void
     {
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
@@ -28,6 +32,12 @@ class BackupCommandTest extends TestCase
             $this->assertSame(hash('sha256', File::get($backupDirectory.DIRECTORY_SEPARATOR.'database.sqlite')), $manifest['database_sha256']);
             $this->assertCount(1, $manifest['evidence_sha256']);
             $this->assertSame(64, strlen($manifest['evidence_sha256'][0]));
+            $this->assertPrivateBackupPath($backupDirectory, true);
+            $this->assertPrivateBackupPath($backupDirectory.DIRECTORY_SEPARATOR.'database.sqlite', false);
+            $this->assertPrivateBackupPath($backupDirectory.DIRECTORY_SEPARATOR.'manifest.json', false);
+            $this->assertPrivateBackupPath($backupDirectory.DIRECTORY_SEPARATOR.'evidence', true);
+            $this->assertPrivateBackupPath($backupDirectory.DIRECTORY_SEPARATOR.'evidence'.DIRECTORY_SEPARATOR.'contracts', true);
+            $this->assertPrivateBackupPath($backupDirectory.DIRECTORY_SEPARATOR.'evidence'.DIRECTORY_SEPARATOR.'contracts'.DIRECTORY_SEPARATOR.'proof.pdf', false);
             File::put($backupDirectory.DIRECTORY_SEPARATOR.'evidence'.DIRECTORY_SEPARATOR.'contracts'.DIRECTORY_SEPARATOR.'proof.pdf', 'changed-evidence-content');
 
             $this->artisan('opsdeck:backup:verify', ['path' => $backupDirectory])->assertExitCode(1);
@@ -112,20 +122,34 @@ class BackupCommandTest extends TestCase
     {
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
         config(['opsdeck.backup.path' => $backupRoot]);
+        $originalUmask = DIRECTORY_SEPARATOR === '\\' ? null : umask(self::TEST_BASE_UMASK);
 
-        $this->artisan('opsdeck:backup')->assertExitCode(0);
-        $directories = File::directories($backupRoot);
-        $this->assertCount(1, $directories);
-        $this->assertFileExists($directories[0].DIRECTORY_SEPARATOR.'manifest.json');
-        $this->assertFileExists($directories[0].DIRECTORY_SEPARATOR.'database.sqlite');
-        $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(0);
+        try {
+            $this->artisan('opsdeck:backup')->assertExitCode(0);
+            if (is_int($originalUmask)) {
+                $this->assertSame(self::TEST_BASE_UMASK, umask());
+            }
+            $directories = File::directories($backupRoot);
+            $this->assertCount(1, $directories);
+            $this->assertFileExists($directories[0].DIRECTORY_SEPARATOR.'manifest.json');
+            $this->assertFileExists($directories[0].DIRECTORY_SEPARATOR.'database.sqlite');
+            $this->assertPrivateBackupPath($directories[0], true);
+            $this->assertPrivateBackupPath($directories[0].DIRECTORY_SEPARATOR.'manifest.json', false);
+            $this->assertPrivateBackupPath($directories[0].DIRECTORY_SEPARATOR.'database.sqlite', false);
+            $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(0);
+        } finally {
+            if (is_int($originalUmask)) {
+                umask($originalUmask);
+            }
 
-        File::deleteDirectory($backupRoot);
+            File::deleteDirectory($backupRoot);
+        }
     }
 
     public function test_backup_failure_removes_partial_data_without_exposing_internal_errors(): void
     {
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
+        $originalUmask = DIRECTORY_SEPARATOR === '\\' ? null : umask(self::TEST_BASE_UMASK);
         config([
             'opsdeck.backup.path' => $backupRoot,
             'database.connections.sqlite.driver' => 'unsupported',
@@ -135,11 +159,17 @@ class BackupCommandTest extends TestCase
             $this->artisan('opsdeck:backup')
                 ->expectsOutput('Backup failed. Incomplete backup data was removed.')
                 ->assertExitCode(1);
+            if (is_int($originalUmask)) {
+                $this->assertSame(self::TEST_BASE_UMASK, umask());
+            }
 
             $this->assertSame([], File::directories($backupRoot));
             $this->assertSame([], File::allFiles($backupRoot));
         } finally {
             File::deleteDirectory($backupRoot);
+            if (is_int($originalUmask)) {
+                umask($originalUmask);
+            }
         }
     }
 
@@ -204,5 +234,18 @@ class BackupCommandTest extends TestCase
         $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(1);
 
         File::deleteDirectory($backupRoot);
+    }
+
+    private function assertPrivateBackupPath(string $path, bool $isDirectory): void
+    {
+        if (DIRECTORY_SEPARATOR === '\\') {
+            return;
+        }
+
+        $permissions = fileperms($path);
+        $this->assertIsInt($permissions, 'Expected the backup path permissions to be readable.');
+        $this->assertSame(0, $permissions & self::GROUP_AND_WORLD_PERMISSION_MASK, $isDirectory
+            ? 'Backup directories must not grant group or world permissions.'
+            : 'Backup files must not grant group or world permissions.');
     }
 }

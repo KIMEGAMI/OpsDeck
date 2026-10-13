@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console\Commands;
 
+use App\Console\Commands\OpsDeckDeploymentReadiness;
 use App\Services\BackupRestoreTargetConfiguration;
 use App\Services\DatabaseDumpBinaryLocator;
 use App\Services\DatabaseMigrationHealthService;
@@ -20,7 +21,9 @@ use Monolog\Handler\NullHandler;
 use Monolog\Handler\SocketHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
+use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ReflectionMethod;
 use RuntimeException;
 use Symfony\Component\Process\ExecutableFinder;
 use Tests\TestCase;
@@ -120,6 +123,14 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->assertSame([], $readiness->missingExtensions(['mbstring', 'openssl', 'pdo_mysql', 'xmlreader', 'zip']));
     }
 
+    public function test_database_connection_diagnostic_identifies_a_missing_pdo_driver_without_exposing_exception_text(): void
+    {
+        $command = app(OpsDeckDeploymentReadiness::class);
+        $classifier = new ReflectionMethod($command, 'classifyDatabaseConnectionIssue');
+
+        $this->assertSame('pdo_driver_unavailable', $classifier->invoke($command, new RuntimeException('could not find driver: DB_PASSWORD_SENTINEL')));
+    }
+
     public function test_it_returns_ready_when_production_configuration_is_complete(): void
     {
         $this->configureReadyDeployment();
@@ -134,6 +145,79 @@ class OpsDeckDeploymentReadinessTest extends TestCase
 
         $this->assertSame('{"status":"ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}', $actualOutput);
         $this->assertSame(0, $exitCode, $actualOutput);
+    }
+
+    public function test_skipping_provider_verification_does_not_make_http_requests_or_mark_deployment_ready(): void
+    {
+        $this->configureReadyDeployment();
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true, '--skip-provider-verification' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('not_ready', $output['status']);
+        $this->assertSame('unverified', $output['checks']['mail']);
+        $this->assertSame('unverified', $output['checks']['failure_alert']);
+        $this->assertSame('unverified', $output['checks']['stripe']);
+        $this->assertSame(['status' => 'skipped', 'checks' => ['mail', 'failure_alert', 'stripe']], $output['diagnostics']['provider_verification']);
+        $this->assertSame(1, $exitCode);
+        Http::assertNothingSent();
+    }
+
+    public function test_json_output_lists_missing_php_extensions_without_exposing_configuration_values(): void
+    {
+        $this->configureReadyDeployment(missingPhpExtensions: ['openssl', 'pdo_mysql']);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true, '--skip-provider-verification' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['openssl', 'pdo_mysql'], $output['diagnostics']['php_extensions']);
+        $this->assertSame(1, $exitCode);
+        Http::assertNothingSent();
+    }
+
+    public function test_json_output_identifies_a_missing_queue_worker_heartbeat(): void
+    {
+        $this->configureReadyDeployment(hasFreshQueueWorker: false);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true, '--skip-provider-verification' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['queue_worker_heartbeat_missing_or_stale'], $output['diagnostics']['queue']);
+        $this->assertSame(1, $exitCode);
+        Http::assertNothingSent();
+    }
+
+    public function test_human_output_explains_skipped_provider_verification(): void
+    {
+        $this->configureReadyDeployment();
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--skip-provider-verification' => true])
+            ->expectsOutputToContain('ResendとStripeの外部検証は省略されました。リリース前に通常の導入チェックを実行してください。')
+            ->expectsOutputToContain('- mail: 外部検証を省略したため未確認です。リリース前に通常の導入チェックを実行してください')
+            ->expectsOutputToContain('- failure_alert: 外部検証を省略したため未確認です。リリース前に通常の導入チェックを実行してください')
+            ->expectsOutputToContain('- stripe: 外部検証を省略したため未確認です。リリース前に通常の導入チェックを実行してください')
+            ->assertExitCode(1);
+
+        Http::assertNothingSent();
     }
 
     public function test_it_fails_when_ai_is_enabled_without_complete_cost_configuration(): void
@@ -154,6 +238,28 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_it_rejects_ai_cost_configuration_without_cached_and_cache_write_prices(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.usd_to_jpy_rate' => 150,
+            'opsdeck.ai.monthly_budget_jpy.premium' => 500,
+            'opsdeck.ai.model_prices_per_million_tokens' => [
+                'gpt-6-luna' => ['input' => 0.10, 'output' => 0.50],
+                'gpt-6.1-sol' => ['input' => 2.00, 'output' => 10.00],
+            ],
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"ai_cost":"fail"')
+            ->assertExitCode(1);
+    }
+
     public function test_it_passes_ai_cost_readiness_when_all_active_model_prices_are_configured(): void
     {
         $this->configureReadyDeployment();
@@ -161,8 +267,8 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'opsdeck.ai.enabled' => true,
             'opsdeck.ai.usd_to_jpy_rate' => 150,
             'opsdeck.ai.model_prices_per_million_tokens' => [
-                'gpt-6-luna' => ['input' => 0.10, 'output' => 0.50],
-                'gpt-6.1-sol' => ['input' => 2.00, 'output' => 10.00],
+                'gpt-6-luna' => ['input' => 0.10, 'cached_input' => 0.01, 'cache_write_input' => 0.125, 'output' => 0.50],
+                'gpt-6.1-sol' => ['input' => 2.00, 'cached_input' => 0.10, 'cache_write_input' => 2.50, 'output' => 10.00],
             ],
         ]);
         $connection = $this->mock(Connection::class);
@@ -835,6 +941,20 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_it_fails_readiness_when_backup_path_is_inside_the_public_directory(): void
+    {
+        $this->configureReadyDeployment();
+        config(['opsdeck.backup.path' => public_path('uploads/backups')]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"private_file_storage":"fail"')
+            ->assertExitCode(1);
+    }
+
     /** @return array<string, array{array<string, mixed>}> */
     public static function nonPrivateFileStorageConfigurations(): array
     {
@@ -924,7 +1044,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"fail","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"fail","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"},"diagnostics":{"php_extensions":["openssl"]}}')
             ->assertExitCode(1);
     }
 
@@ -970,6 +1090,30 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public static function invalidSupportContacts(): array
+    {
+        return [
+            'invalid address' => ['invalid-support-address'],
+            'same as sender address' => ['info@kimegami.jp'],
+            'same as admin sender address' => ['opsdeck@kimegami.jp'],
+        ];
+    }
+
+    #[DataProvider('invalidSupportContacts')]
+    public function test_it_fails_readiness_when_support_contact_is_invalid_or_matches_sender(string $supportEmail): void
+    {
+        $this->configureReadyDeployment();
+        config(['opsdeck.support_email' => $supportEmail]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"mail":"fail"')
+            ->assertExitCode(1);
+    }
+
     public function test_it_fails_readiness_when_mail_from_address_is_invalid(): void
     {
         $this->configureReadyDeployment();
@@ -1008,7 +1152,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"},"diagnostics":{"queue":["queue_connection_not_durable_or_misconfigured"]}}')
             ->assertExitCode(1);
     }
 
@@ -1021,7 +1165,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"},"diagnostics":{"queue":["queue_connection_not_durable_or_misconfigured"]}}')
             ->assertExitCode(1);
     }
 
@@ -1034,7 +1178,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"},"diagnostics":{"queue":["failed_jobs_storage_not_ready"]}}')
             ->assertExitCode(1);
     }
 
@@ -1048,7 +1192,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"pass","queue":"fail","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"},"diagnostics":{"queue":["failed_jobs_storage_not_ready"]}}')
             ->assertExitCode(1);
     }
 
@@ -1109,13 +1253,17 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'services.stripe.prices.premium' => null,
             'services.stripe.webhook_secret' => null,
         ]);
-        DB::shouldReceive('connection')->once()->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL'));
+        $exception = new PDOException('DB_PASSWORD_SENTINEL');
+        $exception->errorInfo = ['HY000', 2002, 'DB_HOST_SENTINEL'];
+        DB::shouldReceive('connection')->once()->andThrow($exception);
         $phpExtensionReadiness = $this->mock(PhpExtensionReadiness::class);
         $phpExtensionReadiness->shouldReceive('missingExtensions')->once()->andReturn([]);
         $this->app->instance(PhpExtensionReadiness::class, $phpExtensionReadiness);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"fail","app_key":"fail","debug":"fail","https_url":"fail","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"fail","php_extensions":"pass","database_driver":"fail","database_connection":"fail","database_migrations":"unverified","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"fail","cache_lock":"fail","mail":"fail","failure_alert":"fail","stripe":"fail","commercial_information":"not_applicable"}}')
+            ->expectsOutputToContain('"status":"not_ready"')
+            ->doesntExpectOutput('DB_PASSWORD_SENTINEL')
+            ->doesntExpectOutput('DB_HOST_SENTINEL')
             ->assertExitCode(1);
     }
 
@@ -1145,6 +1293,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->expectsOutput('- production_logging: 本番ログをwarning以上にし、daily/monthlyの保存期間を設定するか、stderr/syslog等の監視可能な出力先へ送る')
             ->expectsOutput('- php_extensions: PHP拡張を有効化: openssl')
             ->expectsOutput('- database_connection: DB_HOST / DB_PORT / DB_DATABASE / DB_USERNAME と Secret Manager上のDB_PASSWORDを確認し、DBサーバーの稼働・ネットワーク/ポート到達性も確認する')
+            ->expectsOutput('- database_connection_detail: unclassified')
             ->expectsOutput('- database_migrations: DB接続失敗のため未確認です。先に接続先と対象DBが正しいことを確認し、再チェックしてください。未適用と確認できるまではマイグレーションを実行しないでください')
             ->expectsOutput('秘密値はこのチェックでは表示しません。')
             ->doesntExpectOutput('php artisan migrate --force')
@@ -1176,7 +1325,20 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
         $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"}}')
+            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"pass","backup_restore_target":"fail","queue":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass"},"diagnostics":{"backup_restore_target":"unsafe_configuration","backup_restore_target_issues":["restore_database_name_must_use_reserved_prefix"]}}')
+            ->assertExitCode(1);
+    }
+
+    public function test_human_output_explains_restore_database_name_requirement(): void
+    {
+        $this->configureReadyDeployment(hasReadyRestoreTarget: false);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check')
+            ->expectsOutput('- backup_restore_target_action: OPSDECK_BACKUP_RESTORE_DB_DATABASEをopsdeck_restore_test_で始まる専用DB名にする')
             ->assertExitCode(1);
     }
 
@@ -1220,6 +1382,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'cache.stores.database.lock_connection' => null,
             'cache.stores.database.lock_table' => 'cache_locks',
             'mail.default' => 'resend_idempotent',
+            'opsdeck.admin_mail_from_address' => 'opsdeck@kimegami.jp',
             'logging.default' => 'stack',
             'logging.channels.stack.driver' => 'stack',
             'logging.channels.stack.channels' => ['daily'],
@@ -1236,6 +1399,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'mail.mailers.resend_idempotent.key' => 'test-resend-key',
             'mail.mailers.resend_idempotent.timeout' => 10,
             'mail.from.address' => 'info@kimegami.jp',
+            'opsdeck.support_email' => 'support@kimegami.jp',
             'opsdeck.commercial_information.seller_name' => 'OpsDeck Test Seller',
             'opsdeck.commercial_information.seller_address' => '東京都千代田区テスト1-2-3',
             'opsdeck.commercial_information.seller_phone' => '03-1234-5678',
@@ -1335,7 +1499,10 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->schemaBuilder->shouldReceive('hasTable')->with('cache')->andReturn($hasDatabaseCacheTables);
         $this->schemaBuilder->shouldReceive('hasTable')->with('cache_locks')->andReturn($hasDatabaseCacheTables);
         $restoreTargetConfiguration = $this->mock(BackupRestoreTargetConfiguration::class);
-        $restoreTargetConfiguration->shouldReceive('isReadyForRestoreTest')->once()->andReturn($hasReadyRestoreTarget);
+        $restoreTargetConfiguration->shouldReceive('readinessStatus')->once()->andReturn($hasReadyRestoreTarget ? 'ready' : 'unsafe_configuration');
+        $restoreTargetConfiguration->shouldReceive('configurationIssues')
+            ->zeroOrMoreTimes()
+            ->andReturn(['restore_database_name_must_use_reserved_prefix']);
         $this->app->instance(BackupRestoreTargetConfiguration::class, $restoreTargetConfiguration);
 
         $migrationHealth = $this->mock(DatabaseMigrationHealthService::class);

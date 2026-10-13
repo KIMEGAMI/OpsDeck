@@ -23,9 +23,14 @@ class SaasServiceController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('view', $organization);
-        $services = SaasService::query()->where('organization_id', $organization->id)->orderBy('name')->orderBy('id')->paginate(config('opsdeck.pagination.per_page'));
+        $filters = $request->validate([
+            'needs_attention' => ['sometimes', 'boolean'],
+        ]);
+        $services = SaasService::query()->where('organization_id', $organization->id)
+            ->when($request->boolean('needs_attention'), fn ($query) => $query->needsAttention())
+            ->orderBy('name')->orderBy('id')->paginate(config('opsdeck.pagination.per_page'))->withQueryString();
 
-        return view('saas-services.index', compact('services', 'organization'));
+        return view('saas-services.index', compact('services', 'filters', 'organization'));
     }
 
     public function create(Request $request): View

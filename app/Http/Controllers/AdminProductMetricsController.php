@@ -47,12 +47,7 @@ class AdminProductMetricsController extends Controller
         $announcementReadRate = $this->announcementReadRate();
         $invitationMetrics = $this->invitationMetrics();
         $cancellationReasons = CancellationFeedback::query()->select('reason')->selectRaw('COUNT(*) as reason_count')->groupBy('reason')->orderByDesc('reason_count')->get();
-        $deliveryFailures = [
-            'announcement' => AnnouncementDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereNull('manual_review_at')->count(),
-            'announcement_manual_review' => AnnouncementDelivery::query()->whereNotNull('manual_review_at')->whereNull('sent_at')->whereNull('suppressed_at')->count(),
-            'weekly_summary' => WeeklySummaryDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('manual_review_at')->count(),
-            'weekly_summary_manual_review' => WeeklySummaryDelivery::query()->whereNotNull('manual_review_at')->whereNull('sent_at')->count(),
-        ];
+        $deliveryFailures = $this->deliveryFailures();
         $deliveryRates = $this->deliveryRates();
         $supportCategories = SupportRequest::query()->select('category')->selectRaw('COUNT(*) as request_count')->groupBy('category')->orderByDesc('request_count')->get();
         $supportStatuses = SupportRequest::query()->select('status')->selectRaw('COUNT(*) as request_count')->groupBy('status')->orderBy('status')->get();
@@ -76,14 +71,9 @@ class AdminProductMetricsController extends Controller
         $announcementReadRate = $this->announcementReadRate();
         $invitationMetrics = $this->invitationMetrics();
         $deliveryRates = $this->deliveryRates();
-        $deliveryFailures = [
-            'announcement' => AnnouncementDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereNull('manual_review_at')->count(),
-            'announcement_manual_review' => AnnouncementDelivery::query()->whereNotNull('manual_review_at')->whereNull('sent_at')->whereNull('suppressed_at')->count(),
-            'weekly_summary' => WeeklySummaryDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('manual_review_at')->count(),
-            'weekly_summary_manual_review' => WeeklySummaryDelivery::query()->whereNotNull('manual_review_at')->whereNull('sent_at')->count(),
-        ];
+        $deliveryFailures = $this->deliveryFailures();
         $planLimitMetrics = $this->planLimitMetrics($planAccessService);
-        $metrics = ['monthly_active_organizations' => $this->monthlyActiveOrganizations(), 'registered_organizations' => $activation['registered'], 'activation_eligible_organizations' => $activation['eligible'], 'activation_rate' => $activation['activation_rate'], 'previewed_within_7_days' => $activation['previewed'], 'preview_to_completion_rate' => $activation['preview_to_completion_rate'], 'average_time_to_value_hours' => $activation['average_time_to_value_hours'] ?? '', 'onboarding_completion_rate' => $onboarding['completion_rate'], 'retention_30_day_rate' => $retention['rate'], 'import_failure_rate' => $importFailureRate['rate'], 'ai_candidate_approval_rate' => $aiApproval['rate'], 'renewal_deadline_confirmation_count' => $renewalChecks, 'cancellation_rate' => $cancellation['rate'], 'referral_clicks' => $referrals['clicks'], 'referral_registrations' => $referrals['registrations'], 'referral_conversion_rate' => $referrals['rate'], 'announcement_read_rate' => $announcementReadRate['rate'], 'invitation_sent' => $invitationMetrics['sent'], 'invitation_joined' => $invitationMetrics['joined'], 'invitation_conversion_rate' => $invitationMetrics['rate'], 'organizations_near_plan_limit' => $planLimitMetrics['near_limit'], 'organizations_at_plan_limit' => $planLimitMetrics['at_limit'], 'plan_limit_warning_percentage' => config('opsdeck.limits.warning_percentage'), 'announcement_delivery_success_rate' => $deliveryRates['announcement'], 'weekly_summary_delivery_success_rate' => $deliveryRates['weekly_summary'], 'announcement_delivery_failures' => $deliveryFailures['announcement'], 'announcement_delivery_manual_review' => $deliveryFailures['announcement_manual_review'], 'weekly_summary_delivery_failures' => $deliveryFailures['weekly_summary'], 'weekly_summary_delivery_manual_review' => $deliveryFailures['weekly_summary_manual_review'], 'support_requests' => SupportRequest::query()->count()];
+        $metrics = ['monthly_active_organizations' => $this->monthlyActiveOrganizations(), 'registered_organizations' => $activation['registered'], 'activation_eligible_organizations' => $activation['eligible'], 'activation_rate' => $activation['activation_rate'], 'previewed_within_7_days' => $activation['previewed'], 'preview_activation_rate' => $activation['preview_activation_rate'], 'preview_to_completion_rate' => $activation['preview_to_completion_rate'], 'average_time_to_value_hours' => $activation['average_time_to_value_hours'] ?? '', 'onboarding_completion_rate' => $onboarding['completion_rate'], 'retention_30_day_rate' => $retention['rate'], 'import_failure_rate' => $importFailureRate['rate'], 'ai_candidate_approval_rate' => $aiApproval['rate'], 'renewal_deadline_confirmation_count' => $renewalChecks, 'cancellation_rate' => $cancellation['rate'], 'referral_clicks' => $referrals['clicks'], 'referral_registrations' => $referrals['registrations'], 'referral_conversion_rate' => $referrals['rate'], 'announcement_read_rate' => $announcementReadRate['rate'], 'invitation_created' => $invitationMetrics['created'], 'invitation_joined' => $invitationMetrics['joined'], 'invitation_conversion_rate' => $invitationMetrics['rate'], 'organizations_near_plan_limit' => $planLimitMetrics['near_limit'], 'organizations_at_plan_limit' => $planLimitMetrics['at_limit'], 'plan_limit_warning_percentage' => config('opsdeck.limits.warning_percentage'), 'announcement_delivery_success_rate' => $deliveryRates['announcement'], 'weekly_summary_delivery_success_rate' => $deliveryRates['weekly_summary'], 'invitation_email_delivery_success_rate' => $deliveryRates['invitation_email'], 'announcement_delivery_failures' => $deliveryFailures['announcement'], 'announcement_delivery_manual_review' => $deliveryFailures['announcement_manual_review'], 'weekly_summary_delivery_failures' => $deliveryFailures['weekly_summary'], 'weekly_summary_delivery_manual_review' => $deliveryFailures['weekly_summary_manual_review'], 'invitation_email_failures' => $deliveryFailures['invitation_email'], 'invitation_email_manual_review' => $deliveryFailures['invitation_email_manual_review'], 'support_requests' => SupportRequest::query()->count()];
 
         return response()->streamDownload(static function () use ($events, $recentEvents, $metrics): void {
             $handle = fopen('php://output', 'wb');
@@ -160,7 +150,7 @@ class AdminProductMetricsController extends Controller
         return ['near_limit' => $nearLimit, 'at_limit' => $atLimit];
     }
 
-    /** @return array{registered:int, eligible:int, previewed:int, activated:int, activation_rate:float, preview_to_completion_rate:float, average_time_to_value_hours:float|null} */
+    /** @return array{registered:int, eligible:int, previewed:int, activated:int, activation_rate:float, preview_activation_rate:float, preview_to_completion_rate:float, average_time_to_value_hours:float|null} */
     private function activationMetrics(): array
     {
         $asOf = now();
@@ -222,6 +212,7 @@ class AdminProductMetricsController extends Controller
             'previewed' => $previewedCount,
             'activated' => $activatedCount,
             'activation_rate' => $eligibleRegistrationCount > 0 ? round(($activatedCount / $eligibleRegistrationCount) * 100, 2) : 0.0,
+            'preview_activation_rate' => $eligibleRegistrationCount > 0 ? round(($previewedCount / $eligibleRegistrationCount) * 100, 2) : 0.0,
             'preview_to_completion_rate' => $previewedCount > 0 ? round(($previewCompletions / $previewedCount) * 100, 2) : 0.0,
             'average_time_to_value_hours' => $activatedCount > 0 ? round(($totalTimeToValueMinutes / $activatedCount) / 60, 2) : null,
         ];
@@ -274,24 +265,47 @@ class AdminProductMetricsController extends Controller
         return ['recipients' => $recipients, 'reads' => $reads, 'rate' => $recipients > 0 ? round(($reads / $recipients) * 100, 2) : 0.0];
     }
 
-    /** @return array{sent:int, joined:int, rate:float} */
+    /** @return array{created:int, joined:int, rate:float} */
     private function invitationMetrics(): array
     {
-        $sent = ProductEvent::query()->where('event_key', 'member_invited')->count();
+        $created = ProductEvent::query()->where('event_key', 'member_invited')->count();
         $joined = ProductEvent::query()->where('event_key', 'member_joined')->count();
 
-        return ['sent' => $sent, 'joined' => $joined, 'rate' => $sent > 0 ? round(($joined / $sent) * 100, 2) : 0.0];
+        return ['created' => $created, 'joined' => $joined, 'rate' => $created > 0 ? round(($joined / $created) * 100, 2) : 0.0];
     }
 
-    /** @return array{announcement:float, weekly_summary:float} */
+    /** @return array{announcement:float, weekly_summary:float, invitation_email:float} */
     private function deliveryRates(): array
     {
         $announcementTotal = AnnouncementDelivery::query()->whereNull('suppressed_at')->count();
         $announcementSent = AnnouncementDelivery::query()->whereNotNull('sent_at')->count();
         $weeklyTotal = WeeklySummaryDelivery::query()->count();
         $weeklySent = WeeklySummaryDelivery::query()->whereNotNull('sent_at')->count();
+        $invitationTotal = OrganizationInvitation::query()
+            ->whereNotNull('invitation_email_sent_at')
+            ->orWhereNotNull('invitation_email_failed_at')
+            ->orWhereNotNull('invitation_email_manual_review_at')
+            ->count();
+        $invitationSent = OrganizationInvitation::query()->whereNotNull('invitation_email_sent_at')->count();
 
-        return ['announcement' => $announcementTotal > 0 ? round(($announcementSent / $announcementTotal) * 100, 2) : 0.0, 'weekly_summary' => $weeklyTotal > 0 ? round(($weeklySent / $weeklyTotal) * 100, 2) : 0.0];
+        return [
+            'announcement' => $announcementTotal > 0 ? round(($announcementSent / $announcementTotal) * 100, 2) : 0.0,
+            'weekly_summary' => $weeklyTotal > 0 ? round(($weeklySent / $weeklyTotal) * 100, 2) : 0.0,
+            'invitation_email' => $invitationTotal > 0 ? round(($invitationSent / $invitationTotal) * 100, 2) : 0.0,
+        ];
+    }
+
+    /** @return array{announcement:int, announcement_manual_review:int, weekly_summary:int, weekly_summary_manual_review:int, invitation_email:int, invitation_email_manual_review:int} */
+    private function deliveryFailures(): array
+    {
+        return [
+            'announcement' => AnnouncementDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('suppressed_at')->whereNull('manual_review_at')->count(),
+            'announcement_manual_review' => AnnouncementDelivery::query()->whereNotNull('manual_review_at')->whereNull('sent_at')->whereNull('suppressed_at')->count(),
+            'weekly_summary' => WeeklySummaryDelivery::query()->whereNotNull('failed_at')->whereNull('sent_at')->whereNull('manual_review_at')->count(),
+            'weekly_summary_manual_review' => WeeklySummaryDelivery::query()->whereNotNull('manual_review_at')->whereNull('sent_at')->count(),
+            'invitation_email' => OrganizationInvitation::query()->whereNotNull('invitation_email_failed_at')->whereNull('invitation_email_sent_at')->whereNull('invitation_email_manual_review_at')->count(),
+            'invitation_email_manual_review' => OrganizationInvitation::query()->whereNotNull('invitation_email_manual_review_at')->whereNull('invitation_email_sent_at')->count(),
+        ];
     }
 
     /** @return array{eligible:int, retained:int, rate:float} */

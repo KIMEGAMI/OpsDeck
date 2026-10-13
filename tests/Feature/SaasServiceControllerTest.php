@@ -5,8 +5,10 @@ namespace Tests\Feature;
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\AuditLog;
+use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\User;
 use Illuminate\Support\Facades\Config;
@@ -48,6 +50,118 @@ class SaasServiceControllerTest extends TestCase
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
+    }
+
+    public function test_saas_service_list_attention_filter_shows_unassigned_and_former_employee_services_only(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'saas-attention-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'SaaS Attention '.$suffix,
+            'slug' => 'saas-attention-'.$suffix,
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        $otherOrganization = Organization::query()->create([
+            'name' => 'Other SaaS Attention '.$suffix,
+            'slug' => 'other-saas-attention-'.$suffix,
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Viewer,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $unassignedService = SaasService::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Unassigned SaaS '.$suffix,
+            'status' => config('opsdeck.saas_service_active_status'),
+        ]);
+        $formerEmployee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Former SaaS employee',
+            'employment_status' => 'retired',
+        ]);
+        $formerEmployeeService = SaasService::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Former employee SaaS '.$suffix,
+            'status' => config('opsdeck.saas_service_active_status'),
+        ]);
+        SaasAssignment::query()->create([
+            'organization_id' => $organization->id,
+            'saas_service_id' => $formerEmployeeService->id,
+            'employee_id' => $formerEmployee->id,
+            'status' => 'active',
+            'mfa_status' => config('opsdeck.saas_assignment_mfa_status.unknown'),
+        ]);
+        $activeEmployee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Active SaaS employee',
+            'employment_status' => config('opsdeck.employee_status.active'),
+        ]);
+        $assignedService = SaasService::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Assigned SaaS '.$suffix,
+            'status' => config('opsdeck.saas_service_active_status'),
+        ]);
+        SaasAssignment::query()->create([
+            'organization_id' => $organization->id,
+            'saas_service_id' => $assignedService->id,
+            'employee_id' => $activeEmployee->id,
+            'status' => 'active',
+            'mfa_status' => config('opsdeck.saas_assignment_mfa_status.unknown'),
+        ]);
+        $inactiveService = SaasService::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Inactive SaaS '.$suffix,
+            'status' => 'inactive',
+        ]);
+        $otherOrganizationService = SaasService::query()->create([
+            'organization_id' => $otherOrganization->id,
+            'name' => 'Other organization SaaS '.$suffix,
+            'status' => config('opsdeck.saas_service_active_status'),
+        ]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('saas-services.index', ['needs_attention' => 1]))
+            ->assertOk()
+            ->assertSee($unassignedService->name)
+            ->assertSee($formerEmployeeService->name)
+            ->assertDontSee($assignedService->name)
+            ->assertDontSee($inactiveService->name)
+            ->assertDontSee($otherOrganizationService->name);
+    }
+
+    public function test_saas_service_list_rejects_invalid_attention_filter_values(): void
+    {
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'saas-invalid-filter-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'SaaS Filter '.$suffix,
+            'slug' => 'saas-filter-'.$suffix,
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Viewer,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->getJson(route('saas-services.index', ['needs_attention' => 'unexpected']))
+            ->assertUnprocessable();
     }
 
     public function test_viewer_cannot_create_a_saas_service(): void

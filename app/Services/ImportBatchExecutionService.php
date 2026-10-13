@@ -172,6 +172,12 @@ class ImportBatchExecutionService
                     app(ProductEventRecorder::class)->recordOnce('first_import_completed', $organization);
                     app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
                 }
+                if ($counts['inserted'] > 0 && $mapping->target_type === 'assets') {
+                    app(ProductEventRecorder::class)->recordOnce('first_asset_registered', $organization);
+                }
+                if ($counts['inserted'] > 0 && $mapping->target_type === 'contracts') {
+                    app(ProductEventRecorder::class)->recordOnce('first_contract_registered', $organization);
+                }
                 app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
                 AuditLog::query()->create([
                     'organization_id' => $organization->id,
@@ -230,11 +236,25 @@ class ImportBatchExecutionService
             return;
         }
 
+        $identityFields = $sample['identity_fields'] ?? [];
+        $identityTargetFields = [];
+        if (is_array($identityFields)) {
+            foreach ($identityFields as $sourceHeader) {
+                $targetField = $columnMap[$sourceHeader] ?? null;
+                if (! is_string($targetField) || $targetField === '') {
+                    $identityTargetFields = [];
+                    break;
+                }
+
+                $identityTargetFields[] = $targetField;
+            }
+        }
+
         $expectedValues = [];
         foreach ($sample['headers'] as $sourceHeader) {
             $targetField = $columnMap[$sourceHeader] ?? null;
             if (! is_string($targetField) || $targetField === '') {
-                return;
+                continue;
             }
 
             $expectedValues[$targetField] = trim((string) ($sampleValues[$sourceHeader] ?? ''));
@@ -242,6 +262,10 @@ class ImportBatchExecutionService
         $expectedValues = $this->normalizationService->apply($mapping->target_type, $expectedValues, $mapping->normalization_rules ?? []);
         $expectedValues = $this->normalizeImportValues($mapping->target_type, $expectedValues);
         ksort($expectedValues);
+        $sampleIdentity = $identityTargetFields === [] ? [] : array_intersect_key($expectedValues, array_fill_keys($identityTargetFields, true));
+        if (count($sampleIdentity) !== count($identityTargetFields)) {
+            $sampleIdentity = [];
+        }
 
         foreach ($importBatch->rowResults()
             ->where('target_type', $mapping->target_type)
@@ -255,9 +279,10 @@ class ImportBatchExecutionService
             }
 
             ksort($actualValues);
-            if ($actualValues === $expectedValues) {
+            $actualIdentity = $sampleIdentity === [] ? [] : array_intersect_key($actualValues, $sampleIdentity);
+            if ($actualValues === $expectedValues || ($sampleIdentity !== [] && $actualIdentity === $sampleIdentity)) {
                 throw ValidationException::withMessages([
-                    'sample' => '未変更のサンプル行を検出しました。サンプルCSVはPreview専用です。実データに置き換えるか、サンプル行を除いてからPreviewをやり直してください。',
+                    'sample' => 'サンプル識別値を含む行を検出しました。サンプルCSVはPreview専用です。実データに置き換えるか、サンプル行を除いてからPreviewをやり直してください。',
                 ]);
             }
         }
@@ -494,7 +519,7 @@ class ImportBatchExecutionService
 
                 return [$result, 'error'];
             }
-            $attributes = ['question_id' => $question->id, 'answer_text' => $values['answer_text'] ?? null, 'answer_choice' => $values['answer_choice'] ?? null, 'answer_status' => 'draft', 'source_type' => $values['source_type']];
+            $attributes = ['question_id' => $question->id, 'answer_text' => $values['answer_text'] ?? null, 'answer_choice' => $values['answer_choice'] ?? null, 'answer_status' => QuestionnaireAnswer::DRAFT_STATUS, 'source_type' => $values['source_type']];
             $record = QuestionnaireAnswer::query()->where('question_id', $question->id)->latest('id')->first();
         } elseif ($targetType === 'contracts') {
             if (($values['contract_name'] ?? '') === '' || ($values['vendor_name'] ?? '') === '' || ! in_array($values['billing_cycle'] ?? '', config('opsdeck.contract_billing_cycles'), true) || ! in_array($values['status'] ?? '', config('opsdeck.contract_statuses'), true)) {

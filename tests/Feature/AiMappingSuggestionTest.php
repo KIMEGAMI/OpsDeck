@@ -20,8 +20,8 @@ class AiMappingSuggestionTest extends TestCase
         config([
             'opsdeck.ai.usd_to_jpy_rate' => 150,
             'opsdeck.ai.model_prices_per_million_tokens' => [
-                'gpt-6-luna' => ['input' => 0.10, 'output' => 0.50],
-                'gpt-6.1-sol' => ['input' => 2.00, 'output' => 10.00],
+                'gpt-6-luna' => ['input' => 0.10, 'cached_input' => 0.01, 'cache_write_input' => 0.125, 'output' => 0.50],
+                'gpt-6.1-sol' => ['input' => 2.00, 'cached_input' => 0.10, 'cache_write_input' => 2.50, 'output' => 10.00],
             ],
         ]);
     }
@@ -34,7 +34,7 @@ class AiMappingSuggestionTest extends TestCase
         $previousEnvironmentValueInEnv = $_ENV[$environmentKey] ?? null;
         $previousEnvironmentValueWasInServer = array_key_exists($environmentKey, $_SERVER);
         $previousEnvironmentValueInServer = $_SERVER[$environmentKey] ?? null;
-        $pricingJson = '{"test-model":{"input":0.25,"output":1.25}}';
+        $pricingJson = '{"test-model":{"input":0.25,"cached_input":0.025,"cache_write_input":0.3125,"output":1.25}}';
 
         putenv($environmentKey.'='.$pricingJson);
         $_ENV[$environmentKey] = $pricingJson;
@@ -44,7 +44,7 @@ class AiMappingSuggestionTest extends TestCase
             $configuration = require config_path('opsdeck.php');
 
             $this->assertSame([
-                'test-model' => ['input' => 0.25, 'output' => 1.25],
+                'test-model' => ['input' => 0.25, 'cached_input' => 0.025, 'cache_write_input' => 0.3125, 'output' => 1.25],
             ], $configuration['ai']['model_prices_per_million_tokens']);
         } finally {
             if ($previousEnvironmentValue === false) {
@@ -310,7 +310,7 @@ class AiMappingSuggestionTest extends TestCase
         ]);
         $this->assertSame('premium', app(PlanAccessService::class)->effectivePlanCode($organization));
         $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping'));
-        $this->assertSame(['input' => 2.00, 'output' => 10.00], config('opsdeck.ai.model_prices_per_million_tokens')['gpt-6.1-sol']);
+        $this->assertSame(['input' => 2.00, 'cached_input' => 0.10, 'cache_write_input' => 2.50, 'output' => 10.00], config('opsdeck.ai.model_prices_per_million_tokens')['gpt-6.1-sol']);
 
         $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['担当'], 'employees', ['name', 'email']);
 
@@ -365,15 +365,46 @@ class AiMappingSuggestionTest extends TestCase
             'output' => [['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode(['suggestions' => [
                 ['source_column' => '社員番号', 'field' => 'employee_number', 'confidence' => 0.98, 'reason' => '社員番号を示す列名です', 'requires_review' => false, 'question' => null],
             ]])]]]],
-            'usage' => ['input_tokens' => 100000, 'output_tokens' => 20000],
+            'usage' => [
+                'input_tokens' => 100000,
+                'input_tokens_details' => ['cached_tokens' => 40000, 'cache_write_tokens' => 20000],
+                'output_tokens' => 20000,
+            ],
         ], 200)]);
 
         app(ImportMappingSuggestionService::class)->suggest($organization, ['社員番号'], 'employees', ['employee_number', 'email']);
 
         $usage = AiUsageLog::query()->where('organization_id', $organization->id)->firstOrFail();
-        $this->assertSame('0.020000', $usage->estimated_cost_usd);
-        $this->assertSame('3.01', $usage->estimated_cost_jpy);
+        $this->assertSame(100000, $usage->input_tokens);
+        $this->assertSame('0.016900', $usage->estimated_cost_usd);
+        $this->assertSame('2.54', $usage->estimated_cost_jpy);
         $this->assertNull($usage->error_code);
+    }
+
+    public function test_monthly_budget_reserves_input_at_cache_write_rate_to_prevent_under_reservation(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.api_key' => 'test-key',
+            'opsdeck.ai.usd_to_jpy_rate' => 10000,
+            'opsdeck.ai.monthly_budget_jpy.premium' => 1,
+            'opsdeck.ai.input_token_estimate_multiplier' => 1,
+            'opsdeck.ai.estimated_input_overhead_tokens' => 0,
+            'opsdeck.ai.max_output_tokens' => 1,
+            'opsdeck.ai.model_prices_per_million_tokens' => [
+                'gpt-6-luna' => ['input' => 1.00, 'cached_input' => 0.10, 'cache_write_input' => 2.00, 'output' => 0.00],
+            ],
+        ]);
+        $organization = Organization::query()->create(['name' => 'AI cache reserve '.Str::random(8), 'slug' => 'ai-cache-reserve-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active', 'ai_enabled' => true]);
+        Http::preventStrayRequests();
+
+        $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['Asset number'], 'assets', ['asset_number']);
+
+        $this->assertSame('fallback', $suggestions['Asset number']['source']);
+        $this->assertDatabaseHas('ai_usage_logs', ['organization_id' => $organization->id, 'error_code' => 'monthly_budget_exceeded']);
+        Http::assertNothingSent();
     }
 
     public function test_usage_log_marks_unknown_model_pricing_instead_of_reporting_free_usage(): void

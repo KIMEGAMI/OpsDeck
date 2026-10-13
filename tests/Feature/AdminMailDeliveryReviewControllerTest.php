@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Announcement;
 use App\Models\AnnouncementDelivery;
 use App\Models\Organization;
+use App\Models\OrganizationInvitation;
 use App\Models\User;
 use App\Models\WeeklySummaryDelivery;
 use Illuminate\Support\Facades\Queue;
@@ -47,6 +48,17 @@ class AdminMailDeliveryReviewControllerTest extends TestCase
             'resend_idempotency_started_at' => now()->subHours(25),
             'manual_review_at' => now(),
         ]);
+        OrganizationInvitation::query()->create([
+            'organization_id' => $organization->id,
+            'invited_by' => $admin->id,
+            'email' => 'invitation-review-'.Str::uuid().'@example.test',
+            'role' => 'operator',
+            'token_hash' => hash('sha256', Str::random(64)),
+            'expires_at' => now()->addDays(7),
+            'invitation_email_failed_at' => now()->subHours(25),
+            'resend_idempotency_started_at' => now()->subHours(25),
+            'invitation_email_manual_review_at' => now(),
+        ]);
         AnnouncementDelivery::query()->create([
             'announcement_id' => $resolvedAnnouncement->id,
             'user_id' => User::factory()->create()->id,
@@ -58,6 +70,8 @@ class AdminMailDeliveryReviewControllerTest extends TestCase
             ->assertSee('配信確認のお知らせ')
             ->assertSee($recipient->email)
             ->assertSee('配信確認組織')
+            ->assertSee('組織招待メール')
+            ->assertSee('invitation-review-')
             ->assertSee('メール事業者の配信履歴で成功を確認した場合だけ')
             ->assertSee('事業者の履歴で配信成功を確認しました')
             ->assertDontSee('解決済み配信');
@@ -147,6 +161,68 @@ class AdminMailDeliveryReviewControllerTest extends TestCase
         $this->assertNotNull($delivery->fresh()->manual_review_at);
         $this->assertSame($admin->id, $delivery->fresh()->manual_review_resolved_by);
         Queue::assertNothingPushed();
+    }
+
+    public function test_platform_admin_can_resolve_an_invitation_after_confirming_delivery_without_resending(): void
+    {
+        Queue::fake();
+        $admin = $this->platformAdmin();
+        $organization = Organization::query()->create([
+            'name' => '招待確認組織',
+            'slug' => 'invitation-review-'.Str::lower(Str::random(8)),
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        $invitation = OrganizationInvitation::query()->create([
+            'organization_id' => $organization->id,
+            'invited_by' => $admin->id,
+            'email' => 'invitation-review-'.Str::uuid().'@example.test',
+            'role' => 'operator',
+            'token_hash' => hash('sha256', Str::random(64)),
+            'expires_at' => now()->addDays(7),
+            'invitation_email_failed_at' => now()->subHours(25),
+            'resend_idempotency_started_at' => now()->subHours(25),
+            'invitation_email_manual_review_at' => now(),
+        ]);
+
+        $this->actingAs($admin)->post(route('admin.mail-delivery-reviews.invitations.resolve', $invitation), ['confirm_delivery' => '1'])
+            ->assertRedirect(route('admin.mail-delivery-reviews.index'));
+
+        $resolvedInvitation = $invitation->fresh();
+        $this->assertNotNull($resolvedInvitation->invitation_email_sent_at);
+        $this->assertNull($resolvedInvitation->invitation_email_failed_at);
+        $this->assertNotNull($resolvedInvitation->invitation_email_manual_review_at);
+        $this->assertSame($admin->id, $resolvedInvitation->invitation_email_manual_review_resolved_by);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_non_platform_admin_cannot_resolve_invitation_delivery_review(): void
+    {
+        $admin = $this->platformAdmin();
+        $organization = Organization::query()->create([
+            'name' => '管理者限定組織',
+            'slug' => 'invitation-denied-'.Str::lower(Str::random(8)),
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        $invitation = OrganizationInvitation::query()->create([
+            'organization_id' => $organization->id,
+            'invited_by' => $admin->id,
+            'email' => 'invitation-denied-'.Str::uuid().'@example.test',
+            'role' => 'operator',
+            'token_hash' => hash('sha256', Str::random(64)),
+            'expires_at' => now()->addDays(7),
+            'invitation_email_manual_review_at' => now(),
+        ]);
+        $user = User::factory()->create(['email' => 'regular-invitation-'.Str::uuid().'@example.test']);
+
+        $this->actingAs($user)
+            ->post(route('admin.mail-delivery-reviews.invitations.resolve', $invitation), ['confirm_delivery' => '1'])
+            ->assertForbidden();
+
+        $this->assertNull($invitation->fresh()->invitation_email_sent_at);
     }
 
     public function test_manual_delivery_resolution_requires_explicit_confirmation(): void

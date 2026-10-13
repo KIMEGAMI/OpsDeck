@@ -476,6 +476,32 @@ class HealthCommandTest extends TestCase
         }
     }
 
+    public function test_strict_health_check_rejects_database_dump_that_does_not_match_its_backup_checksum(): void
+    {
+        $healthPath = $this->healthPath('backup-database-checksum');
+        config(['opsdeck.backup.path' => $healthPath]);
+        $this->recordFreshSchedulerHeartbeat();
+        $backupDirectory = $healthPath.DIRECTORY_SEPARATOR.'backup';
+        File::ensureDirectoryExists($backupDirectory);
+        File::put($backupDirectory.DIRECTORY_SEPARATOR.'database.sql', 'changed-database-dump');
+        File::put($backupDirectory.DIRECTORY_SEPARATOR.'manifest.json', json_encode([
+            'created_at' => now()->toIso8601String(),
+            'database' => ['driver' => 'mysql', 'file' => 'database.sql'],
+            'database_sha256' => hash('sha256', 'original-database-dump'),
+            'evidence_files' => [],
+            'evidence_sha256' => [],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
+                ->expectsOutput('{"status":"warning","database":"ok","backup":"invalid","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"not_applicable","queue_worker_status":"not_applicable","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}')
+                ->assertExitCode(1);
+        } finally {
+            DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
+            File::deleteDirectory($healthPath);
+        }
+    }
+
     public function test_backup_manifest_timestamp_in_the_future_is_not_accepted(): void
     {
         $healthPath = $this->healthPath('backup-future-timestamp');

@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\DB;
 
 class AiUsageBudgetService
 {
+    public function __construct(private AiModelPricing $modelPricing) {}
+
     /**
      * @param  list<string>  $headers
      * @param  list<string>  $targetFields
@@ -26,12 +28,7 @@ class AiUsageBudgetService
             || $budgetJpy <= 0
             || ! is_numeric($rate)
             || (float) $rate <= 0
-            || ! is_array($pricing)
-            || ! is_numeric($pricing['input'] ?? null)
-            || ! is_numeric($pricing['output'] ?? null)
-            || (float) $pricing['input'] < 0
-            || (float) $pricing['output'] < 0
-            || ((float) $pricing['input'] === 0.0 && (float) $pricing['output'] === 0.0)) {
+            || ! $this->modelPricing->hasValidRates($pricing)) {
             return null;
         }
 
@@ -39,7 +36,7 @@ class AiUsageBudgetService
         $inputTokens = (strlen($encodedInput) * (int) config('opsdeck.ai.input_token_estimate_multiplier'))
             + (int) config('opsdeck.ai.estimated_input_overhead_tokens');
         $outputTokens = (int) config('opsdeck.ai.max_output_tokens');
-        $maximumCostUsd = round(($inputTokens * (float) $pricing['input'] + $outputTokens * (float) $pricing['output']) / max(1, (int) config('opsdeck.ai.tokens_per_million')), 6);
+        $maximumCostUsd = $this->modelPricing->reservationCostUsd($pricing, $inputTokens, $outputTokens, (int) config('opsdeck.ai.tokens_per_million'));
         $monthlyBudgetUsd = $budgetJpy / (float) $rate;
 
         return DB::transaction(function () use ($organization, $userId, $model, $maximumCostUsd, $monthlyBudgetUsd): ?AiUsageReservation {
@@ -64,12 +61,12 @@ class AiUsageBudgetService
         });
     }
 
-    public function settle(AiUsageReservation $reservation, int $inputTokens, int $outputTokens, bool $success, ?string $errorCode = null): void
+    public function settle(AiUsageReservation $reservation, int $inputTokens, int $outputTokens, bool $success, ?string $errorCode = null, int $cachedInputTokens = 0, int $cacheWriteInputTokens = 0): void
     {
         $inputTokens = max(0, $inputTokens);
         $outputTokens = max(0, $outputTokens);
 
-        DB::transaction(function () use ($reservation, $inputTokens, $outputTokens, $success, $errorCode): void {
+        DB::transaction(function () use ($reservation, $inputTokens, $outputTokens, $success, $errorCode, $cachedInputTokens, $cacheWriteInputTokens): void {
             $lockedReservation = AiUsageReservation::query()->whereKey($reservation->id)->lockForUpdate()->first();
             if ($lockedReservation === null) {
                 return;
@@ -77,9 +74,9 @@ class AiUsageBudgetService
 
             $modelPrices = config('opsdeck.ai.model_prices_per_million_tokens', []);
             $pricing = is_array($modelPrices) ? ($modelPrices[$lockedReservation->model] ?? null) : null;
-            $hasPricing = is_array($pricing) && is_numeric($pricing['input'] ?? null) && is_numeric($pricing['output'] ?? null);
+            $hasPricing = $this->modelPricing->hasValidRates($pricing);
             $costUsd = $hasPricing
-                ? round(($inputTokens * (float) $pricing['input'] + $outputTokens * (float) $pricing['output']) / max(1, (int) config('opsdeck.ai.tokens_per_million')), 6)
+                ? $this->modelPricing->actualCostUsd($pricing, $inputTokens, $cachedInputTokens, $cacheWriteInputTokens, $outputTokens, (int) config('opsdeck.ai.tokens_per_million'))
                 : (float) $lockedReservation->reserved_cost_usd;
             if (! $success && $inputTokens === 0 && $outputTokens === 0) {
                 $costUsd = (float) $lockedReservation->reserved_cost_usd;

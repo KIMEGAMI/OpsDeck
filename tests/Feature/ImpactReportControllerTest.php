@@ -11,6 +11,9 @@ use App\Models\ImpactMetricSnapshot;
 use App\Models\ImportBatch;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\Questionnaire;
+use App\Models\QuestionnaireAnswer;
+use App\Models\QuestionnaireQuestion;
 use App\Models\RealizedSaving;
 use App\Models\SaasService;
 use App\Models\User;
@@ -240,6 +243,49 @@ class ImpactReportControllerTest extends TestCase
 
         $this->assertSame(1, $metrics['asset_attention']);
         $this->assertSame(1, $metrics['saas_attention']);
+    }
+
+    public function test_impact_report_pending_answers_require_server_recorded_approval(): void
+    {
+        [$owner, $organization] = $this->member(MembershipRole::Owner);
+        $questionnaire = Questionnaire::query()->create([
+            'organization_id' => $organization->id,
+            'title' => '承認状態の確認',
+            'status' => config('opsdeck.questionnaire_status.draft'),
+            'created_by' => $owner->id,
+        ]);
+        $unapprovedQuestion = QuestionnaireQuestion::query()->create([
+            'questionnaire_id' => $questionnaire->id,
+            'question_text' => '未承認の回答',
+            'answer_type' => 'text',
+            'sort_order' => 1,
+        ]);
+        $approvedQuestion = QuestionnaireQuestion::query()->create([
+            'questionnaire_id' => $questionnaire->id,
+            'question_text' => '承認済みの回答',
+            'answer_type' => 'text',
+            'sort_order' => 2,
+        ]);
+        QuestionnaireAnswer::query()->create([
+            'question_id' => $unapprovedQuestion->id,
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'source_type' => 'FACT',
+        ]);
+        QuestionnaireAnswer::query()->create([
+            'question_id' => $approvedQuestion->id,
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'approved_by' => $owner->id,
+            'approved_at' => now(),
+            'source_type' => 'FACT',
+        ]);
+
+        $metrics = app(ImpactReportMetricsService::class)->current($organization);
+
+        $this->assertSame(1, $metrics['questionnaire_pending']);
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.show'))
+            ->assertOk()
+            ->assertSee('未承認の質問票回答</dt><dd>1件</dd>', false);
     }
 
     public function test_snapshot_factory_uses_the_same_organization_as_its_import_batch(): void

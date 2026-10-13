@@ -77,7 +77,11 @@ class QuestionnaireAnswerController extends Controller
             ->findOrFail($questionnaireAnswer->question_id);
         $this->authorize('approve', $questionnaireAnswer);
         DB::transaction(function () use ($request, $organization, $questionnaireAnswer): void {
-            $questionnaireAnswer->update(['approved_by' => $request->user()->id, 'approved_at' => now()]);
+            $questionnaireAnswer->update([
+                'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+                'approved_by' => $request->user()->id,
+                'approved_at' => now(),
+            ]);
             AuditLog::query()->create([
                 'organization_id' => $organization->id,
                 'actor_user_id' => $request->user()->id,

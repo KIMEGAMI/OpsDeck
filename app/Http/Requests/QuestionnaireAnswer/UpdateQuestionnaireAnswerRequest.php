@@ -37,7 +37,7 @@ class UpdateQuestionnaireAnswerRequest extends FormRequest
         return [
             'answer_text' => ['nullable', 'string'],
             'answer_choice' => ['nullable', 'string', 'max:'.$maximum],
-            'answer_status' => ['required', 'string', 'max:'.$maximum],
+            'answer_status' => ['required', Rule::in([QuestionnaireAnswer::DRAFT_STATUS])],
             'source_type' => ['required', Rule::in(config('opsdeck.questionnaire_answer_source_types'))],
         ];
     }

@@ -35,8 +35,8 @@ class ImportBatchControllerTest extends TestCase
         config([
             'opsdeck.ai.usd_to_jpy_rate' => 150,
             'opsdeck.ai.model_prices_per_million_tokens' => [
-                'gpt-6-luna' => ['input' => 0.10, 'output' => 0.50],
-                'gpt-6.1-sol' => ['input' => 2.00, 'output' => 10.00],
+                'gpt-6-luna' => ['input' => 0.10, 'cached_input' => 0.01, 'cache_write_input' => 0.125, 'output' => 0.50],
+                'gpt-6.1-sol' => ['input' => 2.00, 'cached_input' => 0.10, 'cache_write_input' => 2.50, 'output' => 10.00],
             ],
         ]);
     }
@@ -606,6 +606,28 @@ class ImportBatchControllerTest extends TestCase
         $response->assertOk()->assertSee('サンプルCSVはPreview専用です。');
         $this->assertDatabaseHas('import_batches', ['id' => $batch->id, 'status' => 'ready']);
         $this->assertDatabaseMissing('employees', ['organization_id' => $organization->id, 'email' => 'sample@example.test']);
+
+        ImportRowResult::query()->where('import_batch_id', $batch->id)->update([
+            'after_json' => ['employee_number' => 'EMP-SAMPLE-001', 'name' => '実データ風の名称', 'email' => 'changed@example.test', 'employment_status' => 'active'],
+        ]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->from(route('imports.show', $batch))
+            ->post(route('imports.execute', $batch), ['confirm' => '1'])
+            ->assertRedirect(route('imports.show', $batch))
+            ->assertSessionHasErrors('sample');
+
+        $this->assertDatabaseHas('import_batches', ['id' => $batch->id, 'status' => 'ready']);
+        $this->assertDatabaseMissing('employees', ['organization_id' => $organization->id, 'email' => 'changed@example.test']);
+
+        config(['opsdeck.import_samples.employees.identity_fields' => []]);
+        ImportRowResult::query()->where('import_batch_id', $batch->id)->update([
+            'after_json' => ['employee_number' => 'EMP-SAMPLE-001', 'name' => 'サンプル太郎', 'email' => 'sample@example.test', 'employment_status' => 'active'],
+        ]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->from(route('imports.show', $batch))
+            ->post(route('imports.execute', $batch), ['confirm' => '1'])
+            ->assertRedirect(route('imports.show', $batch))
+            ->assertSessionHasErrors('sample');
 
         DB::table('import_row_results')->where('import_batch_id', $batch->id)->update(['is_selected' => false]);
         config(['opsdeck.import.async_threshold_rows' => 1]);

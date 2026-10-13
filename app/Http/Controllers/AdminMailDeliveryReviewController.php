@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\ResolveManualDeliveryReviewRequest;
 use App\Models\AnnouncementDelivery;
+use App\Models\OrganizationInvitation;
 use App\Models\WeeklySummaryDelivery;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -26,8 +27,14 @@ class AdminMailDeliveryReviewController extends Controller
             ->with(['organization:id,name', 'user:id,name,email'])
             ->latest('manual_review_at')
             ->paginate($perPage, ['*'], 'weekly_summary_page');
+        $invitationDeliveries = OrganizationInvitation::query()
+            ->whereNotNull('invitation_email_manual_review_at')
+            ->whereNull('invitation_email_sent_at')
+            ->with('organization:id,name')
+            ->latest('invitation_email_manual_review_at')
+            ->paginate($perPage, ['*'], 'invitation_page');
 
-        return view('admin.mail-delivery-reviews', compact('announcementDeliveries', 'weeklySummaryDeliveries'));
+        return view('admin.mail-delivery-reviews', compact('announcementDeliveries', 'weeklySummaryDeliveries', 'invitationDeliveries'));
     }
 
     public function resolveAnnouncement(ResolveManualDeliveryReviewRequest $request, AnnouncementDelivery $delivery): RedirectResponse
@@ -46,6 +53,25 @@ class AdminMailDeliveryReviewController extends Controller
         }
 
         return to_route('admin.mail-delivery-reviews.index')->with('status', '週次サマリーメールを配信済みとして記録しました。');
+    }
+
+    public function resolveInvitation(ResolveManualDeliveryReviewRequest $request, OrganizationInvitation $invitation): RedirectResponse
+    {
+        $updated = OrganizationInvitation::query()
+            ->whereKey($invitation->getKey())
+            ->whereNotNull('invitation_email_manual_review_at')
+            ->whereNull('invitation_email_sent_at')
+            ->update([
+                'invitation_email_sent_at' => now(),
+                'invitation_email_failed_at' => null,
+                'invitation_email_manual_review_resolved_by' => (int) $request->user()->getAuthIdentifier(),
+            ]);
+
+        if ($updated !== 1) {
+            return to_route('admin.mail-delivery-reviews.index')->with('status', 'この招待メールは確認待ちではありません。');
+        }
+
+        return to_route('admin.mail-delivery-reviews.index')->with('status', '招待メールを配信済みとして記録しました。');
     }
 
     private function markAsDelivered(ResolveManualDeliveryReviewRequest $request, AnnouncementDelivery|WeeklySummaryDelivery $delivery): bool

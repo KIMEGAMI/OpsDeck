@@ -57,5 +57,31 @@
             </table>
             {{ $weeklySummaryDeliveries->links() }}
         </section>
+
+        <section aria-labelledby="invitation-review-title">
+            <h2 id="invitation-review-title">組織招待メール</h2>
+            <table>
+                <thead><tr><th>組織</th><th>宛先</th><th>確認待ちになった日時</th><th>操作</th></tr></thead>
+                <tbody>
+                    @forelse ($invitationDeliveries as $invitation)
+                        <tr>
+                            <td>{{ $invitation->organization?->name ?? '削除済み組織' }}</td>
+                            <td>{{ $invitation->email }}</td>
+                            <td>{{ $invitation->invitation_email_manual_review_at?->format('Y-m-d H:i') }}</td>
+                            <td>
+                                <form method="post" action="{{ route('admin.mail-delivery-reviews.invitations.resolve', $invitation) }}">
+                                    @csrf
+                                    <label><input type="checkbox" name="confirm_delivery" value="1" required style="width:auto"> 事業者の履歴で配信成功を確認しました</label>
+                                    <button type="submit">配信済みとして記録</button>
+                                </form>
+                            </td>
+                        </tr>
+                    @empty
+                        <tr><td colspan="4">確認待ちの招待メールはありません。</td></tr>
+                    @endforelse
+                </tbody>
+            </table>
+            {{ $invitationDeliveries->links() }}
+        </section>
     </section>
 </x-layouts.app>

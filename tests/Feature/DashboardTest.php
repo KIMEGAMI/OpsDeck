@@ -12,6 +12,9 @@ use App\Models\Evidence;
 use App\Models\ImportBatch;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\Questionnaire;
+use App\Models\QuestionnaireAnswer;
+use App\Models\QuestionnaireQuestion;
 use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
@@ -76,6 +79,7 @@ class DashboardTest extends TestCase
 
         $response->assertOk()
             ->assertSee('現在の組織データと、優先して確認すべき項目を表示しています。')
+            ->assertDontSee('更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。')
             ->assertSee('10,000.00')
             ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の更新アラート')
             ->assertSee('要対応セキュリティ項目')
@@ -88,8 +92,8 @@ class DashboardTest extends TestCase
             ->assertSee(route('imports.index', ['has_errors' => 1, 'unreviewed' => 1]))
             ->assertSee(route('imports.index', ['status' => 'failed', 'unreviewed' => 1]))
             ->assertSee(route('employees.index'))
-            ->assertSee(route('assets.index'))
-            ->assertSee(route('saas-services.index'))
+            ->assertSee(route('assets.index', ['needs_attention' => 1]))
+            ->assertSee(route('saas-services.index', ['needs_attention' => 1]))
             ->assertSee(route('contracts.index'))
             ->assertSee(route('settings.members'))
             ->assertSee('未割当または退職者に紐づく資産を確認する')
@@ -107,6 +111,42 @@ class DashboardTest extends TestCase
             ]);
 
         $this->assertDatabaseMissing('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
+    }
+
+    public function test_free_dashboard_explains_that_priority_checks_are_limited_by_plan(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->ownerOrganization();
+        $organization->update(['plan_code' => config('opsdeck.free_plan_code')]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('このプランで確認できる範囲では、優先対応が必要な項目はありません。')
+            ->assertSee('更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。')
+            ->assertSee(route('billing.index'))
+            ->assertSee('プランと料金を確認');
+    }
+
+    public function test_free_dashboard_does_not_show_billing_link_to_non_owner_members(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [, $organization] = $this->ownerOrganization();
+        $viewer = User::factory()->create(['email' => 'dashboard-viewer-'.Str::uuid().'@example.test']);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $viewer->id,
+            'role' => MembershipRole::Viewer,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+
+        $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。')
+            ->assertSee('プランの確認は組織Ownerにご相談ください。')
+            ->assertDontSee(route('billing.index'));
     }
 
     public function test_owner_sees_plan_limit_warning_on_dashboard(): void
@@ -199,6 +239,48 @@ class DashboardTest extends TestCase
             ->get(route('dashboard'))
             ->assertOk()
             ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新を確認する</a>（1件）', false);
+    }
+
+    public function test_dashboard_pending_answers_require_server_recorded_approval(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->ownerOrganization();
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code')]);
+        $questionnaire = Questionnaire::query()->create([
+            'organization_id' => $organization->id,
+            'title' => '承認状態の確認',
+            'status' => config('opsdeck.questionnaire_status.draft'),
+            'created_by' => $user->id,
+        ]);
+        $unapprovedQuestion = QuestionnaireQuestion::query()->create([
+            'questionnaire_id' => $questionnaire->id,
+            'question_text' => '未承認の回答',
+            'answer_type' => 'text',
+            'sort_order' => 1,
+        ]);
+        $approvedQuestion = QuestionnaireQuestion::query()->create([
+            'questionnaire_id' => $questionnaire->id,
+            'question_text' => '承認済みの回答',
+            'answer_type' => 'text',
+            'sort_order' => 2,
+        ]);
+        QuestionnaireAnswer::query()->create([
+            'question_id' => $unapprovedQuestion->id,
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'source_type' => 'FACT',
+        ]);
+        QuestionnaireAnswer::query()->create([
+            'question_id' => $approvedQuestion->id,
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'approved_by' => $user->id,
+            'approved_at' => now(),
+            'source_type' => 'FACT',
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('未承認の質問票回答を確認する</a>（1件）', false);
     }
 
     /** @return array{0: User, 1: Organization} */

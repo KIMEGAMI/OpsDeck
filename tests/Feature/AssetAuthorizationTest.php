@@ -5,7 +5,9 @@ namespace Tests\Feature;
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Asset;
+use App\Models\AssetAssignment;
 use App\Models\AuditLog;
+use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
@@ -48,6 +50,91 @@ class AssetAuthorizationTest extends TestCase
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
+    }
+
+    public function test_asset_list_filters_remain_scoped_to_the_current_organization(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Viewer);
+        [, $otherOrganization] = $this->member(MembershipRole::Viewer);
+        $localAsset = $this->asset($organization);
+        $otherAsset = $this->asset($otherOrganization);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('assets.index', ['statuses' => [$localAsset->status], 'unassigned' => 1]))
+            ->assertOk()
+            ->assertSee($localAsset->asset_number)
+            ->assertDontSee($otherAsset->asset_number);
+    }
+
+    public function test_asset_list_attention_filter_shows_unassigned_and_former_employee_assets_only(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Viewer);
+        [, $otherOrganization] = $this->member(MembershipRole::Viewer);
+        $unassignedAsset = $this->asset($organization);
+        $formerEmployee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Former employee',
+            'employment_status' => 'retired',
+        ]);
+        $formerEmployeeAsset = $this->asset($organization);
+        $formerEmployeeAsset->update(['status' => config('opsdeck.asset_status.assigned')]);
+        AssetAssignment::query()->create([
+            'organization_id' => $organization->id,
+            'asset_id' => $formerEmployeeAsset->id,
+            'employee_id' => $formerEmployee->id,
+            'assigned_at' => now()->subMonth(),
+        ]);
+        $activeEmployee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Active employee',
+            'employment_status' => config('opsdeck.employee_status.active'),
+        ]);
+        $activeEmployeeAsset = $this->asset($organization);
+        $activeEmployeeAsset->update(['status' => config('opsdeck.asset_status.assigned')]);
+        AssetAssignment::query()->create([
+            'organization_id' => $organization->id,
+            'asset_id' => $activeEmployeeAsset->id,
+            'employee_id' => $activeEmployee->id,
+            'assigned_at' => now()->subMonth(),
+        ]);
+        $retiredAsset = $this->asset($organization);
+        $retiredAsset->update(['status' => 'retired']);
+        $otherOrganizationAsset = $this->asset($otherOrganization);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('assets.index', ['needs_attention' => 1]))
+            ->assertOk()
+            ->assertSee($unassignedAsset->asset_number)
+            ->assertSee($formerEmployeeAsset->asset_number)
+            ->assertDontSee($activeEmployeeAsset->asset_number)
+            ->assertDontSee($retiredAsset->asset_number)
+            ->assertDontSee($otherOrganizationAsset->asset_number);
+    }
+
+    public function test_asset_list_rejects_invalid_attention_filter_values(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Viewer);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->getJson(route('assets.index', ['needs_attention' => 'unexpected']))
+            ->assertUnprocessable();
+    }
+
+    public function test_asset_list_rejects_unknown_status_filters(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Viewer);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->getJson(route('assets.index', ['statuses' => ['unknown-status']]))
+            ->assertUnprocessable();
     }
 
     public function test_viewer_cannot_update_an_asset(): void

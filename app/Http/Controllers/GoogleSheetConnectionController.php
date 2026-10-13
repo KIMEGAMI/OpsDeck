@@ -7,10 +7,12 @@ use App\Models\AuditLog;
 use App\Models\GoogleSheetConnection;
 use App\Models\Organization;
 use App\Services\PlanFeatureService;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
 
@@ -60,14 +62,21 @@ class GoogleSheetConnectionController extends Controller
         }
         abort_unless($request->filled('code'), 422, 'Google OAuth認証コードがありません。');
 
-        $response = Http::asForm()->timeout(10)->post(config('services.google.token_endpoint'), [
-            'code' => $request->string('code')->toString(),
-            'client_id' => config('services.google.client_id'),
-            'client_secret' => config('services.google.client_secret'),
-            'redirect_uri' => config('services.google.redirect_uri'),
-            'grant_type' => 'authorization_code',
-        ]);
-        abort_unless($response->successful() && is_string($response->json('access_token')), 422, 'Google OAuthトークンを取得できませんでした。');
+        try {
+            $response = Http::asForm()->timeout(10)->post(config('services.google.token_endpoint'), [
+                'code' => $request->string('code')->toString(),
+                'client_id' => config('services.google.client_id'),
+                'client_secret' => config('services.google.client_secret'),
+                'redirect_uri' => config('services.google.redirect_uri'),
+                'grant_type' => 'authorization_code',
+            ]);
+        } catch (ConnectionException) {
+            return $this->tokenExchangeFailed();
+        }
+
+        if (! $response->successful() || ! is_string($response->json('access_token'))) {
+            return $this->tokenExchangeFailed($response->status());
+        }
         $expiresIn = max(0, (int) $response->json('expires_in', 3600));
         $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->first();
         GoogleSheetConnection::query()->updateOrCreate(
@@ -118,5 +127,20 @@ class GoogleSheetConnectionController extends Controller
         $organization = $request->attributes->get('currentOrganization');
 
         return $organization;
+    }
+
+    private function tokenExchangeFailed(?int $responseStatus = null): RedirectResponse
+    {
+        $errorReference = (string) Str::uuid();
+
+        Log::warning('Google Sheets OAuth token exchange failed.', [
+            'error_reference' => $errorReference,
+            'response_status' => $responseStatus,
+        ]);
+
+        return to_route('google-sheets.connection')->with([
+            'status' => 'Google Sheets連携を完了できませんでした。時間をおいて再接続してください。',
+            'error_reference' => $errorReference,
+        ]);
     }
 }

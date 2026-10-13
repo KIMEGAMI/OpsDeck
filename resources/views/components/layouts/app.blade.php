@@ -16,6 +16,8 @@
         input, select, textarea { box-sizing: border-box; width: 100%; padding: .65rem; border: 1px solid #486581; border-radius: .25rem; color: #102a43; background: #ffffff; }
         textarea { min-height: 6rem; }
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        .table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+        .table-scroll table { width: max-content; min-width: 100%; }
         th, td { border-bottom: 1px solid #bcccdc; padding: .75rem; text-align: left; }
         button { cursor: pointer; margin-top: 1.25rem; padding: .65rem 1rem; border: 0; border-radius: .25rem; background: #005f73; color: #ffffff; font-weight: 700; }
         a { color: #005f73; font-weight: 700; }

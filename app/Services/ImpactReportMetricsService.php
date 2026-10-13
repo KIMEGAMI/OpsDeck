@@ -41,7 +41,7 @@ class ImpactReportMetricsService
             'monthly_jpy' => $monthlyCostsByCurrency['JPY'] ?? 0.0,
             'import_errors' => (int) ImportBatch::query()->where('organization_id', $organization->id)->whereNull('errors_reviewed_at')->where('status', '!=', 'failed')->sum('error_rows'),
             'import_failed_batches' => (int) ImportBatch::query()->where('organization_id', $organization->id)->whereNull('errors_reviewed_at')->where('status', 'failed')->count(),
-            'questionnaire_pending' => QuestionnaireAnswer::query()->where('answer_status', '!=', 'approved')->whereHas('question.questionnaire', fn ($query) => $query->where('organization_id', $organization->id))->count(),
+            'questionnaire_pending' => QuestionnaireAnswer::query()->whereNull('approved_at')->whereHas('question.questionnaire', fn ($query) => $query->where('organization_id', $organization->id))->count(),
             'asset_attention' => Asset::query()->where('organization_id', $organization->id)->whereNotIn('status', config('opsdeck.asset_non_operational_statuses', []))->where(function ($query): void {
                 $query->whereDoesntHave('assignments', fn ($assignmentQuery) => $assignmentQuery->whereNull('returned_at'))
                     ->orWhereHas('assignments', fn ($assignmentQuery) => $assignmentQuery->whereNull('returned_at')->whereHas('employee', fn ($employeeQuery) => $employeeQuery->where('employment_status', '!=', config('opsdeck.employee_status.active'))));

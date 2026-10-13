@@ -32,15 +32,24 @@
                 <li><a href="{{ route('security-controls.index', ['attention' => 1]) }}">未対応のSecurity Controlを確認する</a>（{{ $metrics['securityOpen'] }}件）</li>
             @endif
             @if ($metrics['assetAttention'] > 0)
-                <li><a href="{{ route('assets.index') }}">未割当または退職者に紐づく資産を確認する</a>（{{ $metrics['assetAttention'] }}件）</li>
+                <li><a href="{{ route('assets.index', ['needs_attention' => 1]) }}">未割当または退職者に紐づく資産を確認する</a>（{{ $metrics['assetAttention'] }}件）</li>
             @endif
             @if ($metrics['saasAttention'] > 0)
-                <li><a href="{{ route('saas-services.index') }}">未割当または退職者に紐づくSaaSを確認する</a>（{{ $metrics['saasAttention'] }}件）</li>
+                <li><a href="{{ route('saas-services.index', ['needs_attention' => 1]) }}">未割当または退職者に紐づくSaaSを確認する</a>（{{ $metrics['saasAttention'] }}件）</li>
             @endif
             @if ($metrics['evidenceExpired'] === 0 && $metrics['renewalAlerts'] === 0 && $metrics['importErrors'] === 0 && $metrics['importFailedBatches'] === 0 && $metrics['securityOpen'] === 0 && $metrics['questionnairePending'] === 0 && $metrics['assetAttention'] === 0 && $metrics['saasAttention'] === 0)
-                <li>現在、優先対応が必要な項目はありません。</li>
+                <li>このプランで確認できる範囲では、優先対応が必要な項目はありません。</li>
             @endif
                 </ol>
+                @if ($hasUnavailablePriorityFeatures)
+                    <p class="muted">更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。
+                        @if ($canManageBilling)
+                            <a href="{{ route('billing.index') }}">プランと料金を確認</a>
+                        @else
+                            プランの確認は組織Ownerにご相談ください。
+                        @endif
+                    </p>
+                @endif
             </section>
             <section class="dashboard-panel" aria-labelledby="attention-title">
                 <h2 id="attention-title">要確認</h2>

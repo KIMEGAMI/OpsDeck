@@ -18,7 +18,9 @@ use App\Models\User;
 use App\Services\Import\GoogleSheetDiffPreviewPreparationService;
 use App\Services\Import\ImportMappingAnalysisService;
 use App\Services\Import\ImportPreviewPreparationService;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -28,6 +30,7 @@ class GoogleSheetConnectionTest extends TestCase
 {
     public function test_free_plan_cannot_open_google_sheets_import(): void
     {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member('free');
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
@@ -76,6 +79,71 @@ class GoogleSheetConnectionTest extends TestCase
         $this->assertSame('access-token', $connection->access_token);
         $this->assertSame('refresh-token', $connection->refresh_token);
         $this->assertNotSame('access-token', $connection->getRawOriginal('access_token'));
+    }
+
+    public function test_callback_connection_failure_redirects_with_safe_recovery_reference(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        config(['services.google.client_id' => 'client-id', 'services.google.client_secret' => 'client-secret']);
+        Log::spy();
+        Http::fake(static function () {
+            throw new ConnectionException('PRIVATE_GOOGLE_ERROR_SENTINEL@example.test');
+        });
+        $state = Str::random(64);
+
+        $response = $this->followingRedirects()->actingAs($user)->withSession([
+            'current_organization_id' => $organization->id,
+            'google_sheets_oauth_state' => ['value' => $state, 'organization_id' => $organization->id],
+        ])->get(route('google-sheets.callback', ['state' => $state, 'code' => 'authorization-code']));
+
+        $response->assertOk()
+            ->assertSee('Google Sheets連携を完了できませんでした。時間をおいて再接続してください。')
+            ->assertSee('Google Sheets連携の復旧ガイド')
+            ->assertDontSee('PRIVATE_GOOGLE_ERROR_SENTINEL@example.test')
+            ->assertDontSee('client-secret');
+
+        preg_match('/照会番号：([0-9a-f-]{36})/i', (string) $response->getContent(), $errorReferenceMatches);
+        $errorReference = $errorReferenceMatches[1] ?? null;
+        $this->assertIsString($errorReference);
+        $this->assertMatchesRegularExpression('/\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/i', $errorReference);
+        $response->assertSee(route('support.create', ['category' => 'other', 'error_reference' => $errorReference]));
+        Log::shouldHaveReceived('warning')->once()->with('Google Sheets OAuth token exchange failed.', [
+            'error_reference' => $errorReference,
+            'response_status' => null,
+        ]);
+        $this->assertDatabaseMissing('google_sheet_connections', ['organization_id' => $organization->id]);
+    }
+
+    public function test_callback_rejected_token_response_redirects_without_exposing_provider_details(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        config(['services.google.client_id' => 'client-id', 'services.google.client_secret' => 'client-secret']);
+        Log::spy();
+        Http::fake(['oauth2.googleapis.com/token' => Http::response([
+            'error' => 'invalid_grant',
+            'error_description' => 'PRIVATE_PROVIDER_RESPONSE_SENTINEL',
+        ], 400)]);
+        $state = Str::random(64);
+
+        $response = $this->followingRedirects()->actingAs($user)->withSession([
+            'current_organization_id' => $organization->id,
+            'google_sheets_oauth_state' => ['value' => $state, 'organization_id' => $organization->id],
+        ])->get(route('google-sheets.callback', ['state' => $state, 'code' => 'authorization-code']));
+
+        $response->assertOk()
+            ->assertSee('Google Sheets連携を完了できませんでした。時間をおいて再接続してください。')
+            ->assertDontSee('PRIVATE_PROVIDER_RESPONSE_SENTINEL');
+
+        preg_match('/照会番号：([0-9a-f-]{36})/i', (string) $response->getContent(), $errorReferenceMatches);
+        $errorReference = $errorReferenceMatches[1] ?? null;
+        $this->assertIsString($errorReference);
+        Log::shouldHaveReceived('warning')->once()->with('Google Sheets OAuth token exchange failed.', [
+            'error_reference' => $errorReference,
+            'response_status' => 400,
+        ]);
+        $this->assertDatabaseMissing('google_sheet_connections', ['organization_id' => $organization->id]);
     }
 
     public function test_operator_can_disconnect_google_sheets_without_logging_oauth_tokens(): void

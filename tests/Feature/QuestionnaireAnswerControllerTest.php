@@ -39,6 +39,34 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $this->assertStringNotContainsString('多要素認証を有効にしています。', json_encode($auditLog->toArray()));
     }
 
+    public function test_operator_cannot_register_an_answer_with_the_approved_status(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $question = $this->question($organization, $user);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaire-answers.store'), [
+            'question_id' => $question->id,
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'source_type' => 'FACT',
+        ])->assertInvalid(['answer_status']);
+
+        $this->assertDatabaseMissing('questionnaire_answers', ['question_id' => $question->id]);
+    }
+
+    public function test_operator_cannot_register_an_answer_with_an_unknown_status(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $question = $this->question($organization, $user);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaire-answers.store'), [
+            'question_id' => $question->id,
+            'answer_status' => 'needs_special_review',
+            'source_type' => 'FACT',
+        ])->assertInvalid(['answer_status']);
+
+        $this->assertDatabaseMissing('questionnaire_answers', ['question_id' => $question->id]);
+    }
+
     public function test_answer_registration_returns_404_for_a_question_in_another_organization(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Operator);
@@ -92,6 +120,44 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $answer->id)->where('action', AuditLog::QuestionnaireAnswerUpdated)->sole();
         $this->assertSame(['changed_fields' => ['answer_text', 'source_type']], $auditLog->after_json);
         $this->assertStringNotContainsString('確認済みの回答案', json_encode($auditLog->toArray()));
+    }
+
+    public function test_operator_cannot_set_the_approved_status_when_updating_an_answer(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $answer = $this->answer($organization, $user);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('questionnaire-answers.update', $answer), [
+                'answer_text' => '未承認の回答',
+                'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+                'source_type' => 'FACT',
+            ])
+            ->assertInvalid(['answer_status']);
+
+        $answer->refresh();
+        $this->assertSame('draft', $answer->answer_status);
+        $this->assertNull($answer->approved_at);
+    }
+
+    public function test_operator_cannot_set_an_unknown_status_when_updating_an_answer(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $answer = $this->answer($organization, $user);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('questionnaire-answers.update', $answer), [
+                'answer_text' => '未承認の回答',
+                'answer_status' => 'needs_special_review',
+                'source_type' => 'FACT',
+            ])
+            ->assertInvalid(['answer_status']);
+
+        $answer->refresh();
+        $this->assertSame(QuestionnaireAnswer::DRAFT_STATUS, $answer->answer_status);
+        $this->assertNull($answer->approved_at);
     }
 
     public function test_viewer_cannot_update_an_answer(): void
@@ -160,6 +226,7 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaire-answers.approve', $answer))->assertRedirect();
 
         $answer->refresh();
+        $this->assertSame(QuestionnaireAnswer::APPROVED_STATUS, $answer->answer_status);
         $this->assertSame($user->id, $answer->approved_by);
         $this->assertNotNull($answer->approved_at);
         $this->assertDatabaseHas('audit_logs', [

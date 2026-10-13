@@ -6,6 +6,7 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Jobs\ExecuteImportBatch;
 use App\Jobs\PrepareImportMappingAnalysis;
+use App\Models\Asset;
 use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Department;
@@ -16,6 +17,7 @@ use App\Models\ImportReviewCandidate;
 use App\Models\ImportRowResult;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\ProductEvent;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireQuestion;
 use App\Models\SaasAssignment;
@@ -280,6 +282,7 @@ class ImportMappingTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.execute', $batch), ['confirm' => '1'])->assertRedirect();
 
         $this->assertDatabaseHas('contracts', ['organization_id' => $organization->id, 'contract_name' => 'Support', 'amount' => 120000]);
+        $this->assertSame(1, ProductEvent::query()->where('organization_id', $organization->id)->where('event_key', 'first_contract_registered')->count());
         $this->assertSame('completed', $batch->refresh()->status);
         $this->assertSame(1, $batch->inserted_rows);
     }
@@ -644,6 +647,45 @@ class ImportMappingTest extends TestCase
         $this->assertSame('completed', $batch->refresh()->status);
         $this->assertSame(1, $batch->inserted_rows);
         $this->assertSame(1, $batch->error_rows);
+        $this->assertSame(1, ProductEvent::query()->where('organization_id', $organization->id)->where('event_key', 'first_asset_registered')->count());
+    }
+
+    public function test_asset_import_that_only_updates_existing_assets_does_not_record_first_registration(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        Asset::query()->create([
+            'organization_id' => $organization->id,
+            'asset_number' => 'PC-UPDATE-001',
+            'asset_type' => 'pc',
+            'model' => '旧モデル',
+            'status' => 'in_stock',
+        ]);
+        $path = 'imports/'.$organization->id.'/assets-update.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, "asset_number,asset_type,model,status\nPC-UPDATE-001,pc,新モデル,in_stock\n");
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'asset update',
+            'source_file_path' => $path,
+            'headers_json' => ['asset_number', 'asset_type', 'model', 'status'],
+            'status' => 'ready',
+        ]);
+        $batch->mappings()->create([
+            'target_type' => 'assets',
+            'column_map' => ['asset_number' => 'asset_number', 'asset_type' => 'asset_type', 'model' => 'model', 'status' => 'status'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+
+        app(ImportBatchExecutionService::class)->execute($batch->id, (int) $user->id, 'ready');
+
+        $this->assertSame(0, $batch->refresh()->inserted_rows);
+        $this->assertSame(1, $batch->updated_rows);
+        $this->assertSame('新モデル', Asset::query()->where('organization_id', $organization->id)->where('asset_number', 'PC-UPDATE-001')->value('model'));
+        $this->assertDatabaseMissing('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_asset_registered']);
     }
 
     public function test_operator_can_execute_a_department_import(): void

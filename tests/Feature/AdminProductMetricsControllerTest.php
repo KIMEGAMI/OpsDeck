@@ -19,13 +19,13 @@ use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
 use App\Models\User;
 use App\Services\ImportFailureMetrics;
-use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class AdminProductMetricsControllerTest extends TestCase
 {
-    use DatabaseTransactions;
+    use RefreshDatabase;
 
     public function test_platform_admin_can_view_event_counts_without_pii(): void
     {
@@ -64,6 +64,7 @@ class AdminProductMetricsControllerTest extends TestCase
             ->assertSee('登録組織数（全期間）</dt><dd>4', false)
             ->assertSee('登録後7日経過</dt><dd>3', false)
             ->assertSee('7日以内に初回Preview到達した組織数</dt><dd>3', false)
+            ->assertSee('7日以内のPreview到達率</dt><dd>100%', false)
             ->assertSee('7日以内に初回Import完了した組織数</dt><dd>2', false)
             ->assertSee('Activation率</dt><dd>66.67%', false)
             ->assertSee('Previewから完了への転換率</dt><dd>66.67%', false)
@@ -178,8 +179,12 @@ class AdminProductMetricsControllerTest extends TestCase
         $this->assertStringContainsString('organizations_at_plan_limit', $response->streamedContent());
         $this->assertStringContainsString('plan_limit_warning_percentage', $response->streamedContent());
         $this->assertStringContainsString('activation_eligible_organizations', $response->streamedContent());
+        $this->assertStringContainsString('preview_activation_rate', $response->streamedContent());
         $this->assertStringContainsString('announcement_delivery_manual_review', $response->streamedContent());
         $this->assertStringContainsString('weekly_summary_delivery_manual_review', $response->streamedContent());
+        $this->assertStringContainsString('invitation_created', $response->streamedContent());
+        $this->assertStringContainsString('invitation_email_delivery_success_rate', $response->streamedContent());
+        $this->assertStringContainsString('invitation_email_manual_review', $response->streamedContent());
     }
 
     public function test_platform_admin_can_view_invitation_conversion_metrics(): void
@@ -192,7 +197,53 @@ class AdminProductMetricsControllerTest extends TestCase
         $joined = ProductEvent::query()->where('event_key', 'member_joined')->count();
         $rate = round(($joined / $sent) * 100, 2);
 
-        $this->actingAs($admin)->get(route('admin.product-metrics'))->assertOk()->assertSee('招待参加転換率：'.$rate.'%');
+        $this->actingAs($admin)->get(route('admin.product-metrics'))
+            ->assertOk()
+            ->assertSee('招待登録から参加への転換率：'.$rate.'%')
+            ->assertSee('メール事業者による配信成功数とは異なります。');
+    }
+
+    public function test_invitation_delivery_metrics_include_only_tracked_outcomes(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-invitation-delivery-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        $organization = Organization::query()->create([
+            'name' => 'Metrics Invitation Delivery',
+            'slug' => 'metrics-invitation-delivery-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        $this->createInvitationDelivery($admin, $organization, 'sent', ['invitation_email_sent_at' => now()]);
+        $this->createInvitationDelivery($admin, $organization, 'failed', ['invitation_email_failed_at' => now()]);
+        $this->createInvitationDelivery($admin, $organization, 'review', [
+            'invitation_email_failed_at' => now(),
+            'invitation_email_manual_review_at' => now(),
+        ]);
+        $this->createInvitationDelivery($admin, $organization, 'unattempted', []);
+        $trackedDeliveries = OrganizationInvitation::query()
+            ->whereNotNull('invitation_email_sent_at')
+            ->orWhereNotNull('invitation_email_failed_at')
+            ->orWhereNotNull('invitation_email_manual_review_at')
+            ->count();
+        $sentDeliveries = OrganizationInvitation::query()->whereNotNull('invitation_email_sent_at')->count();
+        $deliverySuccessRate = round(($sentDeliveries / $trackedDeliveries) * 100, 2);
+        $failedDeliveries = OrganizationInvitation::query()
+            ->whereNotNull('invitation_email_failed_at')
+            ->whereNull('invitation_email_sent_at')
+            ->whereNull('invitation_email_manual_review_at')
+            ->count();
+        $manualReviews = OrganizationInvitation::query()
+            ->whereNotNull('invitation_email_manual_review_at')
+            ->whereNull('invitation_email_sent_at')
+            ->count();
+
+        $this->actingAs($admin)->get(route('admin.product-metrics'))
+            ->assertOk()
+            ->assertSee('招待メール成功率（追跡済み結果）</dt><dd>'.$deliverySuccessRate.'%', false)
+            ->assertSee('招待メール失敗</dt><dd>'.$failedDeliveries, false)
+            ->assertSee('招待メール手動確認</dt><dd>'.$manualReviews, false)
+            ->assertDontSee('metrics-invitation-delivery-');
     }
 
     public function test_platform_admin_can_view_delivery_success_rates(): void
@@ -226,5 +277,18 @@ class AdminProductMetricsControllerTest extends TestCase
             'event_key' => $eventKey,
             'occurred_at' => $occurredAt,
         ]);
+    }
+
+    /** @param array<string, mixed> $deliveryState */
+    private function createInvitationDelivery(User $admin, Organization $organization, string $suffix, array $deliveryState): OrganizationInvitation
+    {
+        return OrganizationInvitation::query()->create(array_merge([
+            'organization_id' => $organization->id,
+            'invited_by' => $admin->id,
+            'email' => 'metrics-invitation-'.$suffix.'-'.Str::uuid().'@example.test',
+            'role' => MembershipRole::Viewer,
+            'token_hash' => hash('sha256', Str::uuid()->toString()),
+            'expires_at' => now()->addDays(config('opsdeck.invitation_expiry_days')),
+        ], $deliveryState));
     }
 }

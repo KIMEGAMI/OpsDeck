@@ -19,7 +19,7 @@
             @foreach ($steps as $step)
                 <li style="margin: .75rem 0">
                     @if ($step['completed'])
-                        <span aria-label="完了">✅</span> <strong>{{ $step['label'] }}</strong>
+                        <span aria-label="完了">✅</span> <a href="{{ route($step['route'], $step['route_parameters']) }}"><strong>{{ $step['label'] }}</strong></a>
                     @else
                         <span aria-label="未完了">⬜</span> <a href="{{ route($step['route'], $step['route_parameters']) }}">{{ $step['label'] }}</a>
                     @endif

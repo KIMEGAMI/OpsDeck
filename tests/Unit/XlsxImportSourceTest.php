@@ -51,6 +51,32 @@ class XlsxImportSourceTest extends TestCase
         }
     }
 
+    public function test_sheet_discovery_does_not_expand_external_xml_entities(): void
+    {
+        $externalEntityContents = 'OPSDECK_EXTERNAL_ENTITY_SENTINEL';
+        $temporaryDirectory = storage_path('framework/testing-xlsx');
+        File::ensureDirectoryExists($temporaryDirectory);
+        $externalEntityPath = tempnam($temporaryDirectory, 'opsdeck-xxe-');
+        $this->assertIsString($externalEntityPath);
+        $this->assertSame(strlen($externalEntityContents), file_put_contents($externalEntityPath, $externalEntityContents));
+        $externalEntityUri = 'file:///'.ltrim(str_replace('\\', '/', $externalEntityPath), '/');
+        $workbookXml = '<!DOCTYPE workbook [<!ENTITY external SYSTEM "'.htmlspecialchars($externalEntityUri, ENT_QUOTES | ENT_XML1).'">]>'
+            .'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="&external;" sheetId="1" r:id="rId1"/></sheets></workbook>';
+        $path = $this->createXlsxFile(array_replace($this->minimalXlsxFiles(''), ['xl/workbook.xml' => $workbookXml]));
+
+        try {
+            try {
+                $sheetNames = (new XlsxImportSource)->sheets($path);
+                $this->assertArrayNotHasKey($externalEntityContents, $sheetNames);
+            } catch (\Throwable $exception) {
+                $this->assertStringNotContainsString($externalEntityContents, $exception->getMessage());
+            }
+        } finally {
+            unlink($path);
+            unlink($externalEntityPath);
+        }
+    }
+
     public function test_it_rejects_xlsx_imports_above_the_shared_row_limit(): void
     {
         config(['opsdeck.import.max_rows' => 1]);
@@ -407,6 +433,18 @@ class XlsxImportSourceTest extends TestCase
             $this->assertSame(['XLSXのXML展開サイズまたは行・列数が上限を超えています。ファイルを分割して再度お試しください。'], $exception->errors()['file']);
         } finally {
             unlink($oversizedCellCountPath);
+        }
+
+        $oversizedSharedStringsPath = $this->createXlsxFile($this->minimalXlsxFiles('<row r="1"><c r="A1" t="s"><v>0</v></c></row>') + [
+            'xl/sharedStrings.xml' => '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Name</t></si><si><t>Unused</t></si></sst>',
+        ]);
+        try {
+            (new XlsxImportSource)->parse($oversizedSharedStringsPath);
+            $this->fail('A shared-string table over the configured cell limit must be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['XLSXのXML展開サイズまたは行・列数が上限を超えています。ファイルを分割して再度お試しください。'], $exception->errors()['file']);
+        } finally {
+            unlink($oversizedSharedStringsPath);
         }
     }
 

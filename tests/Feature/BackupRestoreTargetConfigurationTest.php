@@ -23,6 +23,56 @@ class BackupRestoreTargetConfigurationTest extends TestCase
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
+        $this->assertSame('ready', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+    }
+
+    public function test_target_with_existing_tables_reports_that_it_is_not_empty(): void
+    {
+        $this->configureSafeTarget();
+        $schema = $this->mock(Builder::class);
+        $schema->shouldReceive('getTableListing')->once()->andReturn(['existing_table']);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
+        $this->assertSame('target_not_empty', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+    }
+
+    public function test_unreachable_target_reports_connection_unavailable_without_exception_details(): void
+    {
+        $this->configureSafeTarget();
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once()->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL'));
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
+        $this->assertSame('connection_unavailable', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+    }
+
+    public function test_unsafe_target_reports_unsafe_configuration_without_opening_a_database_connection(): void
+    {
+        $this->configureSafeTarget();
+        config(['database.connections.backup_restore.database' => 'opsdeck']);
+        DB::shouldReceive('connection')->never();
+
+        $this->assertSame('unsafe_configuration', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+        $this->assertSame([
+            'restore_database_name_must_use_reserved_prefix',
+            'restore_database_must_differ_from_application_database',
+        ], app(BackupRestoreTargetConfiguration::class)->configurationIssues());
+    }
+
+    public function test_ready_target_is_reachable_and_empty_legacy_boolean_remains_true(): void
+    {
+        $this->configureSafeTarget();
+        $schema = $this->mock(Builder::class);
+        $schema->shouldReceive('getTableListing')->once()->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->andReturn([]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
         $this->assertTrue(app(BackupRestoreTargetConfiguration::class)->isReadyForRestoreTest());
     }
 
@@ -89,6 +139,10 @@ class BackupRestoreTargetConfigurationTest extends TestCase
         DB::shouldReceive('connection')->never();
 
         $this->assertFalse(app(BackupRestoreTargetConfiguration::class)->isSafelyConfigured());
+        $this->assertContains(
+            'remote_restore_database_requires_verified_tls',
+            app(BackupRestoreTargetConfiguration::class)->configurationIssues(),
+        );
     }
 
     public function test_remote_target_with_server_certificate_verification_enabled_is_safe(): void

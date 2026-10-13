@@ -107,6 +107,26 @@ class GoogleSheetsImportSourceTest extends TestCase
         $this->assertSame(["'社員一覧'!1:2", "'社員一覧'!3:4", "'社員一覧'!5:5"], $requestedRanges);
     }
 
+    public function test_parse_each_rejects_a_sheet_whose_physical_row_count_exceeds_the_configured_limit(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config(['opsdeck.import.max_source_row_number' => 5000]);
+        $organization = Organization::query()->create(['name' => 'Oversized sheet '.Str::random(8), 'slug' => 'oversized-sheet-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $connection = GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'token', 'refresh_token' => 'refresh']);
+        Http::fake(['https://sheets.googleapis.com/v4/spreadsheets/sheet-id*' => Http::response([
+            'sheets' => [['properties' => ['title' => '社員一覧', 'gridProperties' => ['rowCount' => 5001]]]],
+        ], 200)]);
+
+        try {
+            (new GoogleSheetsImportSource)->parseEach($connection, 'sheet-id', '社員一覧', static function (array $row): void {});
+            $this->fail('Sheets above the configured physical row limit must be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['Google Sheetsの読取上限（5000行）を超えています。シートを分割して再度お試しください。'], $exception->errors()['file']);
+        }
+
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/values/'));
+    }
+
     public function test_it_composes_multiple_header_rows_and_starts_data_at_the_selected_row(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

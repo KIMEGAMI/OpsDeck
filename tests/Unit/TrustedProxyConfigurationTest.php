@@ -39,6 +39,8 @@ class TrustedProxyConfigurationTest extends TestCase
             'invalid address' => ['not-an-ip'],
             'invalid IPv4 prefix' => ['192.0.2.0/33'],
             'invalid IPv6 prefix' => ['2001:db8::/129'],
+            'IPv4 all-address CIDR' => ['0.0.0.0/0'],
+            'IPv6 all-address CIDR' => ['::/0'],
             'invalid prefix text' => ['192.0.2.0/network'],
             'multiple separators' => ['192.0.2.0/24/1'],
             'zero string' => ['0'],

@@ -37,7 +37,7 @@ class TrustedProxyConfiguration
                 $prefixLength = preg_match('/\A\d+\z/', $parts[1]) === 1 ? (int) $parts[1] : false;
                 $maximumPrefixLength = strlen($packedAddress) * self::BITS_PER_BYTE;
 
-                if ($prefixLength === false || $prefixLength > $maximumPrefixLength) {
+                if ($prefixLength === false || $prefixLength < 1 || $prefixLength > $maximumPrefixLength) {
                     throw new InvalidArgumentException('Configure trusted proxies with a valid CIDR prefix length.');
                 }
             }

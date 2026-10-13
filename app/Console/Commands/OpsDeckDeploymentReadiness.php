@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Ai\AiModelPricing;
 use App\Services\BackupRestoreTargetConfiguration;
 use App\Services\DatabaseDumpBinaryLocator;
 use App\Services\DatabaseMigrationHealthService;
@@ -33,7 +34,7 @@ use Pheanstalk\Pheanstalk;
 use Predis\Client;
 use Throwable;
 
-#[Signature('opsdeck:deployment-check {--json : Output machine-readable JSON}')]
+#[Signature('opsdeck:deployment-check {--json : Output machine-readable JSON} {--skip-provider-verification : Skip live Resend and Stripe checks and report them as unverified}')]
 #[Description('Check production deployment configuration without revealing secret values.')]
 class OpsDeckDeploymentReadiness extends Command
 {
@@ -68,17 +69,37 @@ class OpsDeckDeploymentReadiness extends Command
 
     private ?bool $resendSendingDomainReadiness = null;
 
+    private ?string $databaseConnectionIssue = null;
+
+    private ?string $backupRestoreTargetIssue = null;
+
+    /** @var list<string> */
+    private array $backupRestoreTargetConfigurationIssues = [];
+
+    /** @var list<string> */
+    private array $queueReadinessIssues = [];
+
     /** @var array<string, Builder> */
     private array $databaseSchemaBuilders = [];
 
-    public function handle(DatabaseDumpBinaryLocator $dumpBinaryLocator, BackupRestoreTargetConfiguration $restoreTargetConfiguration, PhpExtensionReadiness $phpExtensionReadiness, DatabaseMigrationHealthService $migrationHealth): int
+    public function handle(DatabaseDumpBinaryLocator $dumpBinaryLocator, BackupRestoreTargetConfiguration $restoreTargetConfiguration, PhpExtensionReadiness $phpExtensionReadiness, DatabaseMigrationHealthService $migrationHealth, AiModelPricing $aiModelPricing): int
     {
         $this->durableQueueReadiness = null;
         $this->sharedCacheReadiness = null;
         $this->resendSendingDomainReadiness = null;
+        $this->databaseConnectionIssue = null;
+        $this->backupRestoreTargetIssue = null;
+        $this->backupRestoreTargetConfigurationIssues = [];
+        $this->queueReadinessIssues = [];
         $missingPhpExtensions = $phpExtensionReadiness->missingExtensions();
         $databaseConnectionReady = $this->canConnectToDatabase();
         $pendingMigrationCount = $databaseConnectionReady ? $migrationHealth->pendingCount() : null;
+        $skipProviderVerification = (bool) $this->option('skip-provider-verification');
+        $productionMailTransportReady = $skipProviderVerification ? null : $this->hasProductionMailTransport();
+        $this->backupRestoreTargetIssue = $restoreTargetConfiguration->readinessStatus();
+        if ($this->backupRestoreTargetIssue === 'unsafe_configuration') {
+            $this->backupRestoreTargetConfigurationIssues = $restoreTargetConfiguration->configurationIssues();
+        }
         $this->checks = [
             'environment' => app()->environment('production') ? 'pass' : 'fail',
             'app_key' => $this->hasValidApplicationKey() ? 'pass' : 'fail',
@@ -96,30 +117,63 @@ class OpsDeckDeploymentReadiness extends Command
                 : 'unverified',
             'database_backup_tool' => $this->hasDatabaseBackupTool($dumpBinaryLocator) ? 'pass' : 'fail',
             'database_restore_tool' => $this->hasDatabaseRestoreTool($dumpBinaryLocator) ? 'pass' : 'fail',
-            'backup_restore_target' => $restoreTargetConfiguration->isReadyForRestoreTest() ? 'pass' : 'fail',
+            'backup_restore_target' => $this->backupRestoreTargetIssue === 'ready' ? 'pass' : 'fail',
             'queue' => $this->usesDurableQueue() ? 'pass' : 'fail',
             'cache_lock' => $this->usesSharedCache() ? 'pass' : 'fail',
-            'mail' => $this->hasProductionMailTransport() ? 'pass' : 'fail',
-            'failure_alert' => $this->hasProductionFailureAlert() ? 'pass' : 'fail',
-            'stripe' => $this->hasProductionStripeCredentials() ? 'pass' : 'fail',
+            'mail' => $productionMailTransportReady === null ? 'unverified' : ($productionMailTransportReady ? 'pass' : 'fail'),
+            'failure_alert' => $skipProviderVerification
+                ? 'unverified'
+                : ($this->hasProductionFailureAlert($productionMailTransportReady) ? 'pass' : 'fail'),
+            'stripe' => $skipProviderVerification ? 'unverified' : ($this->hasProductionStripeCredentials() ? 'pass' : 'fail'),
             'commercial_information' => app()->environment('production')
                 ? ($this->hasCommercialInformation() ? 'pass' : 'fail')
                 : 'not_applicable',
         ];
         if (config('opsdeck.ai.enabled')) {
-            $this->checks['ai_cost'] = $this->hasAiCostConfiguration() ? 'pass' : 'fail';
+            $this->checks['ai_cost'] = $this->hasAiCostConfiguration($aiModelPricing) ? 'pass' : 'fail';
         }
 
         $ready = ! array_intersect(['fail', 'unverified'], $this->checks);
 
         if ($this->option('json')) {
-            $this->line(json_encode([
+            $output = [
                 'status' => $ready ? 'ready' : 'not_ready',
                 'checks' => $this->checks,
-            ], JSON_THROW_ON_ERROR));
+            ];
+            $diagnostics = [];
+            if ($this->databaseConnectionIssue !== null) {
+                $diagnostics['database_connection'] = $this->databaseConnectionIssue;
+            }
+            if ($this->backupRestoreTargetIssue !== null && $this->backupRestoreTargetIssue !== 'ready') {
+                $diagnostics['backup_restore_target'] = $this->backupRestoreTargetIssue;
+            }
+            if ($this->backupRestoreTargetConfigurationIssues !== []) {
+                $diagnostics['backup_restore_target_issues'] = $this->backupRestoreTargetConfigurationIssues;
+            }
+            if ($missingPhpExtensions !== []) {
+                $diagnostics['php_extensions'] = $missingPhpExtensions;
+            }
+            if ($this->queueReadinessIssues !== []) {
+                $diagnostics['queue'] = $this->queueReadinessIssues;
+            }
+            if ($skipProviderVerification) {
+                $diagnostics['provider_verification'] = [
+                    'status' => 'skipped',
+                    'checks' => ['mail', 'failure_alert', 'stripe'],
+                ];
+            }
+            if ($diagnostics !== []) {
+                $output['diagnostics'] = $diagnostics;
+            }
+
+            $this->line(json_encode($output, JSON_THROW_ON_ERROR));
         } else {
             foreach ($this->checks as $check => $status) {
                 $this->line(sprintf('%s: %s', $check, $status));
+            }
+
+            if ($skipProviderVerification) {
+                $this->line('ResendとStripeの外部検証は省略されました。リリース前に通常の導入チェックを実行してください。');
             }
 
             $this->newLine();
@@ -140,6 +194,12 @@ class OpsDeckDeploymentReadiness extends Command
 
         foreach ($this->checks as $check => $status) {
             if (! in_array($status, ['fail', 'unverified'], true)) {
+                continue;
+            }
+
+            if ($this->option('skip-provider-verification') && in_array($check, ['mail', 'failure_alert', 'stripe'], true)) {
+                $this->line(sprintf('- %s: 外部検証を省略したため未確認です。リリース前に通常の導入チェックを実行してください', $check));
+
                 continue;
             }
 
@@ -165,10 +225,15 @@ class OpsDeckDeploymentReadiness extends Command
                     : '未適用マイグレーションを確認し、対象DBと事前バックアップを確認したうえで php artisan migrate --force を実行する',
                 'database_backup_tool' => 'mysqldump または mariadb-dump を導入し、必要なら OPSDECK_DATABASE_DUMP_DIRECTORY を設定する',
                 'database_restore_tool' => 'mysql または mariadb クライアントと、接頭辞付きの専用復元DB設定を確認する',
-                'backup_restore_target' => 'OPSDECK_BACKUP_RESTORE_DB_*の設定値と接続疎通を確認し、接頭辞 opsdeck_restore_test_ の復元専用DBが空であること、ユーザーと接続ドライバーがアプリDBと分離・一致していることを確認する',
+                'backup_restore_target' => match ($this->backupRestoreTargetIssue) {
+                    'unsafe_configuration' => 'OPSDECK_BACKUP_RESTORE_DB_*を確認する。接頭辞 opsdeck_restore_test_ の専用DB名、アプリDBと異なるユーザー・DB名、アプリと同じMySQL系ドライバー、接続先の安全なTLS設定が必要です',
+                    'connection_unavailable' => '復元専用DBへの接続を確認する。DBサーバーの稼働、接続先、ポート、専用ユーザーの接続権限を確認してください',
+                    'target_not_empty' => '復元専用DBに既存テーブルまたはビューがあります。中身を確認し、専用の空DBを設定してください。このチェックはDBを変更しません',
+                    default => 'OPSDECK_BACKUP_RESTORE_DB_*の設定値と接続疎通を確認し、接頭辞 opsdeck_restore_test_ の復元専用DBが空であることを確認してください',
+                },
                 'queue' => '永続Queueの設定とjobsテーブルを確認し、QUEUE_FAILED_DRIVER=database-uuids / failed_jobsがメインDBにあること、Queue workerの稼働を確認する',
                 'cache_lock' => '共有Cacheの接続、DB利用時はcache/cache_locksテーブルを確認し、一時ロックの取得・解放ができることを確認する',
-                'mail' => 'MAIL_MAILER=resend_idempotent、RESEND_IDEMPOTENT_MAIL_ENABLED=true、送信用RESEND_API_KEY、検査時のみ使うドメイン参照用RESEND_DOMAIN_CHECK_API_KEY、正の整数のRESEND_API_TIMEOUTを設定する。MAIL_FROM_ADDRESSのドメインがResendでverifiedかつsending=enabledであること、送信元アドレスとMAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する',
+                'mail' => 'MAIL_MAILER=resend_idempotent、RESEND_IDEMPOTENT_MAIL_ENABLED=true、送信用RESEND_API_KEY、検査時のみ使うドメイン参照用RESEND_DOMAIN_CHECK_API_KEY、正の整数のRESEND_API_TIMEOUTを設定する。MAIL_FROM_ADDRESSのドメインがResendでverifiedかつsending=enabledであること、送信元アドレスとMAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する。OPSDECK_SUPPORT_EMAILには有効な問い合わせ先を設定し、送信元アドレスとは分ける',
                 'failure_alert' => 'OPSDECK_PLATFORM_ADMIN_EMAILSに有効な管理者メールを設定し、共有Cacheとメール送信設定を確認する',
                 'stripe' => '本番用STRIPE_SECRET / STRIPE_PRICE_PREMIUM / STRIPE_WEBHOOK_SECRETを設定し、Stripe上のPremium Priceが有効なJPY月額価格であることを確認する',
                 'ai_cost' => 'OPSDECK_AI_USD_TO_JPY_RATE と OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS を設定し、利用モデルの入力・出力単価をAI事業者の最新料金表に合わせる',
@@ -179,9 +244,40 @@ class OpsDeckDeploymentReadiness extends Command
             if ($guidance !== null) {
                 $this->line(sprintf('- %s: %s', $check, $guidance));
             }
+
+            if ($check === 'database_connection' && $this->databaseConnectionIssue !== null) {
+                $this->line(sprintf('- database_connection_detail: %s', $this->databaseConnectionIssue));
+            }
+            if ($check === 'backup_restore_target' && $this->backupRestoreTargetIssue !== null) {
+                $this->line(sprintf('- backup_restore_target_detail: %s', $this->backupRestoreTargetIssue));
+                if ($this->backupRestoreTargetConfigurationIssues !== []) {
+                    $this->line(sprintf('- backup_restore_target_issues: %s', implode(', ', $this->backupRestoreTargetConfigurationIssues)));
+                    foreach ($this->backupRestoreTargetConfigurationIssues as $configurationIssue) {
+                        $issueRemediation = $this->backupRestoreTargetIssueRemediation($configurationIssue);
+                        if ($issueRemediation !== null) {
+                            $this->line(sprintf('- backup_restore_target_action: %s', $issueRemediation));
+                        }
+                    }
+                }
+            }
         }
 
         $this->line('秘密値はこのチェックでは表示しません。');
+    }
+
+    private function backupRestoreTargetIssueRemediation(string $configurationIssue): ?string
+    {
+        return match ($configurationIssue) {
+            'restore_connection_not_separate' => 'OPSDECK_BACKUP_RESTORE_CONNECTIONにアプリDBとは別の接続名を設定する',
+            'restore_driver_must_match_mysql_application_driver' => 'OPSDECK_BACKUP_RESTORE_DB_DRIVERをアプリDBと同じmysqlまたはmariadbにする',
+            'restore_database_name_must_use_reserved_prefix' => 'OPSDECK_BACKUP_RESTORE_DB_DATABASEをopsdeck_restore_test_で始まる専用DB名にする',
+            'restore_database_must_differ_from_application_database' => '復元DB名をDB_DATABASEと異なる値にする',
+            'restore_database_user_must_be_dedicated' => 'OPSDECK_BACKUP_RESTORE_DB_USERNAMEにDB_USERNAMEとは別の専用ユーザーを設定する',
+            'restore_database_host_or_socket_is_invalid' => 'OPSDECK_BACKUP_RESTORE_DB_HOSTまたはOPSDECK_BACKUP_RESTORE_DB_SOCKETに有効な接続先を設定する',
+            'restore_database_port_is_invalid' => 'OPSDECK_BACKUP_RESTORE_DB_PORTを有効なポートにする',
+            'remote_restore_database_requires_verified_tls' => 'リモート復元DBではOPSDECK_BACKUP_RESTORE_DB_SSL_CAを設定し、証明書検証を有効にする',
+            default => null,
+        };
     }
 
     private function hasHttpsApplicationUrl(): bool
@@ -359,7 +455,7 @@ class OpsDeckDeploymentReadiness extends Command
             && ! array_key_exists('fragment', $parsedUrl);
     }
 
-    private function hasProductionFailureAlert(): bool
+    private function hasProductionFailureAlert(?bool $mailTransportReady = null): bool
     {
         $adminEmails = config('opsdeck.platform_admin_emails');
         if (! is_array($adminEmails) || $adminEmails === []) {
@@ -372,12 +468,12 @@ class OpsDeckDeploymentReadiness extends Command
             }
         }
 
-        return $this->hasProductionMailTransport()
+        return ($mailTransportReady ?? $this->hasProductionMailTransport())
             && $this->usesSharedCache()
             && $this->isPositiveInteger(config('opsdeck.error_alerts.cooldown_seconds'));
     }
 
-    private function hasAiCostConfiguration(): bool
+    private function hasAiCostConfiguration(AiModelPricing $aiModelPricing): bool
     {
         $exchangeRate = config('opsdeck.ai.usd_to_jpy_rate');
         $premiumBudget = config('opsdeck.ai.monthly_budget_jpy.premium');
@@ -400,12 +496,7 @@ class OpsDeckDeploymentReadiness extends Command
             }
 
             $pricing = $modelPrices[$model] ?? null;
-            if (! is_array($pricing)
-                || ! is_numeric($pricing['input'] ?? null)
-                || ! is_numeric($pricing['output'] ?? null)
-                || (float) $pricing['input'] < 0
-                || (float) $pricing['output'] < 0
-                || ((float) $pricing['input'] === 0.0 && (float) $pricing['output'] === 0.0)) {
+            if (! $aiModelPricing->hasValidRates($pricing)) {
                 return false;
             }
         }
@@ -425,6 +516,10 @@ class OpsDeckDeploymentReadiness extends Command
 
     private function hasPrivateSensitiveFileStorage(): bool
     {
+        if (! $this->backupPathIsOutsidePublicDirectory()) {
+            return false;
+        }
+
         foreach (['opsdeck.import.disk', 'opsdeck.evidence.disk'] as $diskConfigKey) {
             $diskName = config($diskConfigKey);
             if (! is_string($diskName) || trim($diskName) === '') {
@@ -456,6 +551,48 @@ class OpsDeckDeploymentReadiness extends Command
         }
 
         return true;
+    }
+
+    private function backupPathIsOutsidePublicDirectory(): bool
+    {
+        $backupPath = config('opsdeck.backup.path');
+        $publicPath = realpath(public_path());
+        if (! is_string($backupPath)
+            || trim($backupPath) === ''
+            || ! $this->isAbsoluteFilesystemPath($this->normalizeFilesystemPath($backupPath))
+            || ! is_string($publicPath)) {
+            return false;
+        }
+
+        $resolvedBackupPath = realpath($backupPath);
+        if ($resolvedBackupPath === false) {
+            $existingPath = $backupPath;
+            $missingPathSegments = [];
+            while (! is_dir($existingPath)) {
+                $parentPath = dirname($existingPath);
+                if ($parentPath === $existingPath) {
+                    return false;
+                }
+
+                array_unshift($missingPathSegments, basename($existingPath));
+                $existingPath = $parentPath;
+            }
+
+            $resolvedExistingPath = realpath($existingPath);
+            if (! is_string($resolvedExistingPath)) {
+                return false;
+            }
+
+            $resolvedBackupPath = rtrim($resolvedExistingPath, DIRECTORY_SEPARATOR)
+                .DIRECTORY_SEPARATOR
+                .implode(DIRECTORY_SEPARATOR, $missingPathSegments);
+        }
+
+        $normalizedBackupPath = $this->normalizeFilesystemPath($resolvedBackupPath);
+        $normalizedPublicPath = $this->normalizeFilesystemPath($publicPath);
+
+        return $normalizedBackupPath !== $normalizedPublicPath
+            && ! str_starts_with($normalizedBackupPath, $normalizedPublicPath.'/');
     }
 
     /** @param array<string, mixed> $disk */
@@ -561,9 +698,42 @@ class OpsDeckDeploymentReadiness extends Command
             DB::connection()->getPdo();
 
             return true;
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
+            $this->databaseConnectionIssue = $this->classifyDatabaseConnectionIssue($exception);
+
             return false;
         }
+    }
+
+    private function classifyDatabaseConnectionIssue(Throwable $exception): string
+    {
+        do {
+            $exceptionMessage = strtolower($exception->getMessage());
+            if (str_contains($exceptionMessage, 'could not find driver')
+                || str_contains($exceptionMessage, 'driver not found')) {
+                return 'pdo_driver_unavailable';
+            }
+
+            if ($exception instanceof \PDOException) {
+                $driverCode = is_array($exception->errorInfo ?? null)
+                    ? (int) ($exception->errorInfo[1] ?? 0)
+                    : 0;
+                $sqlState = is_array($exception->errorInfo ?? null)
+                    ? (string) ($exception->errorInfo[0] ?? '')
+                    : (string) $exception->getCode();
+
+                return match (true) {
+                    in_array($driverCode, [2002, 2003, 2005], true), str_starts_with($sqlState, '08') => 'endpoint_unreachable',
+                    $driverCode === 1045, $sqlState === '28000' => 'credentials_rejected',
+                    $driverCode === 1049, $sqlState === '3D000' => 'database_not_found',
+                    default => 'unclassified',
+                };
+            }
+
+            $exception = $exception->getPrevious();
+        } while ($exception !== null);
+
+        return 'unclassified';
     }
 
     private function hasDatabaseBackupTool(DatabaseDumpBinaryLocator $dumpBinaryLocator): bool
@@ -590,6 +760,8 @@ class OpsDeckDeploymentReadiness extends Command
 
         $connection = config('queue.connections.'.config('queue.default'));
         if (! is_array($connection)) {
+            $this->queueReadinessIssues = ['queue_connection_missing_or_invalid'];
+
             return $this->durableQueueReadiness = false;
         }
 
@@ -606,11 +778,42 @@ class OpsDeckDeploymentReadiness extends Command
                 && $this->isPositiveInteger($connection['retry_after'] ?? null),
             default => false,
         };
+        if (! $queueIsDurable) {
+            $this->queueReadinessIssues[] = 'queue_connection_not_durable_or_misconfigured';
 
-        return $this->durableQueueReadiness = $queueIsDurable
-            && $this->hasDatabaseFailedJobsStorage()
-            && app(QueueHealthService::class)->importTimeoutStatus() === 'ok'
-            && app(QueueHealthService::class)->workerStatus() === 'ok';
+            return $this->durableQueueReadiness = false;
+        }
+        if (! $this->hasDatabaseFailedJobsStorage()) {
+            $this->queueReadinessIssues[] = 'failed_jobs_storage_not_ready';
+        }
+
+        $queueHealth = app(QueueHealthService::class);
+        try {
+            $importTimeoutStatus = $queueHealth->importTimeoutStatus();
+        } catch (Throwable) {
+            $importTimeoutStatus = 'unknown';
+        }
+        if ($importTimeoutStatus !== 'ok') {
+            $this->queueReadinessIssues[] = match ($importTimeoutStatus) {
+                'invalid', 'not_applicable' => 'queue_job_timeout_configuration_not_ready',
+                default => 'queue_job_timeout_status_unverified',
+            };
+        }
+
+        try {
+            $workerStatus = $queueHealth->workerStatus();
+        } catch (Throwable) {
+            $workerStatus = 'unknown';
+        }
+        if ($workerStatus !== 'ok') {
+            $this->queueReadinessIssues[] = match ($workerStatus) {
+                'stale' => 'queue_worker_heartbeat_missing_or_stale',
+                'invalid', 'not_applicable' => 'durable_queue_worker_required',
+                default => 'queue_worker_status_unverified',
+            };
+        }
+
+        return $this->durableQueueReadiness = $this->queueReadinessIssues === [];
     }
 
     private function hasDatabaseFailedJobsStorage(): bool
@@ -864,11 +1067,30 @@ class OpsDeckDeploymentReadiness extends Command
             && filter_var($fromAddress, FILTER_VALIDATE_EMAIL) !== false
             && is_string($adminFromAddress)
             && filter_var($adminFromAddress, FILTER_VALIDATE_EMAIL) !== false
+            && $this->hasDistinctSupportContact()
             && $this->hasConfiguredMailDeliveryBackoff()
             && config('mail.default') === 'resend_idempotent'
             && $this->hasConfiguredMailTransport('resend_idempotent')
             && $this->hasConfiguredIdempotentResendTransport()
             && $this->hasVerifiedResendSendingDomain();
+    }
+
+    private function hasDistinctSupportContact(): bool
+    {
+        $supportAddress = config('opsdeck.support_email');
+        if (! is_string($supportAddress) || filter_var($supportAddress, FILTER_VALIDATE_EMAIL) === false) {
+            return false;
+        }
+
+        foreach ([config('mail.from.address'), config('opsdeck.admin_mail_from_address')] as $senderAddress) {
+            if (! is_string($senderAddress)
+                || filter_var($senderAddress, FILTER_VALIDATE_EMAIL) === false
+                || strcasecmp($supportAddress, $senderAddress) === 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function hasVerifiedResendSendingDomain(): bool

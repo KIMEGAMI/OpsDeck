@@ -511,7 +511,7 @@ class XlsxImportSource
         $reader = null;
         try {
             if (method_exists(XMLReader::class, 'fromStream')) {
-                $reader = XMLReader::fromStream($stream, null, LIBXML_NONET);
+                $reader = XMLReader::fromStream($stream, null, $this->secureXmlParserOptions());
             } else {
                 $contents = stream_get_contents($stream);
                 if (! is_string($contents)) {
@@ -519,7 +519,7 @@ class XlsxImportSource
                 }
 
                 $reader = new XMLReader;
-                if (! $reader->XML($contents, null, LIBXML_NONET)) {
+                if (! $reader->XML($contents, null, $this->secureXmlParserOptions())) {
                     throw new RuntimeException($errorMessage);
                 }
             }
@@ -542,13 +542,23 @@ class XlsxImportSource
         throw ValidationException::withMessages(['file' => 'XLSXのXML展開サイズまたは行・列数が上限を超えています。ファイルを分割して再度お試しください。']);
     }
 
+    private function secureXmlParserOptions(): int
+    {
+        $options = LIBXML_NONET;
+        if (defined('LIBXML_NO_XXE')) {
+            $options |= (int) constant('LIBXML_NO_XXE');
+        }
+
+        return $options;
+    }
+
     /** @return array<string, string> */
     private function sheetPaths(ZipArchive $archive): array
     {
         $workbookContents = $archive->getFromName('xl/workbook.xml');
         $relationshipsContents = $archive->getFromName('xl/_rels/workbook.xml.rels');
-        $workbook = $workbookContents === false ? false : simplexml_load_string($workbookContents);
-        $relationships = $relationshipsContents === false ? false : simplexml_load_string($relationshipsContents);
+        $workbook = $workbookContents === false ? false : simplexml_load_string($workbookContents, SimpleXMLElement::class, $this->secureXmlParserOptions());
+        $relationships = $relationshipsContents === false ? false : simplexml_load_string($relationshipsContents, SimpleXMLElement::class, $this->secureXmlParserOptions());
         if (! $workbook instanceof SimpleXMLElement || ! $relationships instanceof SimpleXMLElement) {
             throw new RuntimeException('XLSXのシート情報を解析できません。');
         }
@@ -596,7 +606,7 @@ class XlsxImportSource
         if ($contents === false) {
             return [];
         }
-        $xml = simplexml_load_string($contents);
+        $xml = simplexml_load_string($contents, SimpleXMLElement::class, $this->secureXmlParserOptions());
         if (! $xml instanceof SimpleXMLElement) {
             throw new RuntimeException('XLSXのセル書式を解析できません。');
         }
@@ -637,7 +647,7 @@ class XlsxImportSource
     private function uses1904DateSystem(ZipArchive $archive): bool
     {
         $contents = $archive->getFromName('xl/workbook.xml');
-        $xml = $contents === false ? false : simplexml_load_string($contents);
+        $xml = $contents === false ? false : simplexml_load_string($contents, SimpleXMLElement::class, $this->secureXmlParserOptions());
         if (! $xml instanceof SimpleXMLElement) {
             throw new RuntimeException('XLSXのブック設定を解析できません。');
         }
@@ -675,12 +685,16 @@ class XlsxImportSource
             return [];
         }
         $namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+        $maximumSharedStringCount = (int) config('opsdeck.import.xlsx_max_cells');
 
-        return $this->withArchiveEntryReader($archive, 'xl/sharedStrings.xml', function (XMLReader $reader) use ($namespace): array {
+        return $this->withArchiveEntryReader($archive, 'xl/sharedStrings.xml', function (XMLReader $reader) use ($namespace, $maximumSharedStringCount): array {
             $values = [];
             while ($reader->read()) {
                 if ($reader->nodeType !== XMLReader::ELEMENT || $reader->localName !== 'si' || $reader->namespaceURI !== $namespace) {
                     continue;
+                }
+                if (count($values) >= $maximumSharedStringCount) {
+                    $this->rejectOversizedWorksheet();
                 }
 
                 $itemDepth = $reader->depth;

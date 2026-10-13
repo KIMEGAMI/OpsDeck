@@ -11,12 +11,68 @@
                     <li>未使用SaaSの見直し余地：{{ number_format($savingsEstimate['unused_saas_jpy']) }}円</li>
                     <li>未使用端末の見直し余地：{{ number_format($savingsEstimate['unused_assets_jpy']) }}円</li>
                 </ul>
+                @if ($savingsEstimate['renewal_candidates'] !== [])
+                    <h3>更新交渉の候補契約（{{ $savingsEstimate['renewal_candidate_count'] }}件）</h3>
+                    <p class="muted">90日以内に更新・終了予定の、自動更新が有効で解約予定ではないJPY継続契約を表示しています。年間コストに会社別または共通の見直し率を適用した概算です。契約変更・解約は行わず、条件と更新日を担当者が確認してください。</p>
+                    <table>
+                        <thead><tr><th scope="col">契約</th><th scope="col">更新・終了予定日</th><th scope="col">年間コスト</th><th scope="col">見直し余地の概算</th></tr></thead>
+                        <tbody>
+                            @foreach ($savingsEstimate['renewal_candidates'] as $candidate)
+                                <tr>
+                                    <td><a href="{{ route('contracts.show', $candidate['contract_id']) }}">{{ $candidate['vendor_name'] }} — {{ $candidate['contract_name'] }}</a></td>
+                                    <td>{{ $candidate['renewal_date'] }}</td>
+                                    <td>JPY {{ number_format($candidate['annual_cost_jpy'], 2) }}</td>
+                                    <td>{{ number_format($candidate['estimated_savings_jpy']) }}円</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                    @if ($savingsEstimate['renewal_candidate_count'] > count($savingsEstimate['renewal_candidates']))
+                        <p><a href="{{ route('contracts.index') }}">契約一覧ですべて確認</a></p>
+                    @endif
+                @endif
                 <p class="muted">これは登録データと仮定から計算した概算です。実際の削減額ではありません。更新見直し率{{ $savingsEstimate['assumptions']['renewal_rate'] * 100 }}%（{{ $savingsEstimate['assumptions']['renewal_rate_source'] === 'organization' ? '会社別設定' : '共通初期値' }}）、対象端末（{{ implode('・', $savingsEstimate['assumptions']['unused_asset_statuses']) }}）{{ number_format($savingsEstimate['assumptions']['unused_asset_monthly_jpy']) }}円/月（{{ $savingsEstimate['assumptions']['unused_asset_monthly_jpy_source'] === 'organization' ? '会社別設定' : '共通初期値' }}）として算出しています。<a href="{{ route('settings.organization') }}">会社別前提を設定</a></p>
                 @foreach ($savingsEstimate['assumptions']['warnings'] as $warning)
                     <p class="errors" role="alert">{{ $warning }} 設定を確認してください。</p>
                 @endforeach
                 @if ($savingsEstimate['assumptions']['unconverted_foreign_contracts_by_currency'] !== [])
                     <p class="muted">為替レート未設定のため概算に含めていない外貨継続契約：@foreach ($savingsEstimate['assumptions']['unconverted_foreign_contracts_by_currency'] as $currency => $count){{ $currency }}：{{ $count }}件@if (! $loop->last)、@endif @endforeach</p>
+                @endif
+                @if ($savingsEstimate['unused_saas_candidates'] !== [])
+                    <h3>未使用SaaS候補の内訳</h3>
+                    <p class="muted">割当のないサービスに紐づく、解約予定ではないJPYの月次・年次契約を表示しています。利用停止や解約は行わず、契約内容を担当者が確認してください。</p>
+                    <table>
+                        <thead><tr><th scope="col">サービス</th><th scope="col">対象契約</th><th scope="col">年間コストの概算</th></tr></thead>
+                        <tbody>
+                            @foreach ($savingsEstimate['unused_saas_candidates'] as $candidate)
+                                <tr>
+                                    <td><a href="{{ route('saas-services.show', $candidate['service_id']) }}">{{ $candidate['service_name'] }}</a></td>
+                                    <td>{{ implode('、', $candidate['contract_names']) }}</td>
+                                    <td>JPY {{ number_format($candidate['annual_cost_jpy'], 2) }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                @endif
+                @if ($savingsEstimate['unused_asset_candidates'] !== [])
+                    <h3>未使用端末候補の内訳（{{ $savingsEstimate['unused_asset_candidate_count'] }}台）</h3>
+                    <p class="muted">設定対象の状態で、未返却の割当がない端末です。月額前提に基づく概算で、廃棄や割当解除は行いません。担当者が端末の所在・稼働状況を確認してください。</p>
+                    <table>
+                        <thead><tr><th scope="col">資産番号</th><th scope="col">型番</th><th scope="col">状態</th><th scope="col">年間コストの概算</th></tr></thead>
+                        <tbody>
+                            @foreach ($savingsEstimate['unused_asset_candidates'] as $candidate)
+                                <tr>
+                                    <td><a href="{{ route('assets.show', $candidate['asset_id']) }}">{{ $candidate['asset_number'] }}</a></td>
+                                    <td>{{ $candidate['model'] ?: '未設定' }}</td>
+                                    <td>{{ config('opsdeck.cost_savings.unused_asset_statuses.'.$candidate['status'], $candidate['status']) }}</td>
+                                    <td>{{ number_format($candidate['annual_cost_jpy']) }}円</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                    @if ($savingsEstimate['unused_asset_candidate_count'] > count($savingsEstimate['unused_asset_candidates']))
+                        <p><a href="{{ route('assets.index', ['statuses' => array_keys(config('opsdeck.cost_savings.unused_asset_statuses', [])), 'unassigned' => 1]) }}">対象端末をすべて表示</a></p>
+                    @endif
                 @endif
             </section>
         @else

@@ -114,6 +114,18 @@ class BackupHealthService
             return false;
         }
 
+        if (array_key_exists('database_sha256', $manifest)) {
+            $expectedDatabaseChecksum = $manifest['database_sha256'];
+            if (! is_string($expectedDatabaseChecksum) || preg_match('/\A[a-f0-9]{64}\z/', $expectedDatabaseChecksum) !== 1) {
+                return false;
+            }
+
+            $actualDatabaseChecksum = hash_file('sha256', $databasePath);
+            if (! is_string($actualDatabaseChecksum) || ! hash_equals($expectedDatabaseChecksum, $actualDatabaseChecksum)) {
+                return false;
+            }
+        }
+
         $evidenceChecksums = $manifest['evidence_sha256'] ?? null;
         if (array_key_exists('evidence_sha256', $manifest)
             && (! is_array($evidenceChecksums)

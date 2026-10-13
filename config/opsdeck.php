@@ -309,10 +309,10 @@ return [
         'evidence' => [['valid_from', 'valid_until']],
     ],
     'import_samples' => [
-        'employees' => ['headers' => ['employee_number', 'name', 'email', 'employment_status'], 'row' => ['EMP-SAMPLE-001', 'サンプル太郎', 'sample@example.test', 'active']],
-        'assets' => ['headers' => ['asset_number', 'asset_type', 'manufacturer', 'model', 'status'], 'row' => ['AST-SAMPLE-001', 'pc', 'サンプルメーカー', 'サンプルモデル', 'in_stock']],
-        'contracts' => ['headers' => ['vendor_name', 'contract_name', 'billing_cycle', 'amount', 'currency', 'status'], 'row' => ['サンプルベンダー', 'サンプル契約', 'annual', '12000', 'JPY', 'draft']],
-        'saas_services' => ['headers' => ['name', 'vendor', 'status'], 'row' => ['サンプルSaaS', 'サンプルベンダー', 'active']],
+        'employees' => ['headers' => ['employee_number', 'name', 'email', 'employment_status'], 'row' => ['EMP-SAMPLE-001', 'サンプル太郎', 'sample@example.test', 'active'], 'identity_fields' => ['employee_number']],
+        'assets' => ['headers' => ['asset_number', 'asset_type', 'manufacturer', 'model', 'status'], 'row' => ['AST-SAMPLE-001', 'pc', 'サンプルメーカー', 'サンプルモデル', 'in_stock'], 'identity_fields' => ['asset_number']],
+        'contracts' => ['headers' => ['vendor_name', 'contract_name', 'billing_cycle', 'amount', 'currency', 'status'], 'row' => ['サンプルベンダー', 'サンプル契約', 'annual', '12000', 'JPY', 'draft'], 'identity_fields' => ['vendor_name', 'contract_name']],
+        'saas_services' => ['headers' => ['name', 'vendor', 'status'], 'row' => ['サンプルSaaS', 'サンプルベンダー', 'active'], 'identity_fields' => ['name', 'vendor']],
     ],
     'demo_dashboard' => [
         'organization_name' => 'サンプル組織',

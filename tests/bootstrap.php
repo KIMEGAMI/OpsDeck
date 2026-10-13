@@ -7,6 +7,9 @@ $databaseConnection = strtolower((string) getenv('DB_CONNECTION'));
 
 if ($databaseConnection === 'sqlite') {
     $databasePath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-phpunit-'.bin2hex(random_bytes(16)).'.sqlite';
+    if (! touch($databasePath)) {
+        throw new RuntimeException('Unable to initialize isolated SQLite test database.');
+    }
 
     foreach (['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $databasePath] as $name => $value) {
         putenv($name.'='.$value);

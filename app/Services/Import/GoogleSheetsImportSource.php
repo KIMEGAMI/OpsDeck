@@ -81,6 +81,11 @@ class GoogleSheetsImportSource
         $rowCount = $maximumDataRows !== null
             ? $dataStartRowNumber + max(1, $maximumDataRows) - 1
             : ($fetchInChunks ? $this->sheetRowCount($connection, $spreadsheetId, $sheetName) : null);
+        if ($rowCount !== null && $rowCount > $maximumSourceRowNumber) {
+            throw ValidationException::withMessages([
+                'file' => "Google Sheetsの読取上限（{$maximumSourceRowNumber}行）を超えています。シートを分割して再度お試しください。",
+            ]);
+        }
         $chunkSize = $rowCount === null || ! $fetchInChunks
             ? $rowCount
             : max(1, (int) config('opsdeck.import.google_sheets_read_chunk_rows'));

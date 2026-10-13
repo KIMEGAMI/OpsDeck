@@ -68,7 +68,8 @@ class OnboardingControllerTest extends TestCase
         ]);
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
-            ->assertSee('2/7 完了');
+            ->assertSee('2/7 完了')
+            ->assertSee('<a href="'.route('settings.organization').'">', false);
     }
 
     public function test_default_timezone_does_not_mark_organization_settings_as_confirmed(): void
