@@ -185,6 +185,7 @@ class CostDashboardTest extends TestCase
         $saasService = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Unused SaaS '.$suffix, 'status' => 'active']);
         Contract::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $saasService->id, 'vendor_name' => 'SaaS vendor', 'contract_name' => 'Unused annual service', 'contract_type' => 'service', 'billing_cycle' => 'annual', 'amount' => 120000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
         Contract::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $saasService->id, 'vendor_name' => 'Low-cost SaaS vendor', 'contract_name' => 'Unused low-cost service', 'contract_type' => 'service', 'billing_cycle' => 'annual', 'amount' => 1000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
+        $premiumAnnualFeeJpy = (int) config('opsdeck.plans.'.config('opsdeck.premium_plan_code').'.monthly_price_jpy') * ContractMonthlyCostCalculator::MONTHS_PER_YEAR;
 
         $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
@@ -197,7 +198,11 @@ class CostDashboardTest extends TestCase
             ->assertSee('Unused annual service')
             ->assertSee('Unused low-cost service')
             ->assertSee('121,000.00')
-            ->assertSee('更新時の見直し余地：0円');
+            ->assertSee('更新時の見直し余地：0円')
+            ->assertSee('Premium料金との比較（年額・税別）')
+            ->assertSee('Premium年間料金：'.number_format($premiumAnnualFeeJpy).'円')
+            ->assertSee('現在の削減候補額は年間料金を'.number_format(121000 - $premiumAnnualFeeJpy).'円上回る概算です。')
+            ->assertSee('実現済みの削減額や料金回収を保証するものではありません。');
     }
 
     public function test_invalid_savings_assumptions_are_excluded_and_explained(): void
@@ -210,12 +215,14 @@ class CostDashboardTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
         Contract::query()->create(['organization_id' => $organization->id, 'vendor_name' => 'Invalid assumption vendor', 'contract_name' => 'Renewal contract', 'contract_type' => 'service', 'billing_cycle' => 'annual', 'amount' => 120000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
         Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'INVALID-ASSUMPTION-'.$suffix, 'asset_type' => 'pc', 'status' => 'in_stock']);
+        $premiumAnnualFeeJpy = (int) config('opsdeck.plans.'.config('opsdeck.premium_plan_code').'.monthly_price_jpy') * ContractMonthlyCostCalculator::MONTHS_PER_YEAR;
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
             ->assertSee('更新時の見直し余地：0円')
             ->assertSee('未使用端末の見直し余地：0円')
+            ->assertSee('現在の削減候補額は年間料金に'.number_format($premiumAnnualFeeJpy).'円届かない概算です。')
             ->assertSee('更新見直し率の設定が0〜100%の範囲外', false)
             ->assertSee('未使用端末の月額設定が負数', false)
             ->assertSee('role="alert"', false);

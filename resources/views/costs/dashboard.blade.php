@@ -11,6 +11,18 @@
                     <li>未使用SaaSの見直し余地：{{ number_format($savingsEstimate['unused_saas_jpy']) }}円</li>
                     <li>未使用端末の見直し余地：{{ number_format($savingsEstimate['unused_assets_jpy']) }}円</li>
                 </ul>
+                @php($premiumAnnualFeeJpy = (int) config('opsdeck.plans.'.config('opsdeck.premium_plan_code').'.monthly_price_jpy') * \App\Services\ContractMonthlyCostCalculator::MONTHS_PER_YEAR)
+                @php($premiumCoverageDifferenceJpy = $savingsEstimate['annual_total_jpy'] - $premiumAnnualFeeJpy)
+                <section aria-labelledby="premium-cost-comparison-title">
+                    <h3 id="premium-cost-comparison-title">Premium料金との比較（年額・税別）</h3>
+                    <p>Premium年間料金：{{ number_format($premiumAnnualFeeJpy) }}円</p>
+                    @if ($premiumCoverageDifferenceJpy >= 0)
+                        <p>現在の削減候補額は年間料金を{{ number_format($premiumCoverageDifferenceJpy) }}円上回る概算です。</p>
+                    @else
+                        <p>現在の削減候補額は年間料金に{{ number_format(abs($premiumCoverageDifferenceJpy)) }}円届かない概算です。</p>
+                    @endif
+                    <p class="muted">削減候補は登録データと前提に基づく試算で、実現済みの削減額や料金回収を保証するものではありません。Premiumの適用税額を含む料金は申込前にStripe Checkoutで確認してください。</p>
+                </section>
                 @if ($savingsEstimate['renewal_candidates'] !== [])
                     <h3>更新交渉の候補契約（{{ $savingsEstimate['renewal_candidate_count'] }}件）</h3>
                     <p class="muted">90日以内に更新・終了予定の、自動更新が有効で解約予定ではないJPY継続契約を表示しています。年間コストに会社別または共通の見直し率を適用した概算です。契約変更・解約は行わず、条件と更新日を担当者が確認してください。</p>
