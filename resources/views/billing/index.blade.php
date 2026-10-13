@@ -63,16 +63,18 @@
         @endif
         <p class="muted">契約状態の確定はStripe Webhookの受信結果に基づきます。</p>
     </section>
-    <section class="card">
-        <h2>解約理由（任意）</h2>
-        <p class="muted">サービス改善のため、解約を検討・実施した理由を教えてください。Stripeの契約操作はCustomer Portalで行います。</p>
-        <form method="post" action="{{ route('billing.cancellation-feedback.store') }}">
-            @csrf
-            <label for="reason">理由</label>
-            <select id="reason" name="reason" required><option value="price">価格</option><option value="missing_feature">必要な機能がない</option><option value="not_using">利用頻度が低い</option><option value="support">サポート</option><option value="security">セキュリティ</option><option value="other">その他</option></select>
-            <label for="details">補足（任意）</label>
-            <textarea id="details" name="details" maxlength="2000"></textarea>
-            <button type="submit">送信</button>
-        </form>
-    </section>
+    @if ($canSubmitCancellationFeedback)
+        <section class="card">
+            <h2>解約理由（任意）</h2>
+            <p class="muted">サービス改善のため、解約を検討・実施した理由を教えてください。Stripeの契約操作はCustomer Portalで行います。</p>
+            <form method="post" action="{{ route('billing.cancellation-feedback.store') }}">
+                @csrf
+                <label for="reason">理由</label>
+                <select id="reason" name="reason" required><option value="price">価格</option><option value="missing_feature">必要な機能がない</option><option value="not_using">利用頻度が低い</option><option value="support">サポート</option><option value="security">セキュリティ</option><option value="other">その他</option></select>
+                <label for="details">補足（任意）</label>
+                <textarea id="details" name="details" maxlength="2000"></textarea>
+                <button type="submit">送信</button>
+            </form>
+        </section>
+    @endif
 </x-layouts.app>

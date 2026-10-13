@@ -12,15 +12,62 @@ use Tests\TestCase;
 
 class CancellationFeedbackControllerTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+    }
+
     public function test_owner_can_submit_cancellation_feedback(): void
     {
         $suffix = Str::lower(Str::random(8));
         $user = User::factory()->create(['email' => 'cancel-'.$suffix.'@example.test']);
-        $organization = Organization::query()->create(['name' => 'Cancel '.$suffix, 'slug' => 'cancel-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $organization = Organization::query()->create(['name' => 'Cancel '.$suffix, 'slug' => 'cancel-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('billing.cancellation-feedback.store'), ['reason' => 'price', 'details' => '予算見直し']);
 
         $response->assertRedirect(route('billing.index'));
         $this->assertDatabaseHas('cancellation_feedback', ['organization_id' => $organization->id, 'reason' => 'price']);
+    }
+
+    public function test_free_organization_cannot_submit_cancellation_feedback(): void
+    {
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'cancel-free-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Cancel Free '.$suffix, 'slug' => 'cancel-free-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.cancellation-feedback.store'), ['reason' => 'price'])
+            ->assertForbidden();
+
+        $this->assertDatabaseMissing('cancellation_feedback', ['organization_id' => $organization->id]);
+    }
+
+    public function test_cancellation_feedback_is_shown_only_for_current_or_former_subscriptions(): void
+    {
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'cancel-view-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Cancel View '.$suffix, 'slug' => 'cancel-view-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($user)->withSession($session)
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertDontSee('解約理由（任意）');
+
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        $this->actingAs($user)->withSession($session)
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertSee('解約理由（任意）');
+
+        $organization->update(['plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => 'cancelled']);
+        $this->actingAs($user)->withSession($session)
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertSee('解約理由（任意）');
     }
 }

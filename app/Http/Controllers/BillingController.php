@@ -31,6 +31,7 @@ class BillingController extends Controller
         }
         $failedStripeEvent = $failedStripeEventQuery->orderByDesc('stripe_created_at')->first();
         $effectivePlanCode = app(PlanAccessService::class)->effectivePlanCode($organization);
+        $canSubmitCancellationFeedback = in_array($organization->billing_status, ['active', 'trialing', 'past_due', 'cancelled'], true);
         $billingGraceDeadline = null;
         if ($organization->billing_status === 'past_due') {
             $pastDueSince = $organization->billing_past_due_since;
@@ -47,7 +48,7 @@ class BillingController extends Controller
             }
         }
 
-        return view('billing.index', compact('organization', 'effectivePlanCode', 'billingGraceDeadline', 'failedStripeEvent'));
+        return view('billing.index', compact('organization', 'effectivePlanCode', 'billingGraceDeadline', 'failedStripeEvent', 'canSubmitCancellationFeedback'));
     }
 
     public function checkout(Request $request): RedirectResponse|Response

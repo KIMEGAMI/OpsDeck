@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Organization;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -13,7 +14,11 @@ class StoreCancellationFeedbackRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return $this->user()?->can('manageBilling', $this->attributes->get('currentOrganization')) === true;
+        $organization = $this->attributes->get('currentOrganization');
+
+        return $organization instanceof Organization
+            && $this->user()?->can('manageBilling', $organization) === true
+            && in_array($organization->billing_status, ['active', 'trialing', 'past_due', 'cancelled'], true);
     }
 
     /**
