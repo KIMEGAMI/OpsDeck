@@ -33,6 +33,18 @@ class HelpControllerTest extends TestCase
             ->assertSee('support@kimegami.jp')
             ->assertSee('mailto:support@kimegami.jp')
             ->assertSee('info@kimegami.jp')
-            ->assertSee('配信停止');
+            ->assertSee('配信停止')
+            ->assertSee('Free / Premium の違い')
+            ->assertSee('Premiumの適用税額を含むお支払い総額');
+
+        foreach (config('opsdeck.plans') as $plan) {
+            $response->assertSee($plan['label']);
+            foreach ($plan['features'] as $feature) {
+                $response->assertSee($feature);
+            }
+        }
+
+        $response->assertSee('月額'.number_format((int) config('opsdeck.plans.premium.monthly_price_jpy')).'円（税別）')
+            ->assertSee('社員'.number_format((int) config('opsdeck.plans.free.limits.employees')).'名');
     }
 }
