@@ -81,7 +81,26 @@ jobs:
             if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
             sleep 1
           done
-          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+          health_json="$(php artisan opsdeck:health --json --strict)"
+          if ! printf '%s\n' "$health_json" | jq -e '
+            .status == "ok"
+            and .database == "ok"
+            and .backup == "ok"
+            and .scheduler_heartbeat == "ok"
+            and .queue_failed_jobs == 0
+            and .stale_queue_jobs == 0
+            and .queue_backlog_status == "ok"
+            and .queue_timeout_status == "ok"
+            and .queue_worker_status == "ok"
+            and .webhook_errors == 0
+            and .stale_webhooks == 0
+            and .stale_import_batches == 0
+            and .backup_restore_test == "not_applicable"
+            and (.platform_storage_needs_attention // false) == false
+          ' >/dev/null; then
+            printf 'Unexpected OpsDeck health report: %s\n' "$health_json"
+            exit 1
+          fi
 
       - name: Run tests
         run: php artisan test --compact
@@ -188,7 +207,26 @@ jobs:
             if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
             sleep 1
           done
-          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+          health_json="$(php artisan opsdeck:health --json --strict)"
+          if ! printf '%s\n' "$health_json" | jq -e '
+            .status == "ok"
+            and .database == "ok"
+            and .backup == "ok"
+            and .scheduler_heartbeat == "ok"
+            and .queue_failed_jobs == 0
+            and .stale_queue_jobs == 0
+            and .queue_backlog_status == "ok"
+            and .queue_timeout_status == "ok"
+            and .queue_worker_status == "ok"
+            and .webhook_errors == 0
+            and .stale_webhooks == 0
+            and .stale_import_batches == 0
+            and .backup_restore_test == "not_applicable"
+            and (.platform_storage_needs_attention // false) == false
+          ' >/dev/null; then
+            printf 'Unexpected OpsDeck health report: %s\n' "$health_json"
+            exit 1
+          fi
 
       - name: Run tests against MySQL
         env:
@@ -298,7 +336,26 @@ jobs:
             if php artisan opsdeck:health --json | grep -q '"queue_worker_status":"ok"'; then break; fi
             sleep 1
           done
-          test "$(php artisan opsdeck:health --json --strict | tr -d '\r')" = '{"status":"ok","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_backlog_status":"ok","queue_timeout_status":"ok","queue_worker_status":"ok","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"not_applicable"}'
+          health_json="$(php artisan opsdeck:health --json --strict)"
+          if ! printf '%s\n' "$health_json" | jq -e '
+            .status == "ok"
+            and .database == "ok"
+            and .backup == "ok"
+            and .scheduler_heartbeat == "ok"
+            and .queue_failed_jobs == 0
+            and .stale_queue_jobs == 0
+            and .queue_backlog_status == "ok"
+            and .queue_timeout_status == "ok"
+            and .queue_worker_status == "ok"
+            and .webhook_errors == 0
+            and .stale_webhooks == 0
+            and .stale_import_batches == 0
+            and .backup_restore_test == "not_applicable"
+            and (.platform_storage_needs_attention // false) == false
+          ' >/dev/null; then
+            printf 'Unexpected OpsDeck health report: %s\n' "$health_json"
+            exit 1
+          fi
 
       - name: Run tests against MariaDB
         env:
