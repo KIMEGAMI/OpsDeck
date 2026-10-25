@@ -2,29 +2,78 @@
 
 namespace Tests\Feature\Feature\Auth;
 
+use App\Mail\PrivacySafeLogMailTransport;
 use App\Mail\ResendIdempotentTransport;
 use App\Models\User;
 use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
-use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Mail\Message;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
+use Symfony\Component\Mailer\Exception\TransportException;
 use Symfony\Component\Mime\Email;
 use Tests\TestCase;
 
 class PasswordResetTest extends TestCase
 {
-    use DatabaseTransactions;
+    use RefreshDatabase;
+
+    public function test_production_log_mailer_rejects_messages_without_logging_the_contents(): void
+    {
+        Log::spy();
+        app()['env'] = 'production';
+
+        foreach (['log', 'Log'] as $transport) {
+            config(['mail.mailers.log.transport' => $transport]);
+            Mail::purge('log');
+
+            try {
+                Mail::mailer('log')->raw('sensitive-reset-token-marker', static function (Message $message): void {
+                    $message->to('private-recipient@example.test');
+                });
+
+                $this->fail('The production log mailer must reject messages.');
+            } catch (TransportException $exception) {
+                $this->assertSame(
+                    'Mail delivery is disabled for the production log transport.',
+                    $exception->getMessage(),
+                );
+            } finally {
+                Mail::purge('log');
+            }
+        }
+
+        Log::shouldNotHaveReceived('debug');
+    }
+
+    public function test_non_production_log_mailer_suppresses_messages_without_logging_personal_content(): void
+    {
+        Log::spy();
+        app()['env'] = 'testing';
+        config(['mail.mailers.log.transport' => 'Log']);
+        Mail::purge('log');
+
+        Mail::mailer('log')->raw('sensitive-reset-token-marker', static function (Message $message): void {
+            $message->to('private-recipient@example.test');
+        });
+
+        $this->assertInstanceOf(PrivacySafeLogMailTransport::class, Mail::mailer('log')->getSymfonyTransport());
+        Log::shouldNotHaveReceived('debug');
+    }
 
     public function test_guest_can_open_the_password_reset_request_page(): void
     {
         $this->get(route('password.request'))
             ->assertOk()
+            ->assertSee('class="card auth-card"', false)
             ->assertSee('パスワードをお忘れの場合')
             ->assertSee(route('login'));
     }
@@ -101,9 +150,14 @@ class PasswordResetTest extends TestCase
 
         $this->get(route('password.reset', ['token' => $token, 'email' => $user->email]))
             ->assertOk()
+            ->assertSee('class="card auth-card"', false)
             ->assertSee('新しいパスワードを設定')
             ->assertSee('name="token" value="'.$token.'"', false)
-            ->assertSee('value="'.$user->email.'"', false);
+            ->assertSee('value="'.$user->email.'"', false)
+            ->assertSee('aria-controls="password"', false)
+            ->assertSee('aria-controls="password_confirmation"', false)
+            ->assertSee('aria-label="新しいパスワードを表示"', false)
+            ->assertSee('aria-label="新しい確認用パスワードを表示"', false);
     }
 
     public function test_valid_token_resets_the_password_and_cannot_be_reused(): void

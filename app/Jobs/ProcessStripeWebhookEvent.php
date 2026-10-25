@@ -27,7 +27,7 @@ class ProcessStripeWebhookEvent implements ShouldBeEncrypted, ShouldBeUnique, Sh
 
     public function uniqueId(): string
     {
-        return (string) $this->eventRecordId;
+        return hash_hmac('sha256', (string) $this->eventRecordId, (string) config('app.key'));
     }
 
     public function uniqueFor(): int

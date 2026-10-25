@@ -1,0 +1,30 @@
+- generic [active] [ref=f11e1]:
+  - banner [ref=f11e2]:
+    - strong [ref=f11e4]: OpsDeck
+  - main [ref=f11e5]:
+    - region [ref=f11e6]:
+      - heading "OpsDeckを始める" [level=1] [ref=f11e7]
+      - paragraph [ref=f11e8]: 登録後、社員・端末・SaaS・契約の移行を順に進められます。
+      - paragraph [ref=f11e9]:
+        - text: 登録する前に、
+        - link "利用規約" [ref=f11e10] [cursor=pointer]:
+          - /url: http://localhost:8007/terms
+        - text: と
+        - link "プライバシーポリシー" [ref=f11e11] [cursor=pointer]:
+          - /url: http://localhost:8007/privacy
+        - text: をご確認ください。
+      - generic [ref=f11e12]:
+        - generic [ref=f11e13]: 会社名
+        - textbox "会社名" [ref=f11e14]
+        - generic [ref=f11e15]: 氏名
+        - textbox "氏名" [ref=f11e16]
+        - generic [ref=f11e17]: メールアドレス
+        - textbox "メールアドレス" [ref=f11e18]
+        - generic [ref=f11e19]: パスワード
+        - textbox "パスワード" [ref=f11e20]
+        - generic [ref=f11e21]: パスワード（確認）
+        - textbox "パスワード（確認）" [ref=f11e22]
+        - button "組織を作成して開始" [ref=f11e23] [cursor=pointer]
+      - paragraph [ref=f11e24]:
+        - link "すでにアカウントをお持ちの場合" [ref=f11e25] [cursor=pointer]:
+          - /url: http://localhost:8007/login

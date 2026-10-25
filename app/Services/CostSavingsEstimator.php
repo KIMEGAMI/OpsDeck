@@ -46,7 +46,14 @@ class CostSavingsEstimator
         $today = CarbonImmutable::today($organization->timezone);
         $unusedSaasServices = SaasService::query()
             ->where('organization_id', $organization->id)
-            ->whereDoesntHave('assignments', fn ($query) => $query->whereNull('ended_at'))
+            ->whereDoesntHave('assignments', fn ($query) => $query
+                ->whereNull('ended_at')
+                ->where(function ($query) use ($organization): void {
+                    $query->whereNull('employee_id')
+                        ->orWhereHas('employee', fn ($employeeQuery) => $employeeQuery
+                            ->where('organization_id', $organization->id)
+                            ->where('employment_status', config('opsdeck.employee_status.active')));
+                }))
             ->with(['contracts' => fn ($query) => $query
                 ->where('organization_id', $organization->id)
                 ->where('status', 'active')

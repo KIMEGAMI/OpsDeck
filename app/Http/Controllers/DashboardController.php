@@ -9,6 +9,7 @@ use App\Models\Employee;
 use App\Models\Evidence;
 use App\Models\ImportBatch;
 use App\Models\Organization;
+use App\Models\ProductEvent;
 use App\Models\QuestionnaireAnswer;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
@@ -38,16 +39,18 @@ class DashboardController extends Controller
         $today = CarbonImmutable::today($organization->timezone);
         $renewalWindow = app(ContractRenewalWindow::class);
         $renewalAlerts = $contracts->filter(function (Contract $contract) use ($today, $renewalWindow): bool {
-            return $renewalWindow->dateOnOrBefore($contract, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)) !== null;
+            return $renewalWindow->reminderDateOnOrBefore($contract, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)) !== null;
         })->count();
         $metrics['contracts'] = $contracts->count();
         $metrics['monthlyJpy'] = $monthlyCalculator->currencyUnitsFromCents($monthlyCents);
+        $monthlyJpyDisplayDecimals = $monthlyCents % ContractMonthlyCostCalculator::CENTS_PER_CURRENCY_UNIT === 0 ? 0 : 2;
         $planFeatures = [
             'renewal_alerts' => app(PlanFeatureService::class)->isAvailable($organization, 'renewal_alerts'),
             'security_controls' => app(PlanFeatureService::class)->isAvailable($organization, 'security_controls'),
             'evidence' => app(PlanFeatureService::class)->isAvailable($organization, 'evidence'),
             'questionnaires' => app(PlanFeatureService::class)->isAvailable($organization, 'questionnaires'),
             'impact_report' => app(PlanFeatureService::class)->isAvailable($organization, 'impact_report'),
+            'referrals' => app(PlanFeatureService::class)->isAvailable($organization, 'referrals'),
         ];
         $hasUnavailablePriorityFeatures = ! $planFeatures['renewal_alerts']
             || ! $planFeatures['security_controls']
@@ -64,10 +67,15 @@ class DashboardController extends Controller
         $metrics['saasAttention'] = SaasService::query()->where('organization_id', $organization->id)->needsAttention()->count();
         $metrics['limitWarnings'] = array_values(array_filter(app(PlanUsageService::class)->forOrganization($organization), fn (array $usage): bool => $usage['status'] !== '通常'));
         $userId = $request->user()->id;
+        $showOnboardingPanel = in_array($request->attributes->get('currentMembership')?->role?->value, ['owner', 'admin'], true);
+        $hasCompletedOnboarding = $showOnboardingPanel && ProductEvent::query()
+            ->where('organization_id', $organization->id)
+            ->where('event_key', 'onboarding_completed')
+            ->exists();
         $announcements = Announcement::query()->whereNotNull('published_at')->where('published_at', '<=', now())->where(function ($query) use ($organization): void {
             $query->whereDoesntHave('organizations')->orWhereHas('organizations', fn ($organizationQuery) => $organizationQuery->whereKey($organization->id));
         })->with(['reads' => fn ($query) => $query->where('user_id', $userId)])->latest('published_at')->limit(config('opsdeck.pagination.per_page'))->get();
 
-        return view('dashboard', compact('organization', 'metrics', 'announcements', 'planFeatures', 'hasUnavailablePriorityFeatures', 'canManageBilling'));
+        return view('dashboard', compact('organization', 'metrics', 'announcements', 'planFeatures', 'hasUnavailablePriorityFeatures', 'canManageBilling', 'monthlyJpyDisplayDecimals', 'showOnboardingPanel', 'hasCompletedOnboarding'));
     }
 }

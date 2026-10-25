@@ -15,6 +15,14 @@ use Tests\TestCase;
 
 class ResendMailTransportTest extends TestCase
 {
+    public function test_resend_api_uses_existing_mail_password_for_credentials(): void
+    {
+        $smtpPassword = config('mail.mailers.smtp.password');
+
+        $this->assertSame($smtpPassword, config('mail.mailers.resend_idempotent.key'));
+        $this->assertSame($smtpPassword, config('services.resend.key'));
+    }
+
     public function test_resend_api_receives_the_same_key_and_payload_for_retries(): void
     {
         Http::preventStrayRequests();
@@ -40,6 +48,28 @@ class ResendMailTransportTest extends TestCase
             && $request->data()['subject'] === 'メンテナンス'
             && str_contains($request->data()['html'], '作業予定をお知らせします。')
             && ! array_key_exists(ResendIdempotentTransport::IDEMPOTENCY_HEADER, $request->data()['headers']));
+    }
+
+    public function test_default_mailer_uses_resend_api_when_idempotent_delivery_is_enabled(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['https://api.resend.com/emails' => Http::response(['id' => 'resend-message-id'])]);
+        config([
+            'mail.default' => 'resend_idempotent',
+            'mail.mailers.resend_idempotent.enabled' => true,
+            'mail.mailers.resend_idempotent.key' => Str::random(),
+            'mail.mailers.resend_idempotent.timeout' => 5,
+        ]);
+        $idempotencyKey = 'email-verification/user-123';
+
+        Mail::to('recipient@example.test')->send(new AnnouncementMail(
+            new Announcement(['title' => '確認', 'body' => '既定経路の確認です。']),
+            $idempotencyKey,
+        ));
+
+        Http::assertSentCount(1);
+        Http::assertSent(static fn (Request $request): bool => $request->url() === 'https://api.resend.com/emails'
+            && $request->hasHeader('Idempotency-Key', $idempotencyKey));
     }
 
     public function test_resend_transport_rejects_messages_without_a_stable_idempotency_key(): void
@@ -78,6 +108,26 @@ class ResendMailTransportTest extends TestCase
             'content_type' => 'text/calendar',
             'content' => base64_encode($calendarContent),
             'filename' => 'event.ics',
+        ]]);
+    }
+
+    public function test_resend_transport_base64_encodes_binary_attachment_content(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['https://api.resend.com/emails' => Http::response(['id' => 'resend-message-id'])]);
+        config(['mail.mailers.resend_idempotent.key' => Str::random(48)]);
+        $binaryContent = "%PDF-1.7\0\xFF\r\nOpsDeck report";
+        $mail = (new AnnouncementMail(
+            new Announcement(['title' => 'レポート', 'body' => '添付を確認してください。']),
+            'announcement-delivery/report',
+        ))->attachData($binaryContent, 'report.pdf', ['mime' => 'application/pdf']);
+
+        Mail::mailer('resend_idempotent')->to('recipient@example.test')->send($mail);
+
+        Http::assertSent(static fn (Request $request): bool => $request->data()['attachments'] === [[
+            'content_type' => 'application/pdf',
+            'content' => base64_encode($binaryContent),
+            'filename' => 'report.pdf',
         ]]);
     }
 

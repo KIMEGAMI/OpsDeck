@@ -1,5 +1,33 @@
 <?php
 
+use App\Services\R2UploadCommandOptions;
+
+$opsDeckObjectsDisk = env('APP_ENV') === 'production'
+    ? [
+        'driver' => env('OPSDECK_STORAGE_DRIVER', 's3'),
+        'key' => env('OPSDECK_STORAGE_KEY', env('OPSDECK_OBJECT_STORAGE_KEY')),
+        'secret' => env('OPSDECK_STORAGE_SECRET', env('OPSDECK_OBJECT_STORAGE_SECRET')),
+        'region' => env('OPSDECK_STORAGE_REGION', env('OPSDECK_OBJECT_STORAGE_REGION')),
+        'bucket' => env('OPSDECK_STORAGE_BUCKET', env('OPSDECK_OBJECT_STORAGE_BUCKET')),
+        'endpoint' => env('OPSDECK_STORAGE_ENDPOINT', env('OPSDECK_OBJECT_STORAGE_ENDPOINT')),
+        'use_path_style_endpoint' => env('OPSDECK_STORAGE_PATH_STYLE', env('OPSDECK_OBJECT_STORAGE_PATH_STYLE', true)),
+        'visibility' => 'private',
+        'options' => [
+            'before_upload' => [R2UploadCommandOptions::class, 'removeUnsupportedAcl'],
+            'mup_threshold' => PHP_INT_MAX,
+        ],
+        'throw' => true,
+        'report' => false,
+    ]
+    : [
+        'driver' => 'local',
+        'root' => storage_path('app/private'),
+        'visibility' => 'private',
+        'directory_visibility' => 'private',
+        'throw' => true,
+        'report' => false,
+    ];
+
 return [
 
     /*
@@ -57,6 +85,42 @@ return [
             'endpoint' => env('AWS_ENDPOINT'),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
+            'report' => false,
+        ],
+
+        'opsdeck_objects' => $opsDeckObjectsDisk,
+
+        'opsdeck_objects_test' => [
+            'driver' => env('OPSDECK_TEST_STORAGE_DRIVER', 's3'),
+            'key' => env('OPSDECK_TEST_STORAGE_KEY'),
+            'secret' => env('OPSDECK_TEST_STORAGE_SECRET'),
+            'region' => env('OPSDECK_TEST_STORAGE_REGION', 'auto'),
+            'bucket' => env('OPSDECK_TEST_STORAGE_BUCKET'),
+            'endpoint' => env('OPSDECK_TEST_STORAGE_ENDPOINT'),
+            'use_path_style_endpoint' => env('OPSDECK_TEST_STORAGE_PATH_STYLE', true),
+            'visibility' => 'private',
+            'options' => [
+                'before_upload' => [R2UploadCommandOptions::class, 'removeUnsupportedAcl'],
+                'mup_threshold' => PHP_INT_MAX,
+            ],
+            'throw' => true,
+            'report' => false,
+        ],
+
+        'opsdeck_backups' => [
+            'driver' => env('OPSDECK_BACKUP_STORAGE_DRIVER', 's3'),
+            'key' => env('OPSDECK_BACKUP_STORAGE_KEY'),
+            'secret' => env('OPSDECK_BACKUP_STORAGE_SECRET'),
+            'region' => env('OPSDECK_BACKUP_STORAGE_REGION', 'auto'),
+            'bucket' => env('OPSDECK_BACKUP_STORAGE_BUCKET'),
+            'endpoint' => env('OPSDECK_BACKUP_STORAGE_ENDPOINT'),
+            'use_path_style_endpoint' => env('OPSDECK_BACKUP_STORAGE_PATH_STYLE', true),
+            'visibility' => 'private',
+            'options' => [
+                'before_upload' => [R2UploadCommandOptions::class, 'removeUnsupportedAcl'],
+                'mup_threshold' => PHP_INT_MAX,
+            ],
+            'throw' => true,
             'report' => false,
         ],
 

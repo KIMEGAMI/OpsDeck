@@ -19,8 +19,13 @@ use App\Services\ContractRenewalWindow;
 use App\Services\WeeklySummaryBuilder;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\UniqueLock;
+use Illuminate\Console\Scheduling\Event;
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
@@ -37,24 +42,36 @@ class WeeklySummaryControllerTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
     }
 
+    public function test_weekly_summary_command_is_scheduled_for_monday_morning(): void
+    {
+        $event = collect(app(Schedule::class)->events())
+            ->first(static fn (Event $event): bool => str_contains((string) $event->command, 'opsdeck:weekly-summaries'));
+
+        $this->assertNotNull($event);
+        $this->assertSame('0 9 * * 1', $event->expression);
+    }
+
     public function test_member_can_view_summary_and_disable_delivery(): void
     {
         [$user, $organization] = $this->member();
         $session = ['current_organization_id' => $organization->id];
         $this->actingAs($user)->withSession($session)->get(route('weekly-summary.show'))
             ->assertOk()
-            ->assertSee('週次サマリー')
-            ->assertSee('週次サマリーを受け取る')
+            ->assertSee('直近7日間のまとめとメール設定')
+            ->assertSee('週1回のまとめメールを受け取る')
             ->assertSee('管理者のお知らせメールを受け取る')
-            ->assertSee('期間中に発生したこと')
-            ->assertSee('集計時点で対応が必要な項目')
-            ->assertSee('発生状況の集計期間：')
-            ->assertSee('Import実行失敗')
+            ->assertSee('メールが届かないときの確認方法')
+            ->assertSee(route('help.recovery', 'email'))
+            ->assertSee('直近7日間に新しく起きたこと')
+            ->assertSee('今も確認が必要な項目')
+            ->assertDontSee('ログイン時の追加確認が済んでいないクラウドサービスのアカウント')
+            ->assertSee('集計期間：')
+            ->assertSee('取込に失敗した回数')
             ->assertSee(route('saas-services.index'))
             ->assertDontSee(ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新')
-            ->assertDontSee('未対応Security Control')
+            ->assertDontSee('未対応のセキュリティ管理項目')
             ->assertDontSee('MFA未確認SaaSアカウント')
-            ->assertSee('現在のプランでは契約更新・セキュリティ項目を集計対象外としています。');
+            ->assertSee('無料プランでは、契約の更新期限やセキュリティ項目は表示していません。');
 
         $summary = app(WeeklySummaryBuilder::class)->build($organization->id);
         $this->actingAs($user)->withSession($session)
@@ -96,7 +113,8 @@ class WeeklySummaryControllerTest extends TestCase
         $this->actingAs($user)->withSession($session)->get(route('weekly-summary.show'))
             ->assertOk()
             ->assertSee(route('reminders.renewals'))
-            ->assertSee(route('security-controls.index', ['attention' => 1]));
+            ->assertSee(route('security-controls.index', ['attention' => 1]))
+            ->assertSee('ログイン時の追加確認が済んでいないクラウドサービスのアカウント');
         $this->actingAs($user)->withSession($session)->get(route('reminders.renewals'))->assertOk();
         $this->actingAs($user)->withSession($session)->get(route('security-controls.index', ['attention' => 1]))->assertOk();
     }
@@ -125,6 +143,31 @@ class WeeklySummaryControllerTest extends TestCase
             return true;
         });
         $this->assertDatabaseHas('weekly_summary_deliveries', ['user_id' => $user->id, 'organization_id' => $organization->id]);
+    }
+
+    public function test_database_queue_encrypts_weekly_summary_metrics_before_persistence(): void
+    {
+        config(['queue.default' => 'database']);
+        $summary = ['period_end' => '2026-10-15', 'import_errors' => 3, 'private_metric' => 'WEEKLY_SUMMARY_SECRET_SENTINEL'];
+        $job = new SendWeeklySummaryEmail(987654321, 987654322, $summary, '2026-10-12');
+
+        $this->assertInstanceOf(ShouldBeEncrypted::class, $job);
+        $job::dispatch($job->userId, $job->organizationId, $job->summary, $job->weekStart);
+
+        $queuedJob = DB::table('jobs')->sole();
+        try {
+            $this->assertStringNotContainsString('WEEKLY_SUMMARY_SECRET_SENTINEL', $queuedJob->payload);
+            $this->assertStringNotContainsString('987654321', $queuedJob->payload);
+            $this->assertStringNotContainsString('987654322', $queuedJob->payload);
+
+            $payload = json_decode($queuedJob->payload, true, 512, JSON_THROW_ON_ERROR);
+            $decryptedCommand = Crypt::decryptString($payload['data']['command']);
+            $this->assertStringContainsString('WEEKLY_SUMMARY_SECRET_SENTINEL', $decryptedCommand);
+            $this->assertStringContainsString('987654321', $decryptedCommand);
+            $this->assertStringContainsString('987654322', $decryptedCommand);
+        } finally {
+            DB::table('jobs')->where('id', $queuedJob->id)->delete();
+        }
     }
 
     public function test_weekly_summary_settings_link_selects_only_an_active_member_organization(): void
@@ -230,10 +273,19 @@ class WeeklySummaryControllerTest extends TestCase
         config(['app.timezone' => 'UTC']);
         $this->travelTo(CarbonImmutable::parse('2026-10-12 00:30:00', 'UTC'));
         $organization->update(['timezone' => 'America/Los_Angeles', 'plan_code' => config('opsdeck.premium_plan_code')]);
+        [, $secondOrganization] = $this->member();
         $secondUser = User::factory()->create(['email' => 'summary-second-'.Str::uuid().'@example.test']);
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $secondUser->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $defaultPreferenceUser = User::factory()->create(['email' => 'summary-default-'.Str::uuid().'@example.test']);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $defaultPreferenceUser->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $unverifiedUser = User::factory()->unverified()->create([
+            'email' => 'summary-unverified-'.Str::uuid().'@example.test',
+            'email_verification_required_at' => now(),
+        ]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $unverifiedUser->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
         UserNotificationPreference::query()->create(['user_id' => $firstUser->id, 'organization_id' => $organization->id, 'weekly_summary_enabled' => true]);
         UserNotificationPreference::query()->create(['user_id' => $secondUser->id, 'organization_id' => $organization->id, 'weekly_summary_enabled' => true]);
+        UserNotificationPreference::query()->create(['user_id' => $unverifiedUser->id, 'organization_id' => $organization->id, 'weekly_summary_enabled' => true]);
         $summary = ['period_end' => '2026-10-11', 'import_errors' => 0, 'renewals' => 0, 'security_open' => 0, 'mfa_unknown' => 0];
         $summaryBuilder = $this->mock(WeeklySummaryBuilder::class);
         $builtOrganizationIds = [];
@@ -249,10 +301,95 @@ class WeeklySummaryControllerTest extends TestCase
 
         $organizationJobs = Queue::pushed(SendWeeklySummaryEmail::class)
             ->filter(fn (SendWeeklySummaryEmail $job): bool => $job->organizationId === $organization->id);
-        $this->assertCount(2, $organizationJobs);
+        $secondOrganizationJobs = Queue::pushed(SendWeeklySummaryEmail::class)
+            ->filter(fn (SendWeeklySummaryEmail $job): bool => $job->organizationId === $secondOrganization->id);
+        $this->assertCount(3, $organizationJobs);
+        $this->assertCount(1, $secondOrganizationJobs);
+        $this->assertTrue($organizationJobs->contains(fn (SendWeeklySummaryEmail $job): bool => $job->userId === $defaultPreferenceUser->id));
+        $this->assertFalse($organizationJobs->contains(fn (SendWeeklySummaryEmail $job): bool => $job->userId === $unverifiedUser->id));
         $this->assertSame([$organization->id], array_values(array_filter($builtOrganizationIds, fn (int $organizationId): bool => $organizationId === $organization->id)));
+        $this->assertSame([$secondOrganization->id], array_values(array_filter($builtOrganizationIds, fn (int $organizationId): bool => $organizationId === $secondOrganization->id)));
         $this->assertTrue($organizationJobs->every(fn (SendWeeklySummaryEmail $job): bool => $job->summary === $summary));
         $this->assertSame('2026-10-11', $organizationJobs->first()->weekStart);
+    }
+
+    public function test_weekly_summary_job_does_not_send_to_a_new_unverified_email_address(): void
+    {
+        Mail::fake();
+        [$user, $organization] = $this->member();
+        $user->forceFill(['email_verified_at' => null, 'email_verification_required_at' => now()])->save();
+
+        $job = new SendWeeklySummaryEmail(
+            $user->id,
+            $organization->id,
+            app(WeeklySummaryBuilder::class)->build($organization->id),
+            now()->startOfWeek()->toDateString(),
+        );
+        $job->handle();
+
+        Mail::assertNothingOutgoing();
+        $this->assertDatabaseMissing('weekly_summary_deliveries', ['user_id' => $user->id, 'organization_id' => $organization->id]);
+    }
+
+    public function test_weekly_summary_command_dry_run_counts_recipients_without_building_or_dispatching_jobs(): void
+    {
+        $eligibleMemberships = OrganizationMembership::query()
+            ->where('status', MembershipStatus::Active)
+            ->whereHas('user', fn ($query) => $query->canReceiveNonTransactionalEmail())
+            ->where(function ($query): void {
+                $query->whereDoesntHave('user.notificationPreferences', function ($preferenceQuery): void {
+                    $preferenceQuery->whereColumn('user_notification_preferences.organization_id', 'organization_memberships.organization_id');
+                })->orWhereHas('user.notificationPreferences', function ($preferenceQuery): void {
+                    $preferenceQuery->whereColumn('user_notification_preferences.organization_id', 'organization_memberships.organization_id')
+                        ->where('weekly_summary_enabled', true);
+                });
+            });
+        $eligibleOrganizationCount = (clone $eligibleMemberships)->distinct('organization_id')->count('organization_id');
+        $eligibleRecipientCount = (clone $eligibleMemberships)->count();
+
+        [$firstUser, $firstOrganization] = $this->member();
+        UserNotificationPreference::query()->create([
+            'user_id' => $firstUser->id,
+            'organization_id' => $firstOrganization->id,
+            'weekly_summary_enabled' => true,
+        ]);
+        [$secondUser, $secondOrganization] = $this->member();
+        UserNotificationPreference::query()->create([
+            'user_id' => $secondUser->id,
+            'organization_id' => $secondOrganization->id,
+            'weekly_summary_enabled' => true,
+        ]);
+        [$optedOutUser, $optedOutOrganization] = $this->member();
+        UserNotificationPreference::query()->create([
+            'user_id' => $optedOutUser->id,
+            'organization_id' => $optedOutOrganization->id,
+            'weekly_summary_enabled' => false,
+        ]);
+        [$suspendedUser, $suspendedOrganization] = $this->member();
+        OrganizationMembership::query()
+            ->where('organization_id', $suspendedOrganization->id)
+            ->where('user_id', $suspendedUser->id)
+            ->firstOrFail()
+            ->update(['status' => MembershipStatus::Suspended]);
+        UserNotificationPreference::query()->create([
+            'user_id' => $suspendedUser->id,
+            'organization_id' => $suspendedOrganization->id,
+            'weekly_summary_enabled' => true,
+        ]);
+
+        $summaryBuilder = $this->mock(WeeklySummaryBuilder::class);
+        $summaryBuilder->shouldNotReceive('build');
+        Mail::fake();
+        Queue::fake();
+
+        $this->assertSame(0, Artisan::call('opsdeck:weekly-summaries', ['--dry-run' => true]));
+        $this->assertStringContainsString(
+            sprintf('Eligible organizations: %d; recipients: %d.', $eligibleOrganizationCount + 2, $eligibleRecipientCount + 2),
+            Artisan::output(),
+        );
+
+        Queue::assertNotPushed(SendWeeklySummaryEmail::class);
+        Mail::assertNothingOutgoing();
     }
 
     public function test_weekly_summary_uses_organization_local_calendar_dates_and_matching_import_filters(): void
@@ -301,6 +438,45 @@ class WeeklySummaryControllerTest extends TestCase
             ->assertOk()
             ->assertSee('la-local-included')
             ->assertDontSee('la-local-excluded');
+    }
+
+    public function test_weekly_summary_counts_renewals_through_the_organization_local_thirtieth_day_once(): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-10-11 00:30:00', 'UTC'));
+        [, $organization] = $this->member();
+        $organization->update(['timezone' => 'America/Los_Angeles', 'plan_code' => config('opsdeck.premium_plan_code')]);
+        $today = CarbonImmutable::today($organization->timezone);
+        $boundary = $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString();
+        $createContract = function (string $name, string $status, ?string $renewalDate, ?string $endsAt, ?string $cancellationDeadline = null) use ($organization): void {
+            Contract::query()->create([
+                'organization_id' => $organization->id,
+                'vendor_name' => 'Summary boundary vendor',
+                'contract_name' => $name,
+                'contract_type' => 'service',
+                'billing_cycle' => 'monthly',
+                'amount' => 1000,
+                'currency' => 'JPY',
+                'auto_renew' => true,
+                'status' => $status,
+                'renewal_date' => $renewalDate,
+                'ends_at' => $endsAt,
+                'cancellation_deadline' => $cancellationDeadline,
+            ]);
+        };
+
+        $createContract('Renewal today', 'active', $today->toDateString(), null);
+        $createContract('Renewal and end date in window', 'active', $boundary, $today->addDays(10)->toDateString());
+        $createContract('End date on boundary', 'active', null, $boundary);
+        $createContract('Pending cancellation', 'pending_cancel', $today->addDays(5)->toDateString(), null);
+        $createContract('Cancellation deadline only', 'active', null, null, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString());
+        $createContract('Renewal after window', 'active', $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS + 1)->toDateString(), null);
+        $createContract('Overdue renewal', 'active', $today->subDay()->toDateString(), null);
+        $createContract('Cancelled contract', 'cancelled', $today->addDays(5)->toDateString(), null);
+
+        $summary = app(WeeklySummaryBuilder::class)->build($organization->id);
+
+        $this->assertSame($today->toDateString(), $summary['period_end']);
+        $this->assertSame(5, $summary['renewals']);
     }
 
     public function test_weekly_summary_job_rechecks_opt_out_before_sending(): void
@@ -405,8 +581,9 @@ class WeeklySummaryControllerTest extends TestCase
         $this->travel(2)->days();
         $html = (new WeeklySummaryMail($organization, $summary))->render();
 
-        $this->assertStringContainsString('期間中に発生したこと', $html);
-        $this->assertStringContainsString('集計時点で対応が必要な項目', $html);
+        $this->assertStringContainsString('直近7日間に新しく起きたこと', $html);
+        $this->assertStringContainsString('今も確認が必要な項目', $html);
+        $this->assertStringContainsString('ログイン時の追加確認が済んでいないクラウドサービスのアカウント', $html);
         $this->assertStringContainsString($summary['as_of'], $html);
         $importErrorsUrl = route('imports.index', ['has_errors' => 1, 'created_after' => $summary['period_start'], 'created_before' => $summary['period_end']]);
         $this->assertStringContainsString(str_replace('&', '&amp;', $importErrorsUrl), $html);
@@ -429,7 +606,7 @@ class WeeklySummaryControllerTest extends TestCase
         $this->assertSame(0, $summary['renewals']);
         $this->assertSame(0, $summary['security_open']);
         $this->assertSame(0, $summary['mfa_unknown']);
-        $this->assertStringContainsString('現在のプランでは契約更新・セキュリティ項目を集計対象外としています。', $html);
+        $this->assertStringContainsString('無料プランでは、契約の更新期限やセキュリティ項目は表示していません。', $html);
         $this->assertStringNotContainsString(route('reminders.renewals'), $html);
         $this->assertStringNotContainsString(route('security-controls.index', ['attention' => 1]), $html);
     }
@@ -443,15 +620,19 @@ class WeeklySummaryControllerTest extends TestCase
         $this->assertNotSame(config('opsdeck.support_email'), $mail->envelope()->from->address);
     }
 
-    public function test_weekly_summary_excludes_ended_saas_assignments_from_mfa_count(): void
+    public function test_weekly_summary_excludes_ended_assignments_and_inactive_services_from_mfa_count(): void
     {
         [, $organization] = $this->member();
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code')]);
         $service = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Summary SaaS', 'status' => 'active']);
+        $inactiveService = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Inactive Summary SaaS', 'status' => 'inactive']);
+        SaasAssignment::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $service->id, 'status' => 'active', 'mfa_status' => 'unknown']);
         SaasAssignment::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $service->id, 'status' => 'ended', 'mfa_status' => 'unknown', 'ended_at' => now()->subDay()]);
+        SaasAssignment::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $inactiveService->id, 'status' => 'active', 'mfa_status' => 'unknown']);
 
         $summary = app(WeeklySummaryBuilder::class)->build($organization->id);
 
-        $this->assertSame(0, $summary['mfa_unknown']);
+        $this->assertSame(1, $summary['mfa_unknown']);
     }
 
     public function test_weekly_summary_import_errors_use_the_configured_period(): void

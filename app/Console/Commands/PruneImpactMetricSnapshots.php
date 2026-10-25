@@ -16,6 +16,12 @@ class PruneImpactMetricSnapshots extends Command
 {
     public function handle(): int
     {
+        if (! config('opsdeck.release_features.impact_report')) {
+            $this->info('Impact report snapshot pruning is disabled for this release.');
+
+            return self::SUCCESS;
+        }
+
         $retentionDays = max(1, (int) config('opsdeck.impact_snapshots.daily_retention_days'));
         $chunkSize = max(1, (int) config('opsdeck.pagination.per_page'));
         $dryRun = $this->option('dry-run');

@@ -48,13 +48,23 @@ class SaasServiceController extends Controller
         $service = DB::transaction(function () use ($request, $organization): SaasService {
             Organization::query()->whereKey($organization->id)->lockForUpdate()->firstOrFail();
             app(PlanLimitService::class)->assertCanAdd($organization, 'saas_services');
+            $attributes = $this->uniqueAttributes($request->validated(), $organization);
+            $service = SaasService::query()->create($attributes + ['organization_id' => $organization->id]);
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => SaasService::class,
+                'entity_id' => $service->id,
+                'action' => AuditLog::SaasServiceCreated,
+                'after_json' => ['created_fields' => array_keys($attributes)],
+            ]);
 
-            return SaasService::query()->create($this->uniqueAttributes($request->validated(), $organization) + ['organization_id' => $organization->id]);
+            return $service;
         });
-        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
+        app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
 
-        return to_route('saas-services.show', $service)->with('status', 'SaaSを登録しました。');
+        return to_route('saas-services.show', $service)->with('status', 'クラウドサービスを登録しました。');
     }
 
     public function show(Request $request, SaasService $saasService): View
@@ -65,11 +75,21 @@ class SaasServiceController extends Controller
         $employees = $request->user()->can('update', $saasService)
             ? Employee::query()
                 ->where('organization_id', $saasService->organization_id)
+                ->where('employment_status', config('opsdeck.employee_status.active'))
                 ->orderBy('name')
                 ->get()
             : collect();
+        $selectedEmployeeId = null;
 
-        return view('saas-services.show', ['service' => $saasService, 'employees' => $employees]);
+        if ($request->user()->can('update', $saasService) && ctype_digit((string) $request->query('employee_id'))) {
+            $selectedEmployeeId = Employee::query()
+                ->where('organization_id', $saasService->organization_id)
+                ->where('employment_status', config('opsdeck.employee_status.active'))
+                ->whereKey((int) $request->query('employee_id'))
+                ->value('id');
+        }
+
+        return view('saas-services.show', ['service' => $saasService, 'employees' => $employees, 'selectedEmployeeId' => $selectedEmployeeId]);
     }
 
     public function edit(Request $request, SaasService $saasService): View
@@ -102,10 +122,11 @@ class SaasServiceController extends Controller
                     'action' => AuditLog::SaasServiceUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 
-        return to_route('saas-services.show', $saasService)->with('status', 'SaaSを更新しました。');
+        return to_route('saas-services.show', $saasService)->with('status', 'クラウドサービスを更新しました。');
     }
 
     private function organization(Request $request): Organization
@@ -123,7 +144,7 @@ class SaasServiceController extends Controller
     private function uniqueAttributes(array $attributes, Organization $organization, ?SaasService $saasService = null): array
     {
         if (SaasService::query()->where('organization_id', $organization->id)->where('name', $attributes['name'])->when($saasService, fn ($query) => $query->whereKeyNot($saasService->id))->exists()) {
-            throw ValidationException::withMessages(['name' => '同じ名前のSaaSが既に存在します。']);
+            throw ValidationException::withMessages(['name' => '同じ名前のクラウドサービスが既に登録されています。']);
         }
 
         return $attributes;

@@ -31,7 +31,8 @@ class PlanAccessServiceTest extends TestCase
 
         $this->assertSame(config('opsdeck.free_plan_code'), $planAccess->effectivePlanCode($organization));
         $this->assertSame(config('opsdeck.premium_plan_code'), $organization->plan_code);
-        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'));
+        $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'));
+        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'xlsx_preview'));
         $this->assertSame(20, collect(app(PlanUsageService::class)->forOrganization($organization))->firstWhere('key', 'employees')['limit']);
     }
 
@@ -69,7 +70,8 @@ class PlanAccessServiceTest extends TestCase
         $organization = $this->organization(['billing_status' => 'cancelled']);
 
         $this->assertSame(config('opsdeck.free_plan_code'), app(PlanAccessService::class)->effectivePlanCode($organization));
-        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'));
+        $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'));
+        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
     }
 
     /** @param array<string, mixed> $overrides */

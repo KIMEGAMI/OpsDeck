@@ -18,9 +18,14 @@ class Organization extends Model
         'timezone',
         'plan_code',
         'billing_status',
+        'billing_cancel_at_period_end',
+        'billing_cancel_at',
         'ai_enabled',
         'stripe_customer_id',
         'stripe_subscription_id',
+        'storage_addon_gib',
+        'storage_addon_pending_gib',
+        'storage_addon_effective_at',
         'stripe_last_event_created_at',
         'billing_past_due_since',
         'billing_failure_event_id',
@@ -38,6 +43,11 @@ class Organization extends Model
         return $this->hasMany(RealizedSaving::class);
     }
 
+    public function workTimeMeasurements(): HasMany
+    {
+        return $this->hasMany(WorkTimeMeasurement::class);
+    }
+
     public function importProfiles(): HasMany
     {
         return $this->hasMany(ImportProfile::class);
@@ -48,7 +58,12 @@ class Organization extends Model
         return [
             'ai_enabled' => 'boolean',
             'stripe_last_event_created_at' => 'integer',
+            'storage_addon_gib' => 'integer',
+            'storage_addon_pending_gib' => 'integer',
+            'storage_addon_effective_at' => 'datetime',
             'billing_past_due_since' => 'datetime',
+            'billing_cancel_at_period_end' => 'boolean',
+            'billing_cancel_at' => 'datetime',
             'cost_savings_renewal_rate_percent' => 'integer',
             'cost_savings_unused_asset_monthly_jpy' => 'integer',
         ];

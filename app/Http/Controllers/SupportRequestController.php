@@ -19,7 +19,7 @@ class SupportRequestController extends Controller
     {
         $errorReference = SupportErrorReference::normalize($request->query('error_reference')) ?? '';
         $requestedCategory = $request->query('category');
-        $category = is_string($requestedCategory) && in_array($requestedCategory, ['usage', 'import', 'billing', 'security', 'other'], true)
+        $category = is_string($requestedCategory) && array_key_exists($requestedCategory, config('opsdeck.support.categories', []))
             ? $requestedCategory
             : 'usage';
 

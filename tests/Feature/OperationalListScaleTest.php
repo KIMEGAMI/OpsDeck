@@ -13,10 +13,28 @@ use Tests\TestCase;
 
 class OperationalListScaleTest extends TestCase
 {
+    private const EMPLOYEE_COUNT = 200;
+
+    private const ASSET_COUNT = 500;
+
+    private const SAAS_SERVICE_COUNT = 100;
+
+    private const CONTRACT_COUNT = 100;
+
+    private const INSERT_CHUNK_SIZE = 25;
+
+    private const MAX_LIST_QUERY_COUNT = 14;
+
     public function test_operational_lists_render_at_the_documented_organization_scale_with_bounded_queries(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member();
+        $dashboardQueryCountWithoutOperationalData = $this->dashboardQueryCount($user, $organization, [
+            'employees' => 0,
+            'assets' => 0,
+            'saasServices' => 0,
+            'contracts' => 0,
+        ]);
         $timestamp = now()->toDateTimeString();
         $departmentId = DB::table('departments')->insertGetId([
             'organization_id' => $organization->id,
@@ -25,11 +43,6 @@ class OperationalListScaleTest extends TestCase
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
         ]);
-
-        $employeeCount = 200;
-        $assetCount = 500;
-        $saasCount = 100;
-        $contractCount = 100;
 
         $this->insertRecords('employees', array_map(fn (int $index): array => [
             'organization_id' => $organization->id,
@@ -40,7 +53,7 @@ class OperationalListScaleTest extends TestCase
             'employment_status' => config('opsdeck.employee_status.active'),
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
-        ], range(1, $employeeCount)));
+        ], range(1, self::EMPLOYEE_COUNT)));
 
         $this->insertRecords('assets', array_map(fn (int $index): array => [
             'organization_id' => $organization->id,
@@ -49,7 +62,7 @@ class OperationalListScaleTest extends TestCase
             'status' => config('opsdeck.asset_statuses')[0],
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
-        ], range(1, $assetCount)));
+        ], range(1, self::ASSET_COUNT)));
 
         $this->insertRecords('saas_services', array_map(fn (int $index): array => [
             'organization_id' => $organization->id,
@@ -57,7 +70,7 @@ class OperationalListScaleTest extends TestCase
             'status' => config('opsdeck.saas_service_statuses')[0],
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
-        ], range(1, $saasCount)));
+        ], range(1, self::SAAS_SERVICE_COUNT)));
 
         $this->insertRecords('contracts', array_map(fn (int $index): array => [
             'organization_id' => $organization->id,
@@ -68,21 +81,34 @@ class OperationalListScaleTest extends TestCase
             'amount' => '0.00',
             'currency' => config('opsdeck.cost_savings.default_currency'),
             'auto_renew' => false,
-            'status' => config('opsdeck.contract_status.draft'),
+            'status' => config('opsdeck.contract_status.active'),
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
-        ], range(1, $contractCount)));
+        ], range(1, self::CONTRACT_COUNT)));
 
-        $this->assertListRendersWithBoundedQueries($user, $organization, 'employees.index', 'employees', $employeeCount);
-        $this->assertListRendersWithBoundedQueries($user, $organization, 'assets.index', 'assets', $assetCount);
-        $this->assertListRendersWithBoundedQueries($user, $organization, 'saas-services.index', 'services', $saasCount);
-        $this->assertListRendersWithBoundedQueries($user, $organization, 'contracts.index', 'contracts', $contractCount);
+        $this->assertListRendersWithBoundedQueries($user, $organization, 'employees.index', 'employees', self::EMPLOYEE_COUNT);
+        $this->assertListRendersWithBoundedQueries($user, $organization, 'assets.index', 'assets', self::ASSET_COUNT);
+        $this->assertListRendersWithBoundedQueries($user, $organization, 'saas-services.index', 'services', self::SAAS_SERVICE_COUNT);
+        $this->assertListRendersWithBoundedQueries($user, $organization, 'contracts.index', 'contracts', self::CONTRACT_COUNT);
+
+        $dashboardQueryCountWithOperationalData = $this->dashboardQueryCount($user, $organization, [
+            'employees' => self::EMPLOYEE_COUNT,
+            'assets' => self::ASSET_COUNT,
+            'saasServices' => self::SAAS_SERVICE_COUNT,
+            'contracts' => self::CONTRACT_COUNT,
+        ]);
+
+        $this->assertLessThanOrEqual(
+            $dashboardQueryCountWithoutOperationalData,
+            $dashboardQueryCountWithOperationalData,
+            'Dashboard query count should not increase with organization data volume.',
+        );
     }
 
     /** @param array<int, array<string, mixed>> $records */
     private function insertRecords(string $table, array $records): void
     {
-        foreach (array_chunk($records, 25) as $recordChunk) {
+        foreach (array_chunk($records, self::INSERT_CHUNK_SIZE) as $recordChunk) {
             DB::table($table)->insert($recordChunk);
         }
     }
@@ -104,7 +130,35 @@ class OperationalListScaleTest extends TestCase
             return $paginator->total() === $expectedTotal
                 && $paginator->count() === (int) config('opsdeck.pagination.per_page');
         });
-        $this->assertLessThan(15, $queryCount, $routeName.' should not issue per-row relationship queries');
+        $this->assertLessThanOrEqual(self::MAX_LIST_QUERY_COUNT, $queryCount, $routeName.' should not issue per-row relationship queries');
+    }
+
+    /** @param array{employees: int, assets: int, saasServices: int, contracts: int} $expectedCounts */
+    private function dashboardQueryCount(User $user, Organization $organization, array $expectedCounts): int
+    {
+        $connection = DB::connection();
+        $connection->flushQueryLog();
+        $connection->enableQueryLog();
+
+        $response = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'));
+
+        $queryCount = count($connection->getQueryLog());
+        $connection->disableQueryLog();
+
+        $response->assertOk()
+            ->assertViewHas('metrics', function (array $metrics) use ($expectedCounts): bool {
+                foreach ($expectedCounts as $key => $expectedCount) {
+                    if (($metrics[$key] ?? null) !== $expectedCount) {
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+
+        return $queryCount;
     }
 
     /** @return array{0: User, 1: Organization} */

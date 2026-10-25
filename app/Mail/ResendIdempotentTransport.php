@@ -120,17 +120,13 @@ class ResendIdempotentTransport extends AbstractTransport
             $contentType = $headers->get('Content-Type')->getBody();
             $disposition = $headers->getHeaderBody('Content-Disposition');
             $filename = $headers->getHeaderParameter('Content-Disposition', 'filename');
-            $content = $contentType === 'text/calendar'
-                ? base64_encode($attachment->getBody())
-                : str_replace("\r\n", '', $attachment->bodyToString());
-
-            if (! is_string($content) || ! is_string($filename)) {
+            if (! is_string($filename)) {
                 throw new TransportException('Resend attachment could not be prepared.');
             }
 
             $item = [
                 'content_type' => $contentType,
-                'content' => $content,
+                'content' => base64_encode($attachment->getBody()),
                 'filename' => $filename,
             ];
 

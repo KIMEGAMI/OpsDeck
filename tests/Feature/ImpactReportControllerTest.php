@@ -17,6 +17,7 @@ use App\Models\QuestionnaireQuestion;
 use App\Models\RealizedSaving;
 use App\Models\SaasService;
 use App\Models\User;
+use App\Models\WorkTimeMeasurement;
 use App\Services\ContractRenewalWindow;
 use App\Services\ImpactReportMetricsService;
 use Illuminate\Support\Str;
@@ -42,6 +43,7 @@ class ImpactReportControllerTest extends TestCase
         $this->actingAs($owner)->withSession(['current_organization_id' => $ownerOrganization->id])->get(route('impact-report.show'))
             ->assertOk()
             ->assertSee('印刷・PDF保存')
+            ->assertSee('PDFにする場合は、このボタンを押した後の印刷画面で「PDFに保存」を選びます。')
             ->assertSee('導入効果レポートを印刷またはPDF保存')
             ->assertSee('impact-report-actions')
             ->assertSee('@page { size: A4; margin: 14mm; }', false)
@@ -52,7 +54,49 @@ class ImpactReportControllerTest extends TestCase
         $response = $this->actingAs($owner)->withSession(['current_organization_id' => $ownerOrganization->id])->get(route('impact-report.download'));
         $response->assertOk()->assertHeader('content-disposition');
         $this->assertStringStartsWith("\xEF\xBB\xBF", $response->streamedContent());
-        $this->assertStringContainsString('monthly_cost_USD,250.00,', $response->streamedContent());
+        $csv = $response->streamedContent();
+        $this->assertStringContainsString('項目,項目ID,値,情報源・補足', $csv);
+        $this->assertStringContainsString('月額契約費用（USD）,monthly_cost_USD,250.00,', $csv);
+        $this->assertStringNotContainsString('monthly_jpy', $csv);
+    }
+
+    public function test_impact_report_screen_and_csv_are_unavailable_outside_the_release_scope(): void
+    {
+        config(['opsdeck.release_features.impact_report' => false]);
+        [$viewer, $organization] = $this->member(MembershipRole::Viewer);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($viewer)->withSession($session)
+            ->get(route('impact-report.show'))
+            ->assertNotFound();
+        $this->actingAs($viewer)->withSession($session)
+            ->get(route('impact-report.download'))
+            ->assertNotFound();
+    }
+
+    public function test_report_exports_company_and_creation_time_and_protects_the_company_name_from_csv_formulas(): void
+    {
+        $this->travelTo('2026-10-16 10:30:00');
+        [$owner, $organization] = $this->member(MembershipRole::Owner);
+        $formulaLikeName = '=HYPERLINK("https://example.test","会社名")';
+        $organization->update(['name' => $formulaLikeName]);
+        $generatedAt = now($organization->timezone)->format('Y-m-d H:i');
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.show'))
+            ->assertOk()
+            ->assertSee('対象組織')
+            ->assertSee(e($formulaLikeName), false)
+            ->assertSee($generatedAt)
+            ->assertSee($organization->timezone);
+
+        $csv = $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.download'))
+            ->streamedContent();
+
+        $this->assertStringContainsString("対象組織,organization_name,\"\t=HYPERLINK", $csv);
+        $this->assertStringContainsString('レポート作成日時,report_generated_at,"'.$generatedAt.'"', $csv);
+        $this->assertStringContainsString('"組織のタイムゾーン: '.$organization->timezone.'"', $csv);
     }
 
     public function test_import_snapshots_are_shown_as_an_actual_before_after_comparison_and_trend(): void
@@ -93,13 +137,13 @@ class ImpactReportControllerTest extends TestCase
         $csv = $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
             ->get(route('impact-report.download'))
             ->streamedContent();
-        $this->assertStringContainsString('latest_import_delta_employees,1,"Import batch '.$batch->id.'"', $csv);
-        $this->assertStringContainsString('latest_import_monthly_cost_JPY_before,200.00,"Import batch '.$batch->id.'"', $csv);
-        $this->assertStringContainsString('latest_import_monthly_cost_JPY_after,250.00,"Import batch '.$batch->id.'"', $csv);
-        $this->assertStringContainsString('latest_import_monthly_cost_JPY_delta,50.00,"Import batch '.$batch->id.'"', $csv);
-        $this->assertStringContainsString('latest_import_monthly_cost_USD_before,10.00,"Import batch '.$batch->id.'"', $csv);
-        $this->assertStringContainsString('latest_import_monthly_cost_USD_delta,0.00,"Import batch '.$batch->id.'"', $csv);
-        $this->assertStringContainsString('trend_import_after_unresolved_items,0,', $csv);
+        $this->assertStringContainsString('最新Importの増減（社員数）,latest_import_delta_employees,1,"取込履歴ID '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('月額契約費用（JPY）の取込前,latest_import_monthly_cost_JPY_before,200.00,"取込履歴ID '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('月額契約費用（JPY）の取込後,latest_import_monthly_cost_JPY_after,250.00,"取込履歴ID '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('月額契約費用（JPY）の増減,latest_import_monthly_cost_JPY_delta,50.00,"取込履歴ID '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('月額契約費用（USD）の取込前,latest_import_monthly_cost_USD_before,10.00,"取込履歴ID '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('月額契約費用（USD）の増減,latest_import_monthly_cost_USD_delta,0.00,"取込履歴ID '.$batch->id.'"', $csv);
+        $this->assertStringContainsString('確認項目数の推移（取込後）,trend_import_after_unresolved_items,0,', $csv);
     }
 
     public function test_import_comparison_and_trend_have_stable_order_when_snapshots_share_a_timestamp(): void
@@ -185,9 +229,54 @@ class ImpactReportControllerTest extends TestCase
             ->get(route('impact-report.download'))
             ->streamedContent();
 
-        $this->assertStringContainsString('realized_savings_CAD_annual,9876543.21,', $csv);
+        $this->assertStringContainsString('記録された削減実績（CAD・年額）,realized_savings_CAD_annual,9876543.21,', $csv);
         $this->assertStringNotContainsString('realized_savings_EUR_one_time', $csv);
         $this->assertStringNotContainsString('重複登録', $csv);
+    }
+
+    public function test_impact_report_shows_time_estimates_separately_from_cash_savings(): void
+    {
+        [$owner, $organization] = $this->member(MembershipRole::Owner);
+        WorkTimeMeasurement::factory()->create([
+            'organization_id' => $organization->id,
+            'created_by' => $owner->id,
+            'before_minutes' => 60,
+            'after_minutes' => 30,
+            'monthly_occurrences' => 4,
+            'hourly_rate' => '3000.00',
+            'currency' => 'JPY',
+        ]);
+        WorkTimeMeasurement::factory()->create([
+            'organization_id' => $organization->id,
+            'created_by' => $owner->id,
+            'before_minutes' => 50,
+            'after_minutes' => 10,
+            'monthly_occurrences' => 8,
+            'hourly_rate' => '2500.00',
+            'currency' => 'EUR',
+            'voided_by' => $owner->id,
+            'voided_at' => now(),
+            'void_reason' => '重複計測',
+        ]);
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.show'))
+            ->assertOk()
+            ->assertSee('作業時間の変化（担当者入力の参考値）')
+            ->assertSee('2.00時間短縮')
+            ->assertSee('JPY 6,000.00')
+            ->assertSee('実際の経費削減ではありません')
+            ->assertDontSee('EUR 13,333.33');
+
+        $csv = $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.download'))
+            ->streamedContent();
+
+        $this->assertStringContainsString('月あたり作業時間短縮（分）,work_time_monthly_minutes,120,', $csv);
+        $this->assertStringContainsString('月あたり作業時間短縮（時間）,work_time_monthly_hours,2,', $csv);
+        $this->assertStringContainsString('作業時間の金額換算参考値（月あたり・JPY）,work_time_labor_equivalent_JPY,6000.00,', $csv);
+        $this->assertStringNotContainsString('work_time_labor_equivalent_EUR', $csv);
+        $this->assertStringNotContainsString('重複計測', $csv);
     }
 
     public function test_renewal_metric_counts_either_date_within_thirty_days_once(): void

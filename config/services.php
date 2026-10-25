@@ -19,7 +19,7 @@ return [
     ],
 
     'resend' => [
-        'key' => env('RESEND_API_KEY'),
+        'key' => env('MAIL_PASSWORD'),
     ],
 
     'ses' => [
@@ -51,6 +51,7 @@ return [
         'secret' => env('STRIPE_SECRET'),
         'prices' => [
             'premium' => env('STRIPE_PRICE_PREMIUM', env('STRIPE_PRICE_ID')),
+            'storage_addon_gib' => env('STRIPE_PRICE_STORAGE_ADDON_GIB'),
         ],
         'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
         'signature_tolerance_seconds' => (int) env('STRIPE_SIGNATURE_TOLERANCE_SECONDS', 300),

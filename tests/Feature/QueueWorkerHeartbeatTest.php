@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Services\QueueHealthService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Queue\RedisQueue;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,8 @@ use Tests\TestCase;
 
 class QueueWorkerHeartbeatTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_queue_loop_records_deduplicated_heartbeats_without_persisting_host_identity(): void
     {
         config(['opsdeck.queue.worker_heartbeat_interval_seconds' => 60]);

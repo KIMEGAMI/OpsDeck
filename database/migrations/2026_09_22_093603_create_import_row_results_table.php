@@ -32,6 +32,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        // Intentionally left non-destructive for production safety.
+        throw new LogicException('This migration is forward-only; apply a new migration to change the schema.');
     }
 };

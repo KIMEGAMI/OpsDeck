@@ -54,8 +54,10 @@ class PlanFeatureAccessTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.create'))
             ->assertOk()
+            ->assertSee('FreeでもCSV/TXTから実データを登録できます。社員20名、資産50件、SaaSサービス10件まで登録できます。')
+            ->assertSee('Free / Premiumの違いを見る')
             ->assertSee(route('billing.index'), false)
-            ->assertSee('Free / Premiumの違いを確認');
+            ->assertDontSee('組織Ownerにご相談ください。');
 
         $operator = User::factory()->create(['email' => 'free-operator-'.Str::uuid().'@example.test']);
         OrganizationMembership::query()->create([
@@ -70,7 +72,8 @@ class PlanFeatureAccessTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.create'))
             ->assertOk()
-            ->assertSee('Premium契約の相談は組織Ownerにご依頼ください。')
+            ->assertSee('FreeでもCSV/TXTから実データを登録できます。')
+            ->assertSee('Premium機能の契約については組織Ownerにご相談ください。')
             ->assertDontSee(route('billing.index'), false);
     }
 

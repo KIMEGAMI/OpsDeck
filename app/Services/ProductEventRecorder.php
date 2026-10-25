@@ -36,7 +36,7 @@ class ProductEventRecorder
         });
     }
 
-    public function recordFirstDashboardAction(Organization $organization): void
+    public function recordFirstBusinessChange(Organization $organization): void
     {
         $this->recordOnce('first_dashboard_action_completed', $organization);
     }

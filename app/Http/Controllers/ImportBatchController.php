@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\StorageQuotaExceededException;
 use App\Http\Requests\ImportBatch\ExecuteImportBatchRequest;
 use App\Http\Requests\ImportBatch\ResolveImportBatchErrorsRequest;
 use App\Http\Requests\ImportBatch\RetryImportBatchRequest;
@@ -15,6 +16,7 @@ use App\Http\Requests\ImportBatch\StoreImportMappingRequest;
 use App\Http\Requests\ImportBatch\UpdateImportRowSelectionRequest;
 use App\Jobs\ExecuteImportBatch;
 use App\Jobs\PrepareGoogleSheetDiffPreview;
+use App\Jobs\PrepareImportFileDiffPreview;
 use App\Jobs\PrepareImportMappingAnalysis;
 use App\Jobs\PrepareImportPreview;
 use App\Jobs\PrepareImportRetryBatch;
@@ -24,39 +26,41 @@ use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Department;
 use App\Models\Employee;
-use App\Models\Evidence;
 use App\Models\GoogleSheetConnection;
 use App\Models\ImportBatch;
+use App\Models\ImportProfile;
 use App\Models\ImportReviewCandidate;
 use App\Models\ImportRowResult;
 use App\Models\Organization;
-use App\Models\Questionnaire;
-use App\Models\QuestionnaireAnswer;
-use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
+use App\Services\Ai\AiUsageBudgetService;
 use App\Services\Ai\ImportMappingSuggestionService;
 use App\Services\ContractAmountValidator;
 use App\Services\Import\CsvImportSource;
 use App\Services\Import\GoogleSheetsImportSource;
+use App\Services\Import\ImportErrorReportExport;
+use App\Services\Import\ImportFileLocalStager;
 use App\Services\Import\ImportNormalizationSuggestionService;
 use App\Services\Import\ImportProfileService;
 use App\Services\Import\ImportSourceIntegrityService;
 use App\Services\Import\XlsxImportSource;
 use App\Services\ImportBatchExecutionService;
 use App\Services\ImportBatchRollbackService;
+use App\Services\OrganizationStorageQuotaService;
 use App\Services\PlanFeatureService;
-use App\Services\PlanLimitService;
+use App\Services\PrivateUploadStorageService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\View\View;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class ImportBatchController extends Controller
 {
@@ -99,13 +103,32 @@ class ImportBatchController extends Controller
         $this->authorize('create', [ImportBatch::class, $organization]);
         $capabilities = $this->importCapabilities($organization);
         $canManageBilling = $request->user()->can('manageBilling', $organization);
-        $requestedTargetType = $request->query('target_type');
+        $diffSourceBatch = null;
+        $diffSourceMapping = null;
+        $requestedDiffSourceBatchId = $request->query('diff_source_batch_id');
+        if ($requestedDiffSourceBatchId !== null) {
+            abort_unless(filter_var($requestedDiffSourceBatchId, FILTER_VALIDATE_INT) !== false, 404);
+            $diffSourceBatch = ImportBatch::query()
+                ->where('organization_id', $organization->id)
+                ->whereKey((int) $requestedDiffSourceBatchId)
+                ->whereIn('source_type', ['csv', 'xlsx'])
+                ->where('status', 'completed')
+                ->firstOrFail();
+            $this->authorize('view', $diffSourceBatch);
+            $diffSourceMapping = $diffSourceBatch->mappings()->where('status', 'ready')->latest('id')->firstOrFail();
+        }
+        $requestedTargetType = $diffSourceMapping?->target_type ?? $request->query('target_type');
         $targetType = is_string($requestedTargetType) && in_array($requestedTargetType, config('opsdeck.import_target_types', []), true)
             ? $requestedTargetType
             : null;
         $targetTypeLabel = $targetType === null ? null : config('opsdeck.import_target_labels.'.$targetType, $targetType);
+        $samplePreviewTargetType = is_string($targetType) && array_key_exists($targetType, config('opsdeck.import_samples', []))
+            ? $targetType
+            : 'employees';
 
-        return view('imports.create', compact('organization', 'capabilities', 'canManageBilling', 'targetType', 'targetTypeLabel'));
+        $storageQuota = app(OrganizationStorageQuotaService::class)->summary($organization);
+
+        return view('imports.create', compact('organization', 'capabilities', 'canManageBilling', 'targetType', 'targetTypeLabel', 'diffSourceBatch', 'samplePreviewTargetType', 'storageQuota'));
     }
 
     public function sample(Request $request, string $targetType): StreamedResponse
@@ -131,23 +154,24 @@ class ImportBatchController extends Controller
 
         $sample = config('opsdeck.import_samples.'.$targetType);
         $aliases = config('opsdeck.import_column_aliases.'.$targetType, []);
-        $targetLabel = match ($targetType) {
-            'employees' => '社員',
-            'assets' => 'IT資産',
-            'contracts' => '契約',
-            'saas_services' => 'SaaS',
-            default => $targetType,
-        };
+        $targetLabel = config('opsdeck.import_target_labels.'.$targetType, 'データ');
         $columns = [];
         foreach ($sample['headers'] as $index => $header) {
+            $field = $aliases[$header] ?? null;
             $columns[] = [
                 'header' => $header,
-                'field' => $aliases[$header] ?? null,
+                'target_field' => $field,
+                'field' => $field === null
+                    ? null
+                    : config('opsdeck.import_field_labels_by_target.'.$targetType.'.'.$field, config('opsdeck.import_field_labels.'.$field, $field))
+                        .(in_array($field, config('opsdeck.import_required_mapping_fields.'.$targetType, []), true) ? '（必須）' : ''),
                 'value' => $sample['row'][$index] ?? '',
             ];
         }
 
-        return view('imports.samples.preview', compact('sample', 'targetLabel', 'targetType', 'columns'));
+        $importValueLabels = config('opsdeck.import_value_labels_by_target.'.$targetType, []);
+
+        return view('imports.samples.preview', compact('sample', 'targetLabel', 'targetType', 'columns', 'importValueLabels'));
     }
 
     public function googleSheets(Request $request): View|RedirectResponse
@@ -211,7 +235,11 @@ class ImportBatchController extends Controller
                 'completed_at' => null,
             ]);
             abort_unless($claimed === 1, 409, 'このシート選択はすでに処理されています。');
-            PrepareImportPreview::dispatch($importBatch->id)->afterCommit();
+            if ($importBatch->diff_source_batch_id !== null) {
+                PrepareImportFileDiffPreview::dispatch((int) $importBatch->diff_source_batch_id, $importBatch->id)->afterCommit();
+            } else {
+                PrepareImportPreview::dispatch($importBatch->id)->afterCommit();
+            }
         });
 
         return to_route('imports.show', $importBatch)->with('status', 'シートを選択しました。Previewをバックグラウンドで準備します。');
@@ -253,65 +281,120 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $this->authorize('create', [ImportBatch::class, $organization]);
         $targetType = $request->validated('target_type');
+        $diffSourceBatch = null;
+        $diffSourceMapping = null;
+        $diffSourceBatchId = $request->validated('diff_source_batch_id');
+        if ($diffSourceBatchId !== null) {
+            $diffSourceBatch = ImportBatch::query()
+                ->where('organization_id', $organization->id)
+                ->whereKey((int) $diffSourceBatchId)
+                ->whereIn('source_type', ['csv', 'xlsx'])
+                ->where('status', 'completed')
+                ->firstOrFail();
+            $this->authorize('view', $diffSourceBatch);
+            $diffSourceMapping = $diffSourceBatch->mappings()->where('status', 'ready')->latest('id')->firstOrFail();
+            abort_unless($targetType === null || $targetType === $diffSourceMapping->target_type, 422, '差分取込の対象種別は前回のImportと一致させてください。');
+            $targetType = $diffSourceMapping->target_type;
+        }
         $headerRowNumber = (int) ($request->validated('header_row_number') ?? config('opsdeck.import.default_header_row_number'));
         $headerEndRowNumber = (int) ($request->validated('header_end_row_number') ?? $headerRowNumber);
         $dataStartRowNumber = $request->validated('data_start_row_number');
         $showRouteParameters = $targetType === null ? [] : ['target_type' => $targetType];
         $disk = config('opsdeck.import.disk');
         $file = $request->file('file');
+        $sourceType = strtolower($file->getClientOriginalExtension()) === 'xlsx' ? 'xlsx' : 'csv';
+        if ($diffSourceBatch !== null) {
+            abort_unless($sourceType === $diffSourceBatch->source_type, 422, '差分取込では前回と同じファイル形式を選択してください。');
+        }
         $sourceFileSha256 = app(ImportSourceIntegrityService::class)->hashUploadedFile($file);
         if (strtolower($file->getClientOriginalExtension()) === 'xlsx') {
             $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
         }
-        $path = $file->store('imports/'.$organization->id, $disk);
-        if (strtolower($file->getClientOriginalExtension()) === 'xlsx') {
-            try {
-                $sheets = app(XlsxImportSource::class)->sheets(Storage::disk($disk)->path($path));
-                abort_if($sheets === [], 422, 'XLSXにシートがありません。');
-                $batch = ImportBatch::query()->create([
-                    'organization_id' => $organization->id, 'source_type' => 'xlsx',
-                    'source_name' => $request->string('source_name')->toString(), 'source_file_path' => $path,
-                    'source_file_sha256' => $sourceFileSha256,
-                    'header_row_number' => $headerRowNumber,
-                    'header_end_row_number' => $headerEndRowNumber,
-                    'data_start_row_number' => $dataStartRowNumber,
-                    'available_sheets_json' => $sheets, 'status' => 'sheet_selection', 'executed_by' => $request->user()->id,
-                    'started_at' => now(),
-                ]);
-
-                return to_route('imports.show', [$batch, ...$showRouteParameters])->with('status', 'シートを選択してください。');
-            } catch (\Throwable $exception) {
-                Storage::disk($disk)->delete($path);
-                throw $exception;
-            }
-        }
-
-        $batch = null;
         try {
-            $batch = ImportBatch::query()->create([
-                'organization_id' => $organization->id,
-                'source_type' => 'csv',
-                'source_name' => $request->string('source_name')->toString(),
-                'source_file_path' => $path,
-                'source_file_sha256' => $sourceFileSha256,
-                'header_row_number' => $headerRowNumber,
-                'header_end_row_number' => $headerEndRowNumber,
-                'data_start_row_number' => $dataStartRowNumber,
-                'status' => 'previewing',
-                'executed_by' => $request->user()->id,
-                'started_at' => now(),
-            ]);
-            PrepareImportPreview::dispatch($batch->id)->afterCommit();
-        } catch (\Throwable $exception) {
-            if ($batch === null) {
-                Storage::disk($disk)->delete($path);
-            } else {
-                $this->markPreviewDispatchFailed($batch->id);
-            }
-            throw $exception;
-        }
+            return app(OrganizationStorageQuotaService::class)->storeWithinQuota(
+                $organization,
+                (int) $file->getSize(),
+                function () use ($request, $organization, $diffSourceBatch, $headerRowNumber, $headerEndRowNumber, $dataStartRowNumber, $showRouteParameters, $disk, $file, $sourceFileSha256): RedirectResponse {
+                    $path = app(PrivateUploadStorageService::class)->store(
+                        $file,
+                        'imports/'.$organization->id,
+                        $disk,
+                        config('opsdeck.import.allowed_extensions'),
+                    );
+                    if (strtolower($file->getClientOriginalExtension()) === 'xlsx') {
+                        try {
+                            $sheets = app(ImportFileLocalStager::class)->withLocalCopy(
+                                $disk,
+                                $path,
+                                fn (string $localPath): array => app(XlsxImportSource::class)->sheets($localPath),
+                            );
+                            abort_if($sheets === [], 422, 'XLSXにシートがありません。');
+                            $selectedSheetName = $diffSourceBatch !== null && in_array($diffSourceBatch->selected_sheet_name, $sheets, true)
+                                ? $diffSourceBatch->selected_sheet_name
+                                : null;
+                            $batch = ImportBatch::query()->create([
+                                'organization_id' => $organization->id, 'source_type' => 'xlsx',
+                                'source_name' => $request->string('source_name')->toString(), 'source_file_path' => $path,
+                                'source_storage_disk' => $disk,
+                                'source_file_size_bytes' => $file->getSize(),
+                                'source_file_sha256' => $sourceFileSha256,
+                                'diff_source_batch_id' => $diffSourceBatch?->id,
+                                'header_row_number' => $headerRowNumber,
+                                'header_end_row_number' => $headerEndRowNumber,
+                                'data_start_row_number' => $dataStartRowNumber,
+                                'available_sheets_json' => $sheets, 'selected_sheet_name' => $selectedSheetName,
+                                'status' => $selectedSheetName === null ? 'sheet_selection' : 'previewing', 'executed_by' => $request->user()->id,
+                                'started_at' => now(),
+                            ]);
+                            if ($selectedSheetName !== null && $diffSourceBatch !== null) {
+                                PrepareImportFileDiffPreview::dispatch($diffSourceBatch->id, $batch->id)->afterCommit();
+                            }
 
-        return to_route('imports.show', [$batch, ...$showRouteParameters])->with('status', 'ファイルを受け付けました。Previewをバックグラウンドで準備します。');
+                            return to_route('imports.show', [$batch, ...$showRouteParameters])->with('status', $selectedSheetName === null ? 'シートを選択してください。' : 'ファイルを受け付けました。前回データとの差分Previewを準備します。');
+                        } catch (\Throwable $exception) {
+                            $this->cleanupFailedImportUpload($disk, $path);
+                            throw $exception;
+                        }
+                    }
+
+                    $batch = null;
+                    try {
+                        $batch = ImportBatch::query()->create([
+                            'organization_id' => $organization->id,
+                            'source_type' => 'csv',
+                            'source_name' => $request->string('source_name')->toString(),
+                            'source_file_path' => $path,
+                            'source_storage_disk' => $disk,
+                            'source_file_size_bytes' => $file->getSize(),
+                            'source_file_sha256' => $sourceFileSha256,
+                            'diff_source_batch_id' => $diffSourceBatch?->id,
+                            'header_row_number' => $headerRowNumber,
+                            'header_end_row_number' => $headerEndRowNumber,
+                            'data_start_row_number' => $dataStartRowNumber,
+                            'status' => 'previewing',
+                            'executed_by' => $request->user()->id,
+                            'started_at' => now(),
+                        ]);
+                        if ($diffSourceBatch !== null) {
+                            PrepareImportFileDiffPreview::dispatch($diffSourceBatch->id, $batch->id)->afterCommit();
+                        } else {
+                            PrepareImportPreview::dispatch($batch->id)->afterCommit();
+                        }
+                    } catch (\Throwable $exception) {
+                        if ($batch === null) {
+                            $this->cleanupFailedImportUpload($disk, $path);
+                        } else {
+                            $this->markPreviewDispatchFailed($batch->id);
+                        }
+                        throw $exception;
+                    }
+
+                    return to_route('imports.show', [$batch, ...$showRouteParameters])->with('status', 'ファイルを受け付けました。Previewをバックグラウンドで準備します。');
+                },
+            );
+        } catch (StorageQuotaExceededException $exception) {
+            return back()->withErrors(['file' => $exception->getMessage()]);
+        }
     }
 
     public function show(Request $request, ImportBatch $importBatch): View
@@ -319,33 +402,65 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('view', $importBatch);
+        $canManageImport = $request->user()->can('update', $importBatch);
+        $staleAfterMinutes = max(1, (int) config('opsdeck.import.stale_after_minutes'));
+        $isImportBatchStale = ImportBatch::query()
+            ->whereKey($importBatch->id)
+            ->stale(now()->subMinutes($staleAfterMinutes))
+            ->exists();
         $capabilities = $this->importCapabilities($organization);
         $availableAdditionalSheets = [];
-        if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null && $importBatch->selected_sheet_name !== null) {
-            $usedSheetNames = ImportBatch::query()
+        $workbookImports = collect();
+        if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null) {
+            $workbookImports = ImportBatch::query()
                 ->where('organization_id', $organization->id)
                 ->where('source_type', 'xlsx')
                 ->where('source_file_path', $importBatch->source_file_path)
                 ->whereNotNull('selected_sheet_name')
-                ->pluck('selected_sheet_name')
-                ->all();
-            $availableAdditionalSheets = array_values(array_diff($importBatch->available_sheets_json ?? [], $usedSheetNames));
+                ->orderBy('id')
+                ->get(['id', 'selected_sheet_name', 'status']);
+            if ($importBatch->selected_sheet_name !== null) {
+                $availableAdditionalSheets = array_values(array_diff(
+                    $importBatch->available_sheets_json ?? [],
+                    $workbookImports->pluck('selected_sheet_name')->all(),
+                ));
+            }
         }
+        $latestRowResultIds = $importBatch->rowResults()
+            ->selectRaw('MAX(import_row_results.id)')
+            ->groupBy('source_row_number');
         $rowResults = $importBatch->rowResults()
+            ->whereIn('id', $latestRowResultIds)
             ->orderBy('source_row_number')
             ->orderBy('id')
             ->paginate(config('opsdeck.pagination.per_page'), ['*'], 'row_results_page')
             ->withQueryString();
         $selectableRowResults = $rowResults->getCollection()->whereIn('action', ['new_candidate', 'update_candidate', 'confirmation_required', 'error', 'preview']);
+        $hasErrorRows = $importBatch->rowResults()->whereIn('id', $latestRowResultIds)->where('action', 'error')->exists();
         $reviewCandidates = $importBatch->reviewCandidates()
             ->orderBy('id')
             ->paginate(config('opsdeck.pagination.per_page'), ['*'], 'review_candidates_page')
             ->withQueryString();
+        $candidateSourceRows = $reviewCandidates->getCollection()
+            ->flatMap(static fn (ImportReviewCandidate $candidate): array => $candidate->source_row_numbers_json ?? [])
+            ->map(static fn (mixed $sourceRowNumber): int => (int) $sourceRowNumber)
+            ->filter(static fn (int $sourceRowNumber): bool => $sourceRowNumber > 0)
+            ->unique()
+            ->values();
+        $candidateRowResultsByNumber = $candidateSourceRows->isEmpty()
+            ? collect()
+            : $importBatch->rowResults()
+                ->whereIn('source_row_number', $candidateSourceRows->all())
+                ->orderByDesc('id')
+                ->get(['id', 'source_row_number', 'after_json'])
+                ->unique('source_row_number')
+                ->keyBy('source_row_number');
         $mapping = $importBatch->mapping_id === null
             ? null
             : $importBatch->mappings()->whereKey($importBatch->mapping_id)->first();
         $importTargetLabel = config('opsdeck.import_target_labels.'.($mapping?->target_type ?? ''), '業務');
         $importFieldLabels = config('opsdeck.import_field_labels', []);
+        $importValueLabels = config('opsdeck.import_value_labels_by_target.'.($mapping?->target_type ?? ''), []);
         $importActionLabels = config('opsdeck.import_action_labels', []);
         $importErrorLabels = config('opsdeck.import_error_labels', []);
         $importBatchStatusLabels = config('opsdeck.import_batch_status_labels', []);
@@ -357,7 +472,17 @@ class ImportBatchController extends Controller
             ? $requestedTargetType
             : null;
 
-        return view('imports.show', compact('organization', 'importBatch', 'rowResults', 'selectableRowResults', 'reviewCandidates', 'capabilities', 'availableAdditionalSheets', 'mapping', 'importTargetLabel', 'importFieldLabels', 'importActionLabels', 'importErrorLabels', 'importBatchStatusLabels', 'importSourceTypeLabels', 'importCandidateTypeLabels', 'importCandidateStatusLabels', 'targetTypeSuggestion'));
+        return view('imports.show', compact('organization', 'importBatch', 'rowResults', 'selectableRowResults', 'hasErrorRows', 'reviewCandidates', 'candidateRowResultsByNumber', 'capabilities', 'availableAdditionalSheets', 'workbookImports', 'mapping', 'importTargetLabel', 'importFieldLabels', 'importValueLabels', 'importActionLabels', 'importErrorLabels', 'importBatchStatusLabels', 'importSourceTypeLabels', 'importCandidateTypeLabels', 'importCandidateStatusLabels', 'targetTypeSuggestion', 'isImportBatchStale', 'staleAfterMinutes', 'canManageImport'));
+    }
+
+    public function downloadErrors(Request $request, ImportBatch $importBatch, ImportErrorReportExport $export): StreamedResponse
+    {
+        $organization = $this->organization($request);
+        $importBatch = $this->scopedBatch($organization, $importBatch);
+        $this->authorize('view', $importBatch);
+        abort_unless($importBatch->rowResults()->where('action', 'error')->exists(), 404);
+
+        return $export->download($importBatch);
     }
 
     public function selectSheet(SelectImportSheetRequest $request, ImportBatch $importBatch): RedirectResponse
@@ -402,7 +527,7 @@ class ImportBatchController extends Controller
         $sheetName = $request->string('sheet_name')->toString();
         abort_unless(in_array($sheetName, $importBatch->available_sheets_json, true), 422, '選択したシートが存在しません。');
         abort_unless(
-            Storage::disk(config('opsdeck.import.disk'))->exists($importBatch->source_file_path),
+            Storage::disk($importBatch->sourceStorageDiskName())->exists($importBatch->source_file_path),
             404,
             '取込元ファイルが見つかりません。再アップロードしてください。',
         );
@@ -434,6 +559,8 @@ class ImportBatchController extends Controller
                     'source_type' => 'xlsx',
                     'source_name' => $sourceBatch->source_name,
                     'source_file_path' => $sourceBatch->source_file_path,
+                    'source_storage_disk' => $sourceBatch->sourceStorageDiskName(),
+                    'source_file_size_bytes' => $sourceBatch->source_file_size_bytes,
                     'source_file_sha256' => $sourceBatch->source_file_sha256,
                     'available_sheets_json' => $sourceBatch->available_sheets_json,
                     'selected_sheet_name' => $sheetName,
@@ -462,11 +589,22 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('view', $importBatch);
+        abort_if($importBatch->diff_source_batch_id !== null, 409, '差分Previewは前回Import時のマッピングを固定しています。列対応を変更する場合は通常のImport Previewを作成してください。');
         abort_unless(in_array($importBatch->status, ['preview', 'ready'], true), 422, 'Preview準備が完了してからマッピングを設定できます。');
 
         $targetTypes = config('opsdeck.import_target_types');
         $suggestions = [];
+        $mappingFieldOptions = [];
         $aiSuggestions = [];
+        $aiMappingFeedbackToken = null;
+        $aiMappingPlanAvailable = app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping');
+        $aiMappingOrganizationEnabled = (bool) $organization->ai_enabled;
+        $aiMappingMonthlyUsage = app(AiUsageBudgetService::class)->monthlySummary($organization);
+        $aiApiKey = config('opsdeck.ai.api_key');
+        $aiMappingServiceConfigured = (bool) config('opsdeck.ai.enabled')
+            && config('opsdeck.ai.provider') === 'openai'
+            && is_string($aiApiKey)
+            && trim($aiApiKey) !== '';
         $aiTargetType = $request->string('ai_target_type')->toString();
         $suggestedTargetType = $request->string('target_type')->toString();
         if (! in_array($suggestedTargetType, $targetTypes, true)) {
@@ -475,6 +613,11 @@ class ImportBatchController extends Controller
         $profileService = app(ImportProfileService::class);
         $sourceSignature = $profileService->sourceSignature($importBatch->selected_sheet_name, $importBatch->headers_json ?? [], (int) $importBatch->header_row_number, $importBatch->resolvedDataStartRowNumber(), $importBatch->resolvedHeaderEndRowNumber());
         $profiles = $profileService->matchingProfiles($organization, $sourceSignature);
+        $targetTypesWithDifferentLayoutProfiles = array_values(array_diff(
+            $profileService->targetTypesWithDifferentLayoutProfiles($organization, $importBatch->selected_sheet_name, $sourceSignature, $targetTypes),
+            $profiles->pluck('target_type')->all(),
+        ));
+        $hasDifferentLayoutProfile = in_array($suggestedTargetType, $targetTypesWithDifferentLayoutProfiles, true);
         $selectedProfile = null;
         if ($request->filled('profile_id')) {
             $selectedProfile = $profiles->firstWhere('id', $request->integer('profile_id'));
@@ -486,19 +629,48 @@ class ImportBatchController extends Controller
         foreach ($targetTypes as $targetType) {
             $aliases = config('opsdeck.import_column_aliases.'.$targetType, []);
             $suggestions[$targetType] = array_map(static fn (string $header): ?string => $aliases[trim($header)] ?? null, $importBatch->headers_json ?? []);
+            $mappingFieldOptions[$targetType] = collect(array_merge(config('opsdeck.import_mapping_fields.'.$targetType, []), array_values($aliases)))
+                ->filter(static fn (mixed $field): bool => is_string($field) && $field !== '')
+                ->unique()
+                ->map(static fn (string $field): array => [
+                    'value' => $field,
+                    'label' => config('opsdeck.import_field_labels_by_target.'.$targetType.'.'.$field, config('opsdeck.import_field_labels.'.$field, $field))
+                        .(in_array($field, config('opsdeck.import_required_mapping_fields.'.$targetType, []), true) ? '（必須）' : ''),
+                ])
+                ->values()
+                ->all();
         }
-        if ($request->boolean('ai') && in_array($aiTargetType, $targetTypes, true)) {
+        if ($request->isMethod('POST') && $request->boolean('ai') && in_array($aiTargetType, $targetTypes, true)) {
             $this->authorize('update', $importBatch);
-            $targetFields = array_values(array_unique(array_filter(config('opsdeck.import_column_aliases.'.$aiTargetType, []))));
+            $targetFields = array_values(array_unique(array_filter(array_merge(
+                config('opsdeck.import_mapping_fields.'.$aiTargetType, []),
+                array_values(config('opsdeck.import_column_aliases.'.$aiTargetType, [])),
+            ), 'is_string')));
             $aiSuggestions = app(ImportMappingSuggestionService::class)->suggest($organization, $importBatch->headers_json ?? [], $aiTargetType, $targetFields, $request->user()->id);
+            $aiCandidateSuggestions = [];
             foreach ($aiSuggestions as $header => $suggestion) {
+                if (in_array($suggestion['source'] ?? null, ['ai', 'ai_escalated'], true) && is_string($suggestion['field'] ?? null)) {
+                    $aiCandidateSuggestions[$this->aiMappingHeaderKey($header)] = $suggestion['field'];
+                }
                 $index = array_search($header, $importBatch->headers_json ?? [], true);
                 if ($index !== false && $suggestions[$aiTargetType][$index] === null) {
                     $suggestions[$aiTargetType][$index] = $suggestion['field'];
                 }
             }
+            if ($aiCandidateSuggestions !== []) {
+                $aiMappingFeedbackToken = bin2hex(random_bytes(32));
+                $request->session()->put($this->aiMappingFeedbackSessionKey($organization, $importBatch, $aiMappingFeedbackToken), [
+                    'user_id' => (int) $request->user()->id,
+                    'target_type' => $aiTargetType,
+                    'headers_fingerprint' => $this->aiMappingHeadersFingerprint($importBatch->headers_json ?? []),
+                    'suggestions' => $aiCandidateSuggestions,
+                ]);
+            }
         }
-        $normalizationTargetType = in_array($suggestedTargetType, $targetTypes, true) ? $suggestedTargetType : $aiTargetType;
+        $normalizationTargetType = in_array($suggestedTargetType, $targetTypes, true)
+            ? $suggestedTargetType
+            : (in_array($aiTargetType, $targetTypes, true) ? $aiTargetType : ($targetTypes[0] ?? ''));
+        $valueMappingSuggestions = [];
         if (in_array($normalizationTargetType, $targetTypes, true)) {
             $aliases = config('opsdeck.import_column_aliases.'.$normalizationTargetType, []);
             $columnMap = $initialColumnMap;
@@ -507,7 +679,10 @@ class ImportBatchController extends Controller
                     $columnMap[$header] = $aliases[$header];
                 }
             }
-            $normalizationSuggestions = app(ImportNormalizationSuggestionService::class)->suggest($normalizationTargetType, $importBatch->headers_json ?? [], $this->sourceRowsForMapping($importBatch, $normalizationTargetType), $columnMap);
+            $mappingSampleRows = $this->sourceRowsForMapping($importBatch, $normalizationTargetType);
+            $normalizationService = app(ImportNormalizationSuggestionService::class);
+            $normalizationSuggestions = $normalizationService->suggest($normalizationTargetType, $importBatch->headers_json ?? [], $mappingSampleRows, $columnMap);
+            $valueMappingSuggestions = $normalizationService->suggestValueMappings($normalizationTargetType, $mappingSampleRows, $columnMap);
         }
         $suggestionByField = collect($normalizationSuggestions)->keyBy('field');
         $normalizationRuleOptions = collect($targetTypes)->flatMap(function (string $targetType) use ($normalizationTargetType, $suggestionByField): array {
@@ -519,13 +694,31 @@ class ImportBatchController extends Controller
                     'field' => $field,
                     'rule' => $rule,
                     'label' => config('opsdeck.import_normalization_rule_labels.'.$rule, $rule),
+                    'choices' => collect(config('opsdeck.import_normalization_rule_options.'.$targetType.'.'.$field, [$rule]))
+                        ->map(fn (string $choice): array => [
+                            'rule' => $choice,
+                            'label' => config('opsdeck.import_normalization_rule_labels.'.$choice, $choice),
+                        ])
+                        ->values()
+                        ->all(),
                     'suggestion' => $suggestionsForTarget->get($field),
                 ])
                 ->values()
                 ->all();
         });
 
-        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'normalizationSuggestions', 'normalizationRuleOptions', 'normalizationTargetType', 'profiles', 'selectedProfile', 'initialColumnMap'));
+        $valueMappingFields = collect($targetTypes)->mapWithKeys(function (string $targetType) use ($normalizationTargetType, $valueMappingSuggestions): array {
+            return [$targetType => collect(config('opsdeck.import_value_mapping_fields.'.$targetType, []))
+                ->map(fn (string $field): array => [
+                    'field' => $field,
+                    'label' => config('opsdeck.import_field_labels.'.$field, $field),
+                    'suggestions' => $targetType === $normalizationTargetType ? ($valueMappingSuggestions[$field] ?? []) : [],
+                ])
+                ->values()
+                ->all()];
+        })->all();
+
+        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'mappingFieldOptions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'aiMappingFeedbackToken', 'normalizationSuggestions', 'normalizationRuleOptions', 'normalizationTargetType', 'profiles', 'selectedProfile', 'initialColumnMap', 'valueMappingFields', 'hasDifferentLayoutProfile', 'targetTypesWithDifferentLayoutProfiles', 'aiMappingPlanAvailable', 'aiMappingOrganizationEnabled', 'aiMappingServiceConfigured', 'aiMappingMonthlyUsage'));
     }
 
     public function saveMapping(StoreImportMappingRequest $request, ImportBatch $importBatch): RedirectResponse
@@ -533,6 +726,7 @@ class ImportBatchController extends Controller
         $importBatch = $this->scopedBatch($this->organization($request), $importBatch);
         $organization = $this->organization($request);
         $this->authorize('update', $importBatch);
+        abort_if($importBatch->diff_source_batch_id !== null, 409, '差分Previewは前回Import時のマッピングを固定しています。列対応を変更する場合は通常のImport Previewを作成してください。');
         abort_unless(in_array($importBatch->status, ['preview', 'ready'], true), 422, 'Preview準備が完了してからマッピングを保存できます。');
         $targetType = $request->string('target_type')->toString();
         $columnMap = $request->validated('column_map');
@@ -541,18 +735,44 @@ class ImportBatchController extends Controller
             $columnMap,
             $request->validated('normalization_rules') ?? [],
         );
+        $valueMappings = app(ImportNormalizationSuggestionService::class)->validateValueMappings(
+            $targetType,
+            $columnMap,
+            $request->validated('value_mappings') ?? [],
+        );
+        $aiMappingFeedbackToken = $request->validated('ai_mapping_feedback_token');
+        $aiMappingFeedbackSessionKey = is_string($aiMappingFeedbackToken)
+            ? $this->aiMappingFeedbackSessionKey($organization, $importBatch, $aiMappingFeedbackToken)
+            : null;
+        $aiMappingFeedbackPayload = $aiMappingFeedbackSessionKey === null ? null : $request->session()->get($aiMappingFeedbackSessionKey);
 
         try {
-            DB::transaction(function () use ($importBatch, $request, $organization, $targetType, $columnMap, $normalizationRules): void {
+            DB::transaction(function () use ($importBatch, $request, $organization, $targetType, $columnMap, $normalizationRules, $valueMappings, $aiMappingFeedbackPayload): void {
                 $lockedBatch = ImportBatch::query()->whereKey($importBatch->id)->lockForUpdate()->firstOrFail();
                 abort_unless(in_array($lockedBatch->status, ['preview', 'ready'], true), 409, 'このバッチはすでに処理中です。');
+                $aiMappingFeedback = $this->aiMappingFeedbackForSubmission(
+                    $aiMappingFeedbackPayload,
+                    $lockedBatch,
+                    $targetType,
+                    (int) $request->user()->id,
+                    $columnMap,
+                );
+                $profileService = app(ImportProfileService::class);
+                $sourceSignature = $profileService->sourceSignature($lockedBatch->selected_sheet_name, $lockedBatch->headers_json ?? [], (int) $lockedBatch->header_row_number, $lockedBatch->resolvedDataStartRowNumber(), $lockedBatch->resolvedHeaderEndRowNumber());
+                $profile = null;
+                if ($request->filled('profile_id')) {
+                    $profile = ImportProfile::query()
+                        ->where('organization_id', $organization->id)
+                        ->where('source_signature', $sourceSignature)
+                        ->where('target_type', $targetType)
+                        ->findOrFail((int) $request->validated('profile_id'));
+                }
 
                 if ($request->boolean('save_profile')) {
-                    $profileService = app(ImportProfileService::class);
-                    $profileService->saveVersion(
+                    $profile = $profileService->saveVersion(
                         $organization,
-                        $request->filled('profile_id') ? (int) $request->validated('profile_id') : null,
-                        $profileService->sourceSignature($lockedBatch->selected_sheet_name, $lockedBatch->headers_json ?? [], (int) $lockedBatch->header_row_number, $lockedBatch->resolvedDataStartRowNumber(), $lockedBatch->resolvedHeaderEndRowNumber()),
+                        $profile?->id,
+                        $sourceSignature,
                         $lockedBatch->selected_sheet_name,
                         (int) $lockedBatch->header_row_number,
                         $lockedBatch->resolvedDataStartRowNumber(),
@@ -562,6 +782,7 @@ class ImportBatchController extends Controller
                         $request->string('profile_name')->toString(),
                         $columnMap,
                         $normalizationRules,
+                        $valueMappings,
                         (int) $request->user()->id,
                     );
                 }
@@ -570,6 +791,11 @@ class ImportBatchController extends Controller
                     'target_type' => $targetType,
                     'column_map' => $columnMap,
                     'normalization_rules' => $normalizationRules,
+                    'value_mappings' => $valueMappings,
+                    'import_profile_id' => $profile?->id,
+                    'import_profile_version' => $profile?->version,
+                    'ai_suggestion_count' => $aiMappingFeedback['reviewed'] > 0 ? $aiMappingFeedback['reviewed'] : null,
+                    'ai_suggestion_accepted_count' => $aiMappingFeedback['reviewed'] > 0 ? $aiMappingFeedback['approved'] : null,
                     'status' => 'analyzing',
                     'created_by' => $request->user()->id,
                 ]);
@@ -585,12 +811,60 @@ class ImportBatchController extends Controller
                 ]);
                 PrepareImportMappingAnalysis::dispatch($lockedBatch->id, $mapping->id)->afterCommit();
             });
+            if ($aiMappingFeedbackSessionKey !== null) {
+                $request->session()->forget($aiMappingFeedbackSessionKey);
+            }
         } catch (\Throwable $exception) {
             $this->markMappingAnalysisDispatchFailed($importBatch->id);
             throw $exception;
         }
 
         return to_route('imports.show', $importBatch)->with('status', '列マッピングを受け付けました。重複候補と件数をバックグラウンドで分析します。');
+    }
+
+    /** @return array{reviewed: int, approved: int} */
+    private function aiMappingFeedbackForSubmission(mixed $payload, ImportBatch $importBatch, string $targetType, int $userId, array $columnMap): array
+    {
+        if (! is_array($payload)
+            || ($payload['user_id'] ?? null) !== $userId
+            || ($payload['target_type'] ?? null) !== $targetType
+            || ! is_string($payload['headers_fingerprint'] ?? null)
+            || ! hash_equals($this->aiMappingHeadersFingerprint($importBatch->headers_json ?? []), $payload['headers_fingerprint'])
+            || ! is_array($payload['suggestions'] ?? null)) {
+            return ['reviewed' => 0, 'approved' => 0];
+        }
+
+        $suggestions = $payload['suggestions'];
+        $submittedFieldsByHeaderKey = [];
+        foreach ($columnMap as $header => $field) {
+            if (is_string($header) && is_string($field)) {
+                $submittedFieldsByHeaderKey[$this->aiMappingHeaderKey($header)] = $field;
+            }
+        }
+
+        $approved = 0;
+        foreach ($suggestions as $headerKey => $suggestedField) {
+            if (is_string($headerKey) && is_string($suggestedField) && ($submittedFieldsByHeaderKey[$headerKey] ?? null) === $suggestedField) {
+                $approved++;
+            }
+        }
+
+        return ['reviewed' => count($suggestions), 'approved' => $approved];
+    }
+
+    private function aiMappingFeedbackSessionKey(Organization $organization, ImportBatch $importBatch, string $token): string
+    {
+        return 'opsdeck.ai_mapping_feedback.'.$organization->id.'.'.$importBatch->id.'.'.$token;
+    }
+
+    private function aiMappingHeaderKey(string $header): string
+    {
+        return hash_hmac('sha256', $header, (string) config('app.key'));
+    }
+
+    private function aiMappingHeadersFingerprint(array $headers): string
+    {
+        return hash_hmac('sha256', json_encode(array_values($headers), JSON_THROW_ON_ERROR), (string) config('app.key'));
     }
 
     public function reviewCandidate(ReviewImportCandidateRequest $request, ImportBatch $importBatch, ImportReviewCandidate $candidate): RedirectResponse
@@ -641,7 +915,7 @@ class ImportBatchController extends Controller
                 return;
             }
 
-            $selectableActions = ['new_candidate', 'update_candidate', 'confirmation_required', 'error', 'preview'];
+            $selectableActions = ['new_candidate', 'update_candidate', 'confirmation_required', 'preview'];
             $lockedBatch->rowResults()
                 ->whereIn('action', $selectableActions)
                 ->whereIn('source_row_number', $visible)
@@ -670,12 +944,13 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('update', $importBatch);
-        $this->assertFeatureAvailable($organization, 'import_execution', 'Import実行はPremiumプランで利用できます。');
+        $this->assertImportSourceFeatureAvailable($organization, $importBatch->source_type);
+        $this->assertFeatureAvailable($organization, 'import_execution', 'このプランではCSVデータ取込を利用できません。');
         abort_unless($importBatch->status === 'ready', 422, 'ready状態のバッチだけ実行できます。');
         abort_unless(($importBatch->source_type === 'google_sheets' && $importBatch->source_external_id !== null) || (in_array($importBatch->source_type, ['csv', 'xlsx'], true) && $importBatch->source_file_path !== null), 422, '実行可能なImportファイルがありません。');
         $mapping = $importBatch->mappings()->where('status', 'ready')->latest()->firstOrFail();
         abort_if($importBatch->reviewCandidates()->whereIn('status', ['pending', 'deferred'])->exists(), 422, '重複候補の判断が残っているため、Importを実行できません。');
-        abort_unless(in_array($mapping->target_type, ['employees', 'departments', 'assets', 'saas_services', 'saas_assignments', 'contracts', 'security_controls', 'evidence', 'questionnaire_answers'], true), 422, 'このデータ種別はImport実行に対応していません。');
+        abort_unless(in_array($mapping->target_type, ['employees', 'departments', 'assets', 'asset_assignments', 'saas_services', 'saas_assignments', 'contracts', 'security_controls', 'evidence', 'questionnaire_answers'], true), 422, 'このデータ種別はImport実行に対応していません。');
         $this->assertImportTargetFeatureAvailable($organization, $mapping->target_type);
         $asyncThreshold = max(1, (int) config('opsdeck.import.async_threshold_rows'));
         if ($importBatch->total_rows >= $asyncThreshold) {
@@ -698,230 +973,12 @@ class ImportBatchController extends Controller
                 throw $exception;
             }
 
-            return to_route('imports.show', $importBatch)->with('status', 'Importを受け付けました。処理状況はこの画面で確認できます。');
+            return to_route('imports.show', $importBatch)->with('status', '取込を受け付けました。処理が始まるまで順番待ちです。状態が変わらない場合は管理者にお問い合わせください。重ねて実行しないでください。');
         }
 
         app(ImportBatchExecutionService::class)->execute($importBatch->id, $request->user()->id, 'ready');
 
         return to_route('imports.show', $importBatch->refresh())->with('status', 'ファイルを取り込みました。');
-    }
-
-    /** @return array{0: array<string, mixed>, 1: string} */
-    private function processImportRow(string $targetType, ImportBatch $importBatch, array $values, int $sourceRowNumber, Organization $organization): array
-    {
-        $result = ['import_batch_id' => $importBatch->id, 'source_row_number' => $sourceRowNumber, 'target_type' => $targetType, 'action' => 'skipped'];
-        if ($targetType === 'employees') {
-            if (($values['name'] ?? '') === '' || ! filter_var($values['email'] ?? '', FILTER_VALIDATE_EMAIL)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'name and a valid email are required'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['employee_number', 'name', 'email', 'employment_status', 'joined_at', 'left_at', 'job_title', 'memo']));
-            $attributes['employment_status'] = $attributes['employment_status'] ?? config('opsdeck.employee_status.active');
-            foreach (['joined_at', 'left_at'] as $dateField) {
-                if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
-                    $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
-                }
-            }
-            $record = Employee::query()->where('organization_id', $importBatch->organization_id)->where('email', $attributes['email'])->first();
-        } elseif ($targetType === 'departments') {
-            if (($values['name'] ?? '') === '') {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'name is required'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['name', 'code', 'is_active']));
-            $attributes['is_active'] = ! in_array(strtolower((string) ($attributes['is_active'] ?? 'true')), ['0', 'false', 'no', 'inactive'], true);
-            $record = Department::query()->where('organization_id', $importBatch->organization_id)->where('name', $attributes['name'])->first();
-        } elseif ($targetType === 'assets') {
-            if (($values['asset_number'] ?? '') === '' || ! in_array($values['asset_type'] ?? '', config('opsdeck.asset_types'), true)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'asset_number and a valid asset_type are required'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['asset_number', 'asset_type', 'manufacturer', 'model', 'serial_number', 'os', 'purchased_at', 'purchase_cost', 'warranty_until', 'status', 'location', 'memo']));
-            $attributes['status'] = $attributes['status'] ?? config('opsdeck.asset_status.in_stock');
-            if (! in_array($attributes['status'], config('opsdeck.asset_statuses'), true) || (isset($attributes['purchase_cost']) && $attributes['purchase_cost'] !== '' && ! is_numeric($attributes['purchase_cost']))) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'status or purchase_cost is invalid'];
-
-                return [$result, 'error'];
-            }
-            foreach (['purchased_at', 'warranty_until'] as $dateField) {
-                if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
-                    $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
-                }
-            }
-            $record = Asset::query()->where('organization_id', $importBatch->organization_id)->where('asset_number', $attributes['asset_number'])->first();
-        } elseif ($targetType === 'saas_services') {
-            if (($values['name'] ?? '') === '' || ! in_array($values['status'] ?? '', config('opsdeck.saas_service_statuses'), true)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'name and a valid status are required'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['name', 'vendor', 'category', 'website_url', 'status', 'memo']));
-            if (isset($attributes['website_url']) && $attributes['website_url'] !== '' && filter_var($attributes['website_url'], FILTER_VALIDATE_URL) === false) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'website_url is invalid'];
-
-                return [$result, 'error'];
-            }
-            $record = SaasService::query()->where('organization_id', $importBatch->organization_id)->where('name', $attributes['name'])->first();
-        } elseif ($targetType === 'saas_assignments') {
-            $serviceName = $values['service_name'] ?? '';
-            $employeeEmail = $values['employee_email'] ?? '';
-            $service = SaasService::query()->where('organization_id', $importBatch->organization_id)->where('name', $serviceName)->first();
-            $employee = $employeeEmail === '' ? null : Employee::query()->where('organization_id', $importBatch->organization_id)->where('email', $employeeEmail)->first();
-            if ($service === null || ($employeeEmail !== '' && $employee === null) || ! in_array($values['mfa_status'] ?? '', config('opsdeck.saas_assignment_mfa_statuses'), true)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'service_name, employee_email and mfa_status must resolve to valid organization data'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['account_identifier', 'license_name', 'status', 'mfa_status', 'last_reviewed_at', 'assigned_at', 'ended_at', 'memo']));
-            $attributes['saas_service_id'] = $service->id;
-            $attributes['employee_id'] = $employee?->id;
-            foreach (['last_reviewed_at', 'assigned_at', 'ended_at'] as $dateField) {
-                if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
-                    $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
-                }
-            }
-            if (($attributes['assigned_at'] ?? null) !== null && ($attributes['ended_at'] ?? null) !== null && $attributes['ended_at'] < $attributes['assigned_at']) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'ended_at must be on or after assigned_at'];
-
-                return [$result, 'error'];
-            }
-            $record = SaasAssignment::query()->where('organization_id', $importBatch->organization_id)->where('saas_service_id', $service->id)->where('employee_id', $employee?->id)->where('account_identifier', $attributes['account_identifier'] ?? null)->first();
-        } elseif ($targetType === 'security_controls') {
-            if (($values['control_code'] ?? '') === ''
-                || ($values['title'] ?? '') === ''
-                || ($values['category'] ?? '') === ''
-                || ($values['description'] ?? '') === ''
-                || ! in_array($values['status'] ?? '', config('opsdeck.security_control_statuses'), true)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => '管理項目コード・タイトル・カテゴリ・説明と有効な状態が必要です。'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['control_code', 'title', 'category', 'description', 'status', 'review_frequency', 'last_reviewed_at', 'next_review_at', 'memo']));
-            foreach (['last_reviewed_at', 'next_review_at'] as $dateField) {
-                if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
-                    $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
-                }
-            }
-            if (($attributes['last_reviewed_at'] ?? null) !== null
-                && ($attributes['next_review_at'] ?? null) !== null
-                && $attributes['next_review_at'] < $attributes['last_reviewed_at']) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => '次回確認日は最終確認日以降の日付にしてください。'];
-
-                return [$result, 'error'];
-            }
-            $record = SecurityControl::query()
-                ->where('organization_id', $importBatch->organization_id)
-                ->where('control_code', $attributes['control_code'])
-                ->first();
-        } elseif ($targetType === 'questionnaire_answers') {
-            $questionnaire = Questionnaire::query()->where('organization_id', $importBatch->organization_id)->where('title', $values['questionnaire_title'] ?? '')->first();
-            $question = $questionnaire?->questions()->where('question_text', $values['question_text'] ?? '')->first();
-            if ($question === null || ! in_array($values['source_type'] ?? '', config('opsdeck.questionnaire_answer_source_types'), true) || (($values['answer_text'] ?? '') === '' && ($values['answer_choice'] ?? '') === '')) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'questionnaire/question and a non-empty answer with valid source_type are required'];
-
-                return [$result, 'error'];
-            }
-            $attributes = ['question_id' => $question->id, 'answer_text' => $values['answer_text'] ?? null, 'answer_choice' => $values['answer_choice'] ?? null, 'answer_status' => QuestionnaireAnswer::DRAFT_STATUS, 'source_type' => $values['source_type']];
-            $record = QuestionnaireAnswer::query()->where('question_id', $question->id)->latest('id')->first();
-        } elseif ($targetType === 'contracts') {
-            if (($values['contract_name'] ?? '') === '' || ($values['vendor_name'] ?? '') === '' || ! in_array($values['billing_cycle'] ?? '', config('opsdeck.contract_billing_cycles'), true) || ! in_array($values['status'] ?? '', config('opsdeck.contract_statuses'), true)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'contract_name, vendor_name, billing_cycle and status are required and valid'];
-
-                return [$result, 'error'];
-            }
-            if (! app(ContractAmountValidator::class)->isValid($values['amount'] ?? null)) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'amount must be non-negative, have up to two decimal places and fit the supported maximum'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['vendor_name', 'contract_name', 'contract_type', 'billing_cycle', 'amount', 'currency', 'started_at', 'ends_at', 'auto_renew', 'cancellation_deadline', 'renewal_date', 'license_quantity', 'status', 'memo']));
-            $attributes['contract_type'] = $attributes['contract_type'] ?? 'other';
-            $attributes['currency'] = $attributes['currency'] ?? 'JPY';
-            $attributes['auto_renew'] = ! in_array(strtolower((string) ($attributes['auto_renew'] ?? 'false')), ['0', 'false', 'no'], true);
-            foreach (['started_at', 'ends_at', 'cancellation_deadline', 'renewal_date'] as $dateField) {
-                if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
-                    $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
-                }
-            }
-            if (($attributes['started_at'] ?? null) !== null && ($attributes['ends_at'] ?? null) !== null && $attributes['ends_at'] < $attributes['started_at']) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'ends_at must be on or after started_at'];
-
-                return [$result, 'error'];
-            }
-            $record = Contract::query()->where('organization_id', $importBatch->organization_id)->where('contract_name', $attributes['contract_name'])->where('vendor_name', $attributes['vendor_name'])->first();
-        } else {
-            if (($values['title'] ?? '') === '' || ($values['evidence_type'] ?? '') === '') {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'title and evidence_type are required'];
-
-                return [$result, 'error'];
-            }
-            $attributes = array_intersect_key($values, array_flip(['title', 'evidence_type', 'description', 'valid_from', 'valid_until']));
-            foreach (['valid_from', 'valid_until'] as $dateField) {
-                if (isset($attributes[$dateField]) && $attributes[$dateField] !== '') {
-                    $attributes[$dateField] = CarbonImmutable::parse($attributes[$dateField])->toDateString();
-                }
-            }
-            if (($attributes['valid_from'] ?? null) !== null && ($attributes['valid_until'] ?? null) !== null && $attributes['valid_until'] < $attributes['valid_from']) {
-                $result['action'] = 'error';
-                $result['errors_json'] = ['row' => 'valid_until must be on or after valid_from'];
-
-                return [$result, 'error'];
-            }
-            $record = Evidence::query()->where('organization_id', $importBatch->organization_id)->where('title', $attributes['title'])->where('evidence_type', $attributes['evidence_type'])->first();
-        }
-        if ($record === null) {
-            $limitedResource = match ($targetType) {
-                'employees', 'assets', 'saas_services' => $targetType,
-                default => null,
-            };
-
-            if ($limitedResource !== null) {
-                app(PlanLimitService::class)->assertCanAdd($organization, $limitedResource);
-            }
-
-            $record = match ($targetType) {
-                'employees' => Employee::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'departments' => Department::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'assets' => Asset::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'saas_services' => SaasService::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'saas_assignments' => SaasAssignment::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'contracts' => Contract::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'security_controls' => SecurityControl::query()->create($attributes + ['organization_id' => $importBatch->organization_id]),
-                'questionnaire_answers' => QuestionnaireAnswer::query()->create($attributes),
-                default => Evidence::query()->create($attributes + ['organization_id' => $importBatch->organization_id, 'storage_disk' => 'local', 'storage_path' => 'metadata-only', 'mime_type' => 'application/x-opsdeck-metadata', 'file_size' => 0, 'uploaded_by' => $importBatch->executed_by]),
-            };
-            $result['action'] = 'inserted';
-            $result['target_id'] = $record->id;
-            $result['after_json'] = $this->snapshotAttributes($record, array_keys($attributes));
-
-            return [$result, 'inserted'];
-        }
-        $before = $this->snapshotAttributes($record, array_keys($attributes));
-        $record->update($attributes);
-        $result['action'] = 'updated';
-        $result['target_id'] = $record->id;
-        $result['before_json'] = $before;
-        $result['after_json'] = $this->snapshotAttributes($record, array_keys($attributes));
-
-        return [$result, 'updated'];
     }
 
     private function duplicateKey(string $targetType, array $values): ?string
@@ -932,28 +989,6 @@ class ImportBatchController extends Controller
     private function normalizeImportValues(string $targetType, array $values): array
     {
         return app(ImportBatchExecutionService::class)->normalizeImportValues($targetType, $values);
-    }
-
-    private function sameImportValues(array $previous, array $current): bool
-    {
-        return app(ImportBatchExecutionService::class)->sameImportValues($previous, $current);
-    }
-
-    /**
-     * @param  list<string>  $fields
-     * @return array<string, mixed>
-     */
-    private function snapshotAttributes(Model $record, array $fields): array
-    {
-        $snapshot = [];
-        foreach ($fields as $field) {
-            $cast = $record->getCasts()[$field] ?? null;
-            $snapshot[$field] = is_string($cast) && str_starts_with($cast, 'decimal:')
-                ? $record->getAttribute($field)
-                : $record->getRawOriginal($field);
-        }
-
-        return $snapshot;
     }
 
     public function rollback(RollbackImportBatchRequest $request, ImportBatch $importBatch): RedirectResponse
@@ -967,7 +1002,7 @@ class ImportBatchController extends Controller
             $markedRollingBack = false;
 
             try {
-                DB::transaction(function () use ($organization, $importBatch, &$markedRollingBack): void {
+                DB::transaction(function () use ($organization, $importBatch, $request, &$markedRollingBack): void {
                     $lockedBatch = ImportBatch::query()
                         ->where('organization_id', $organization->id)
                         ->whereKey($importBatch->id)
@@ -976,7 +1011,7 @@ class ImportBatchController extends Controller
                     abort_unless($lockedBatch->status === 'completed', 409, 'このImportはすでに取消処理中です。');
                     $lockedBatch->update(['status' => 'rolling_back', 'failure_message' => null]);
                     $markedRollingBack = true;
-                    RollbackImportBatch::dispatch((int) $lockedBatch->id)->afterCommit();
+                    RollbackImportBatch::dispatch((int) $lockedBatch->id, (int) $request->user()->id)->afterCommit();
                 });
             } catch (\Throwable $exception) {
                 if ($markedRollingBack) {
@@ -996,16 +1031,24 @@ class ImportBatchController extends Controller
             return to_route('imports.show', $importBatch)->with('status', '大容量Importの取消を受け付けました。処理中はこの画面を更新して状態を確認してください。');
         }
 
-        DB::transaction(function () use ($organization, $importBatch): void {
-            $lockedBatch = ImportBatch::query()
-                ->where('organization_id', $organization->id)
-                ->whereKey($importBatch->id)
-                ->lockForUpdate()
-                ->firstOrFail();
-            abort_unless($lockedBatch->status === 'completed', 409, 'このImportはすでに取消処理中です。');
-            $lockedBatch->update(['status' => 'rolling_back', 'failure_message' => null]);
-            app(ImportBatchRollbackService::class)->rollback((int) $lockedBatch->id);
-        });
+        try {
+            DB::transaction(function () use ($organization, $importBatch, $request): void {
+                $lockedBatch = ImportBatch::query()
+                    ->where('organization_id', $organization->id)
+                    ->whereKey($importBatch->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                abort_unless($lockedBatch->status === 'completed', 409, 'このImportはすでに取消処理中です。');
+                $lockedBatch->update(['status' => 'rolling_back', 'failure_message' => null]);
+                app(ImportBatchRollbackService::class)->rollback((int) $lockedBatch->id, (int) $request->user()->id);
+            });
+        } catch (HttpException $exception) {
+            if ($exception->getStatusCode() !== 409) {
+                throw $exception;
+            }
+
+            return to_route('imports.show', $importBatch)->withErrors(['rollback' => $exception->getMessage()]);
+        }
 
         return to_route('imports.show', $importBatch)->with('status', 'Importを安全に取消しました。');
     }
@@ -1016,8 +1059,9 @@ class ImportBatchController extends Controller
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('update', $importBatch);
         abort_unless($importBatch->status === 'failed', 422, 'failed状態のバッチだけ再実行できます。');
+        $this->assertImportSourceFeatureAvailable($organization, $importBatch->source_type);
         if ($importBatch->diff_source_batch_id !== null) {
-            $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+            $diffSourceBatch = ImportBatch::query()->where('organization_id', $organization->id)->whereKey($importBatch->diff_source_batch_id)->firstOrFail();
             DB::transaction(function () use ($importBatch, $request): void {
                 $lockedBatch = ImportBatch::query()->whereKey($importBatch->id)->lockForUpdate()->firstOrFail();
                 abort_unless($lockedBatch->status === 'failed' && $lockedBatch->diff_source_batch_id !== null, 409, 'この差分Previewはすでに再試行中です。');
@@ -1034,21 +1078,20 @@ class ImportBatchController extends Controller
                     'completed_at' => null,
                     'executed_by' => $request->user()->id,
                 ]);
-                PrepareGoogleSheetDiffPreview::dispatch($sourceBatchId, $lockedBatch->id)->afterCommit();
+                $sourceType = ImportBatch::query()->whereKey($sourceBatchId)->value('source_type');
+                if ($sourceType === 'google_sheets') {
+                    PrepareGoogleSheetDiffPreview::dispatch($sourceBatchId, $lockedBatch->id)->afterCommit();
+                } else {
+                    PrepareImportFileDiffPreview::dispatch($sourceBatchId, $lockedBatch->id)->afterCommit();
+                }
             });
 
-            return to_route('imports.show', $importBatch)->with('status', 'Google Sheets差分Previewの再試行を受け付けました。');
+            return to_route('imports.show', $importBatch)->with('status', '差分Previewの再試行を受け付けました。');
         }
         $failedMapping = $importBatch->mapping_id === null
             ? null
             : $importBatch->mappings()->whereKey($importBatch->mapping_id)->where('status', 'failed')->first();
         if ($failedMapping !== null) {
-            if ($importBatch->source_type === 'xlsx') {
-                $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
-            } elseif ($importBatch->source_type === 'google_sheets') {
-                $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
-            }
-
             DB::transaction(function () use ($importBatch, $failedMapping): void {
                 $lockedBatch = ImportBatch::query()->whereKey($importBatch->id)->lockForUpdate()->firstOrFail();
                 $lockedMapping = $lockedBatch->mappings()->whereKey($failedMapping->id)->lockForUpdate()->firstOrFail();
@@ -1072,12 +1115,6 @@ class ImportBatchController extends Controller
         $hasMappings = $importBatch->mappings()->exists();
         $hasPreviewSource = $importBatch->source_file_path !== null || $importBatch->source_external_id !== null;
         if (! $hasMappings && $hasPreviewSource && in_array($importBatch->source_type, ['csv', 'xlsx', 'google_sheets'], true)) {
-            if ($importBatch->source_type === 'xlsx') {
-                $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
-            } elseif ($importBatch->source_type === 'google_sheets') {
-                $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
-            }
-
             DB::transaction(function () use ($importBatch, $request): void {
                 $lockedBatch = ImportBatch::query()->whereKey($importBatch->id)->lockForUpdate()->firstOrFail();
                 abort_unless($lockedBatch->status === 'failed', 409, 'このPreviewはすでに再試行中です。');
@@ -1101,7 +1138,7 @@ class ImportBatchController extends Controller
             return to_route('imports.show', $importBatch)->with('status', 'Previewの再試行を受け付けました。処理状況はこの画面で確認できます。');
         }
 
-        $this->assertFeatureAvailable($organization, 'import_execution', 'Import実行はPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($organization, 'import_execution', 'このプランではCSVデータ取込を利用できません。');
         $asyncThreshold = max(1, (int) config('opsdeck.import.async_threshold_rows'));
         if ($importBatch->total_rows >= $asyncThreshold) {
             $retryBatchId = null;
@@ -1190,6 +1227,21 @@ class ImportBatchController extends Controller
         return $organization;
     }
 
+    private function cleanupFailedImportUpload(string $disk, string $path): void
+    {
+        try {
+            if (Storage::disk($disk)->delete($path)) {
+                return;
+            }
+        } catch (\Throwable) {
+        }
+
+        try {
+            Log::warning('Import upload cleanup failed after batch preparation failed.');
+        } catch (\Throwable) {
+        }
+    }
+
     private function markPreviewDispatchFailed(int $importBatchId): void
     {
         ImportBatch::query()
@@ -1228,6 +1280,15 @@ class ImportBatchController extends Controller
         app(PlanFeatureService::class)->assertAvailable($organization, $feature, $message);
     }
 
+    private function assertImportSourceFeatureAvailable(Organization $organization, string $sourceType): void
+    {
+        if ($sourceType === 'xlsx') {
+            $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
+        } elseif ($sourceType === 'google_sheets') {
+            $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+        }
+    }
+
     private function assertImportTargetFeatureAvailable(Organization $organization, string $targetType): void
     {
         $feature = match ($targetType) {
@@ -1260,14 +1321,18 @@ class ImportBatchController extends Controller
         };
 
         if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null) {
-            app(XlsxImportSource::class)->parseEach(
-                Storage::disk(config('opsdeck.import.disk'))->path($importBatch->source_file_path),
-                $importBatch->selected_sheet_name,
-                $collectSampleRow,
-                $sampleRowLimit,
-                headerRowNumber: (int) $importBatch->header_row_number,
-                dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
-                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+            app(ImportFileLocalStager::class)->withLocalCopy(
+                $importBatch->sourceStorageDiskName(),
+                $importBatch->source_file_path,
+                fn (string $localPath): array => app(XlsxImportSource::class)->parseEach(
+                    $localPath,
+                    $importBatch->selected_sheet_name,
+                    $collectSampleRow,
+                    $sampleRowLimit,
+                    headerRowNumber: (int) $importBatch->header_row_number,
+                    dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
+                    headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+                ),
             );
         } elseif ($importBatch->source_type === 'google_sheets' && $importBatch->source_external_id !== null && $importBatch->selected_sheet_name !== null) {
             $connection = GoogleSheetConnection::query()->where('organization_id', $importBatch->organization_id)->first();
@@ -1286,7 +1351,7 @@ class ImportBatchController extends Controller
                 headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
             );
         } elseif ($importBatch->source_type === 'csv' && $importBatch->source_file_path !== null) {
-            $disk = Storage::disk(config('opsdeck.import.disk'));
+            $disk = Storage::disk($importBatch->sourceStorageDiskName());
             if (! $disk->exists($importBatch->source_file_path)) {
                 return [];
             }

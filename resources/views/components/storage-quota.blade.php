@@ -1,0 +1,24 @@
+<section class="card" aria-labelledby="storage-quota-title" role="status">
+    <h2 id="storage-quota-title">会社の保存容量</h2>
+    @if (($quota['addon_gib'] ?? 0) > 0)
+        <p>Premium基本容量に追加{{ $quota['addon_gib'] }}GiBを加算しています。</p>
+    @endif
+    @if (($quota['pending_addon_gib'] ?? null) !== null)
+        <p role="status">追加容量は{{ $quota['addon_effective_at_display'] ?? '次回更新日' }}に{{ $quota['pending_addon_gib'] }}GiBへ変更予定です。変更日までは現在の容量を利用できます。</p>
+    @endif
+    <p>現在 {{ $quota['used_display'] }} ／ 上限 {{ $quota['limit_display'] }}（{{ $quota['used_percentage'] }}%）</p>
+    @if ($quota['remaining_bytes'] === 0)
+        <p>新しく保存できる残り容量はありません。</p>
+    @else
+        <p>あと約 {{ $quota['remaining_display'] }} 保存できます。</p>
+    @endif
+    <progress value="{{ min(100, $quota['used_percentage']) }}" max="100" aria-label="会社の保存容量の使用率"></progress>
+    <p class="muted">取込元ファイルと証跡ファイルの合計です。登録した社員や資産などの件数は、ここには含まれません。</p>
+    @if ($quota['remaining_bytes'] === 0)
+        <p class="errors">保存容量の上限に達しました。新しいファイルをアップロードできません。すでに登録したデータとファイルは削除されません。継続してファイルを保存したい場合は、<a href="{{ route('support.create', ['category' => 'billing']) }}">容量についてサポートへ相談してください</a>。</p>
+    @elseif ($quota['warning'])
+        <p class="errors">保存容量が警告目安の{{ $quota['warning_percentage'] }}%に達しています。上限に達すると新しいファイルをアップロードできなくなります。すでに登録したデータとファイルは削除されません。会社の管理者にご相談ください。</p>
+    @else
+        <p class="muted">上限に近づくと、この画面でお知らせします。</p>
+    @endif
+</section>

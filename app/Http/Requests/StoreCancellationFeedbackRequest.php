@@ -29,7 +29,7 @@ class StoreCancellationFeedbackRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'reason' => ['required', 'string', Rule::in(['price', 'missing_feature', 'not_using', 'support', 'security', 'other'])],
+            'reason' => ['required', 'string', Rule::in(array_keys(config('opsdeck.cancellation_feedback.reasons', [])))],
             'details' => ['nullable', 'string', 'max:2000'],
         ];
     }

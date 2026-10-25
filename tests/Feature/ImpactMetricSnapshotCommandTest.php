@@ -2,9 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Enums\MembershipRole;
+use App\Enums\MembershipStatus;
 use App\Models\ImpactMetricSnapshot;
 use App\Models\ImportBatch;
 use App\Models\Organization;
+use App\Models\OrganizationMembership;
+use App\Models\User;
 use App\Services\ImpactReportMetricsService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
@@ -14,6 +18,52 @@ use Tests\TestCase;
 
 class ImpactMetricSnapshotCommandTest extends TestCase
 {
+    public function test_impact_report_routes_are_unavailable_even_to_premium_members_outside_release_scope(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $suffix = Str::lower(Str::random(12));
+        $user = User::factory()->create(['email' => 'impact-release-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'Impact release '.$suffix,
+            'slug' => 'impact-release-'.$suffix,
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => 'premium',
+            'billing_status' => 'active',
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Owner,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        config(['opsdeck.release_features.impact_report' => false]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.show'))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('impact-report.download'))
+            ->assertNotFound();
+    }
+
+    public function test_snapshot_commands_do_not_read_or_delete_data_when_impact_reports_are_disabled(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config(['opsdeck.release_features.impact_report' => false]);
+        $snapshotQueries = [];
+        DB::listen(static function (QueryExecuted $query) use (&$snapshotQueries): void {
+            if (str_contains(strtolower($query->sql), 'impact_metric_snapshots')) {
+                $snapshotQueries[] = $query->sql;
+            }
+        });
+
+        $this->artisan('opsdeck:impact:snapshots')->assertExitCode(0);
+        $this->artisan('opsdeck:impact:prune-snapshots')->assertExitCode(0);
+
+        $this->assertSame([], $snapshotQueries);
+    }
+
     public function test_daily_snapshots_are_captured_once_per_organization_local_date(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

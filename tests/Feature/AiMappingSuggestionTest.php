@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AiUsageLog;
 use App\Models\Organization;
+use App\Services\Ai\AiUsageBudgetService;
 use App\Services\Ai\ImportMappingSuggestionService;
 use App\Services\PlanAccessService;
 use App\Services\PlanFeatureService;
@@ -46,6 +47,60 @@ class AiMappingSuggestionTest extends TestCase
             $this->assertSame([
                 'test-model' => ['input' => 0.25, 'cached_input' => 0.025, 'cache_write_input' => 0.3125, 'output' => 1.25],
             ], $configuration['ai']['model_prices_per_million_tokens']);
+        } finally {
+            if ($previousEnvironmentValue === false) {
+                putenv($environmentKey);
+            } else {
+                putenv($environmentKey.'='.$previousEnvironmentValue);
+            }
+
+            if ($previousEnvironmentValueWasSet) {
+                $_ENV[$environmentKey] = $previousEnvironmentValueInEnv;
+            } else {
+                unset($_ENV[$environmentKey]);
+            }
+
+            if ($previousEnvironmentValueWasInServer) {
+                $_SERVER[$environmentKey] = $previousEnvironmentValueInServer;
+            } else {
+                unset($_SERVER[$environmentKey]);
+            }
+        }
+    }
+
+    public function test_environment_example_contains_valid_ai_model_pricing_json(): void
+    {
+        $environmentExample = file_get_contents(base_path('.env.example'));
+        $this->assertIsString($environmentExample);
+        $matches = [];
+
+        $this->assertSame(1, preg_match('/^OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS=\'([^\']+)\'$/m', $environmentExample, $matches));
+
+        $modelPrices = json_decode($matches[1], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame([
+            'gpt-6-luna' => ['input' => 0.10, 'cached_input' => 0.01, 'cache_write_input' => 0.125, 'output' => 0.50],
+            'gpt-6.1-sol' => ['input' => 2.00, 'cached_input' => 0.10, 'cache_write_input' => 2.50, 'output' => 10.00],
+        ], $modelPrices);
+    }
+
+    public function test_ai_timeout_configuration_enforces_a_positive_request_timeout(): void
+    {
+        $environmentKey = 'OPSDECK_AI_TIMEOUT_SECONDS';
+        $previousEnvironmentValue = getenv($environmentKey);
+        $previousEnvironmentValueWasSet = array_key_exists($environmentKey, $_ENV);
+        $previousEnvironmentValueInEnv = $_ENV[$environmentKey] ?? null;
+        $previousEnvironmentValueWasInServer = array_key_exists($environmentKey, $_SERVER);
+        $previousEnvironmentValueInServer = $_SERVER[$environmentKey] ?? null;
+
+        putenv($environmentKey.'=0');
+        $_ENV[$environmentKey] = '0';
+        $_SERVER[$environmentKey] = '0';
+
+        try {
+            $configuration = require config_path('opsdeck.php');
+
+            $this->assertSame(1, $configuration['ai']['timeout_seconds']);
         } finally {
             if ($previousEnvironmentValue === false) {
                 putenv($environmentKey);
@@ -140,6 +195,183 @@ class AiMappingSuggestionTest extends TestCase
                 && $payload['text']['format']['strict'] === true
                 && $payload['input'] === json_encode(['headers' => ['氏名', '秘密'], 'target_type' => 'employees', 'target_fields' => ['name', 'email']], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         });
+    }
+
+    public function test_incomplete_or_invalid_provider_usage_falls_back_and_reserves_the_estimated_cost(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.api_key' => 'test-key',
+        ]);
+        $validOutput = ['output' => [['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode(['suggestions' => [
+            ['source_column' => '氏名', 'field' => 'name', 'confidence' => 0.95, 'reason' => '氏名を示す列名のため', 'requires_review' => false, 'question' => null],
+        ]])]]]]];
+        Http::fakeSequence('api.openai.com/v1/responses')
+            ->push(['status' => 'completed'] + $validOutput, 200)
+            ->push(['status' => 'completed', 'usage' => ['input_tokens' => '12', 'output_tokens' => -1]] + $validOutput, 200);
+
+        foreach (['Missing usage', 'Invalid usage'] as $name) {
+            $organization = Organization::query()->create([
+                'name' => $name.' '.Str::random(8),
+                'slug' => Str::slug($name.'-'.Str::random(8)),
+                'timezone' => config('opsdeck.default_timezone'),
+                'plan_code' => config('opsdeck.premium_plan_code'),
+                'billing_status' => config('opsdeck.default_billing_status'),
+                'ai_enabled' => true,
+            ]);
+
+            $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['氏名'], 'employees', ['name']);
+
+            $this->assertSame('fallback', $suggestions['氏名']['source']);
+            $usage = AiUsageLog::query()->where('organization_id', $organization->id)->firstOrFail();
+            $this->assertFalse($usage->success);
+            $this->assertSame('provider_unavailable', $usage->error_code);
+            $this->assertGreaterThan(0, (float) $usage->estimated_cost_usd);
+            $this->assertDatabaseMissing('ai_usage_reservations', ['organization_id' => $organization->id]);
+        }
+
+        Http::assertSentCount(2);
+    }
+
+    public function test_provider_rate_limit_returns_manual_fallback_without_leaving_a_reservation(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.api_key' => 'test-key',
+            'opsdeck.ai.escalation_enabled' => false,
+            'opsdeck.ai.monthly_budget_jpy.premium' => 1,
+            'opsdeck.ai.model_prices_per_million_tokens.gpt-6-luna' => [
+                'input' => 1.0,
+                'cached_input' => 0.1,
+                'cache_write_input' => 1.0,
+                'output' => 1.0,
+            ],
+        ]);
+        $organization = Organization::query()->create([
+            'name' => 'AI provider rate limit '.Str::random(8),
+            'slug' => 'ai-provider-rate-limit-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+            'ai_enabled' => true,
+        ]);
+        Http::preventStrayRequests();
+        Http::fake(['api.openai.com/v1/responses' => Http::response(
+            ['error' => ['type' => 'rate_limit_error']],
+            429,
+            ['Retry-After' => '30'],
+        )]);
+
+        $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['社員番号'], 'employees', ['employee_number']);
+
+        $this->assertSame('fallback', $suggestions['社員番号']['source']);
+        $this->assertNull($suggestions['社員番号']['field']);
+        $this->assertTrue($suggestions['社員番号']['requires_review']);
+        $this->assertDatabaseHas('ai_usage_logs', [
+            'organization_id' => $organization->id,
+            'success' => false,
+            'error_code' => 'provider_http_429',
+        ]);
+        $usage = AiUsageLog::query()->where('organization_id', $organization->id)->firstOrFail();
+        $this->assertSame(0.0, (float) $usage->estimated_cost_usd);
+        $this->assertStringContainsString('AIサービス側の一時的な利用制限', $suggestions['社員番号']['reason']);
+        $this->assertStringContainsString('30秒以上待ってから再実行', $suggestions['社員番号']['reason']);
+        $this->assertDatabaseMissing('ai_usage_reservations', ['organization_id' => $organization->id]);
+        $nextReservation = app(AiUsageBudgetService::class)->reserve(
+            $organization,
+            null,
+            'gpt-6-luna',
+            ['社員番号'],
+            'employees',
+            ['employee_number'],
+        );
+        $this->assertNotNull($nextReservation);
+        $nextReservation->delete();
+        Http::assertSentCount(1);
+    }
+
+    public function test_provider_quota_error_is_distinguished_from_a_generic_http_429(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.api_key' => 'test-key',
+            'opsdeck.ai.escalation_enabled' => false,
+        ]);
+        $organization = Organization::query()->create([
+            'name' => 'AI provider quota '.Str::random(8),
+            'slug' => 'ai-provider-quota-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+            'ai_enabled' => true,
+        ]);
+        Http::preventStrayRequests();
+        Http::fake(['api.openai.com/v1/responses' => Http::response([
+            'error' => [
+                'type' => 'insufficient_quota',
+                'code' => 'insufficient_quota',
+                'message' => 'provider_internal_detail_must_not_be_shown',
+            ],
+        ], 429)]);
+
+        $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['社員番号'], 'employees', ['employee_number']);
+
+        $this->assertSame('fallback', $suggestions['社員番号']['source']);
+        $this->assertNull($suggestions['社員番号']['field']);
+        $this->assertDatabaseHas('ai_usage_logs', [
+            'organization_id' => $organization->id,
+            'success' => false,
+            'error_code' => 'provider_quota_exhausted',
+        ]);
+        $usage = AiUsageLog::query()->where('organization_id', $organization->id)->firstOrFail();
+        $this->assertSame(0.0, (float) $usage->estimated_cost_usd);
+        $this->assertStringContainsString('API残高', $suggestions['社員番号']['reason']);
+        $this->assertStringContainsString('AIを再実行せず', $suggestions['社員番号']['reason']);
+        $this->assertStringNotContainsString('provider_internal_detail_must_not_be_shown', $suggestions['社員番号']['reason']);
+        $this->assertDatabaseMissing('ai_usage_reservations', ['organization_id' => $organization->id]);
+        Http::assertSentCount(1);
+    }
+
+    public function test_provider_connection_timeout_returns_manual_fallback_without_leaving_a_reservation(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config([
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.api_key' => 'test-key',
+            'opsdeck.ai.escalation_enabled' => false,
+        ]);
+        $organization = Organization::query()->create([
+            'name' => 'AI provider timeout '.Str::random(8),
+            'slug' => 'ai-provider-timeout-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+            'ai_enabled' => true,
+        ]);
+        Http::preventStrayRequests();
+        Http::fake(['api.openai.com/v1/responses' => Http::failedConnection('Simulated provider timeout')]);
+
+        $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['社員番号'], 'employees', ['employee_number']);
+
+        $this->assertSame('fallback', $suggestions['社員番号']['source']);
+        $this->assertNull($suggestions['社員番号']['field']);
+        $this->assertTrue($suggestions['社員番号']['requires_review']);
+        $this->assertDatabaseHas('ai_usage_logs', [
+            'organization_id' => $organization->id,
+            'success' => false,
+            'error_code' => 'provider_unavailable',
+        ]);
+        $usage = AiUsageLog::query()->where('organization_id', $organization->id)->firstOrFail();
+        $this->assertGreaterThan(0, (float) $usage->estimated_cost_usd);
+        $this->assertDatabaseMissing('ai_usage_reservations', ['organization_id' => $organization->id]);
+        Http::assertSentCount(1);
     }
 
     public function test_ai_disabled_does_not_call_provider(): void
@@ -284,7 +516,7 @@ class AiMappingSuggestionTest extends TestCase
         $this->assertSame(['氏名', '秘密'], array_keys($suggestions));
     }
 
-    public function test_uncertain_mapping_escalates_once_and_keeps_human_review_required(): void
+    public function test_uncertain_mapping_escalates_only_uncertain_headers_and_keeps_human_review_required(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config(['opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
@@ -296,6 +528,7 @@ class AiMappingSuggestionTest extends TestCase
         ];
         Http::fakeSequence('api.openai.com/v1/responses')
             ->push($responseFor([
+                ['source_column' => '社員名', 'field' => 'name', 'confidence' => 0.99, 'reason' => '社員名の列です', 'requires_review' => false, 'question' => null],
                 ['source_column' => '担当', 'field' => null, 'confidence' => 0.0, 'reason' => '意味を判断できません', 'requires_review' => true, 'question' => '担当の意味を確認してください'],
             ]), 200)
             ->push($responseFor([
@@ -312,15 +545,24 @@ class AiMappingSuggestionTest extends TestCase
         $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping'));
         $this->assertSame(['input' => 2.00, 'cached_input' => 0.10, 'cache_write_input' => 2.50, 'output' => 10.00], config('opsdeck.ai.model_prices_per_million_tokens')['gpt-6.1-sol']);
 
-        $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['担当'], 'employees', ['name', 'email']);
+        $suggestions = app(ImportMappingSuggestionService::class)->suggest($organization, ['社員名', '担当'], 'employees', ['name', 'email']);
 
         Http::assertSentCount(2);
         $this->assertDatabaseHas('ai_usage_logs', ['organization_id' => $organization->id, 'model' => 'gpt-6.1-sol', 'success' => true]);
+        $this->assertSame('name', $suggestions['社員名']['field']);
         $this->assertSame('email', $suggestions['担当']['field']);
         $this->assertTrue($suggestions['担当']['requires_review']);
         $this->assertSame('ai_escalated', $suggestions['担当']['source']);
         Http::assertSent(static fn (Request $request): bool => $request->data()['model'] === 'gpt-6-luna');
-        Http::assertSent(static fn (Request $request): bool => $request->data()['model'] === 'gpt-6.1-sol' && $request->data()['reasoning']['effort'] === 'medium');
+        Http::assertSent(static function (Request $request): bool {
+            if ($request->data()['model'] !== 'gpt-6.1-sol' || $request->data()['reasoning']['effort'] !== 'medium') {
+                return false;
+            }
+
+            $input = json_decode((string) ($request->data()['input'] ?? ''), true);
+
+            return is_array($input) && ($input['headers'] ?? null) === ['担当'];
+        });
         $this->assertDatabaseHas('ai_usage_logs', ['organization_id' => $organization->id, 'model' => 'gpt-6-luna', 'success' => true]);
     }
 
@@ -405,6 +647,39 @@ class AiMappingSuggestionTest extends TestCase
         $this->assertSame('fallback', $suggestions['Asset number']['source']);
         $this->assertDatabaseHas('ai_usage_logs', ['organization_id' => $organization->id, 'error_code' => 'monthly_budget_exceeded']);
         Http::assertNothingSent();
+    }
+
+    public function test_ai_usage_reservation_outlives_configured_provider_timeout(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config([
+            'opsdeck.ai.timeout_seconds' => 240,
+            'opsdeck.ai.monthly_budget_reservation_ttl_minutes' => 1,
+        ]);
+        $organization = Organization::query()->create([
+            'name' => 'AI reservation timeout '.Str::random(8),
+            'slug' => 'ai-reservation-timeout-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+            'ai_enabled' => true,
+        ]);
+        $startedAt = now();
+
+        $reservation = app(AiUsageBudgetService::class)->reserve(
+            $organization,
+            null,
+            'gpt-6-luna',
+            ['社員番号'],
+            'employees',
+            ['employee_number'],
+        );
+
+        $this->assertNotNull($reservation);
+        $this->assertGreaterThanOrEqual(
+            $startedAt->copy()->addMinutes(5)->getTimestamp(),
+            $reservation->expires_at->getTimestamp(),
+        );
     }
 
     public function test_usage_log_marks_unknown_model_pricing_instead_of_reporting_free_usage(): void

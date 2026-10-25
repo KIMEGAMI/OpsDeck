@@ -37,6 +37,96 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $this->assertSame($user->id, $auditLog->actor_user_id);
         $this->assertSame(['changed_fields' => ['question_id', 'answer_text', 'answer_status', 'source_type']], $auditLog->after_json);
         $this->assertStringNotContainsString('多要素認証を有効にしています。', json_encode($auditLog->toArray()));
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
+    }
+
+    public function test_operator_cannot_register_another_answer_while_a_draft_is_pending(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $question = $this->question($organization, $user);
+        $existingAnswer = $question->answers()->create([
+            'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+            'source_type' => 'UNKNOWN',
+        ]);
+
+        $this->followingRedirects()
+            ->from(route('questionnaires.show', $question->questionnaire_id))
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaire-answers.store'), [
+                'question_id' => $question->id,
+                'answer_text' => '重複した承認待ち回答',
+                'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+                'source_type' => 'FACT',
+            ])
+            ->assertOk()
+            ->assertSee('この質問には未承認の回答案があります。既存の回答を確認してください。');
+
+        $this->assertSame(1, QuestionnaireAnswer::query()->where('question_id', $question->id)->whereNull('approved_at')->count());
+        $this->assertDatabaseMissing('questionnaire_answers', [
+            'question_id' => $question->id,
+            'answer_text' => '重複した承認待ち回答',
+        ]);
+        $this->assertDatabaseHas('questionnaire_answers', ['id' => $existingAnswer->id]);
+    }
+
+    public function test_invalid_answer_source_error_is_scoped_to_the_answer_being_edited(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $targetAnswer = $this->answer($organization, $user);
+        $targetQuestionnaire = $targetAnswer->question->questionnaire;
+        $targetAnswer->update(['answer_text' => '保存済みの回答1', 'source_type' => 'FACT']);
+        $otherQuestion = QuestionnaireQuestion::query()->create([
+            'questionnaire_id' => $targetQuestionnaire->id,
+            'question_text' => '別の設問',
+            'answer_type' => 'text',
+            'sort_order' => 2,
+        ]);
+        $otherAnswer = QuestionnaireAnswer::query()->create([
+            'question_id' => $otherQuestion->id,
+            'answer_text' => '保存済みの回答2',
+            'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+            'source_type' => 'UNKNOWN',
+        ]);
+
+        $this->from(route('questionnaires.show', $targetQuestionnaire))
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->put(route('questionnaire-answers.update', $targetAnswer), [
+                'answer_id' => $targetAnswer->id,
+                'answer_text' => '修正途中の回答',
+                'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+                'source_type' => 'INVALID',
+            ])
+            ->assertRedirect(route('questionnaires.show', $targetQuestionnaire))
+            ->assertSessionHasErrors('source_type');
+
+        $this->get(route('questionnaires.show', $targetQuestionnaire))
+            ->assertOk()
+            ->assertSee('<textarea id="answer-text-'.$targetAnswer->id.'" name="answer_text" >修正途中の回答</textarea>', false)
+            ->assertSee('<textarea id="answer-text-'.$otherAnswer->id.'" name="answer_text" >保存済みの回答2</textarea>', false)
+            ->assertSee('<option value="FACT" selected>登録情報に基づく</option>', false)
+            ->assertSee('<option value="UNKNOWN" selected>情報不足</option>', false);
+
+        $this->withSession(['_old_input' => [
+            'answer_id' => $targetAnswer->id,
+            'answer_text' => '修正途中の回答',
+            'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+            'source_type' => 'INVALID',
+        ]]);
+        $this->withViewErrors(['source_type' => ['情報の根拠を選択してください。']]);
+        $this->view('questionnaires.show', [
+            'questionnaire' => $targetQuestionnaire->load(['questions' => fn ($query) => $query->with('answers')->orderBy('sort_order')]),
+        ])
+            ->assertSee('id="answer-source-error-'.$targetAnswer->id.'" class="errors field-error"', false)
+            ->assertSee('aria-describedby="answer-source-error-'.$targetAnswer->id.'"', false)
+            ->assertDontSee('id="answer-source-error-'.$otherAnswer->id.'"', false);
+
+        $this->assertSame('保存済みの回答1', $targetAnswer->refresh()->answer_text);
+        $this->assertSame('FACT', $targetAnswer->source_type);
+        $this->assertSame('保存済みの回答2', $otherAnswer->refresh()->answer_text);
     }
 
     public function test_operator_cannot_register_an_answer_with_the_approved_status(): void
@@ -49,6 +139,24 @@ class QuestionnaireAnswerControllerTest extends TestCase
             'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
             'source_type' => 'FACT',
         ])->assertInvalid(['answer_status']);
+
+        $this->assertDatabaseMissing('questionnaire_answers', ['question_id' => $question->id]);
+    }
+
+    public function test_operator_cannot_register_an_empty_answer(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $question = $this->question($organization, $user);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaire-answers.store'), [
+                'question_id' => $question->id,
+                'answer_text' => '',
+                'answer_choice' => '',
+                'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+                'source_type' => 'UNKNOWN',
+            ])
+            ->assertInvalid(['answer_text', 'answer_choice']);
 
         $this->assertDatabaseMissing('questionnaire_answers', ['question_id' => $question->id]);
     }
@@ -75,6 +183,7 @@ class QuestionnaireAnswerControllerTest extends TestCase
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaire-answers.store'), [
             'question_id' => $question->id,
+            'answer_text' => '越境確認用の回答',
             'answer_status' => 'draft',
             'source_type' => 'UNKNOWN',
         ])->assertNotFound();
@@ -120,6 +229,25 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $answer->id)->where('action', AuditLog::QuestionnaireAnswerUpdated)->sole();
         $this->assertSame(['changed_fields' => ['answer_text', 'source_type']], $auditLog->after_json);
         $this->assertStringNotContainsString('確認済みの回答案', json_encode($auditLog->toArray()));
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
+    }
+
+    public function test_operator_cannot_save_an_empty_answer(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $answer = $this->answer($organization, $user);
+        $answer->update(['answer_text' => '既存の回答案']);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->put(route('questionnaire-answers.update', $answer), [
+                'answer_text' => '',
+                'answer_choice' => '',
+                'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+                'source_type' => 'UNKNOWN',
+            ])
+            ->assertInvalid(['answer_text', 'answer_choice']);
+
+        $this->assertSame('既存の回答案', $answer->refresh()->answer_text);
     }
 
     public function test_operator_cannot_set_the_approved_status_when_updating_an_answer(): void
@@ -218,10 +346,55 @@ class QuestionnaireAnswerControllerTest extends TestCase
         $this->assertNotNull($answer->approved_at);
     }
 
+    public function test_answer_edit_rechecks_approval_after_locking_the_current_record(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Admin);
+        $answer = $this->answer($organization, $user);
+        $answer->update(['answer_text' => '承認前の内容']);
+        $approvalCommitted = false;
+
+        QuestionnaireAnswer::retrieved(static function (QuestionnaireAnswer $retrievedAnswer) use ($answer, $user, &$approvalCommitted): void {
+            if ($approvalCommitted || $retrievedAnswer->isNot($answer)) {
+                return;
+            }
+
+            QuestionnaireAnswer::query()->whereKey($answer->id)->update([
+                'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+                'approved_by' => $user->id,
+                'approved_at' => now(),
+            ]);
+            $approvalCommitted = true;
+        });
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->put(route('questionnaire-answers.update', $answer), [
+                'answer_text' => '承認後に書き換えようとした内容',
+                'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+                'source_type' => 'FACT',
+            ])
+            ->assertForbidden();
+
+        $this->assertTrue($approvalCommitted);
+        $this->assertDatabaseHas('questionnaire_answers', [
+            'id' => $answer->id,
+            'answer_text' => '承認前の内容',
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'approved_by' => $user->id,
+        ]);
+    }
+
     public function test_admin_can_approve_an_answer(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Admin);
         $answer = $this->answer($organization, $user);
+        $questionnaire = $answer->question->questionnaire;
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('questionnaires.show', $questionnaire))
+            ->assertOk()
+            ->assertSee('この回答を確認して承認')
+            ->assertSee(route('questionnaire-answers.approve', $answer), false);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaire-answers.approve', $answer))->assertRedirect();
 
@@ -235,28 +408,88 @@ class QuestionnaireAnswerControllerTest extends TestCase
             'entity_id' => $answer->id,
             'action' => AuditLog::QuestionnaireAnswerApproved,
         ]);
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
+
+        $this->get(route('questionnaires.show', $questionnaire))
+            ->assertOk()
+            ->assertSee('承認済み')
+            ->assertDontSee('この回答を確認して承認');
     }
 
     public function test_operator_cannot_approve_an_answer(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Operator);
         $answer = $this->answer($organization, $user);
+        $questionnaire = $answer->question->questionnaire;
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('questionnaires.show', $questionnaire))
+            ->assertOk()
+            ->assertDontSee('この回答を確認して承認');
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaire-answers.approve', $answer))->assertForbidden();
     }
 
-    public function test_operator_can_generate_unknown_ai_draft_without_auto_approval(): void
+    public function test_admin_cannot_approve_an_answer_more_than_once(): void
     {
+        [$user, $organization] = $this->member(MembershipRole::Admin);
+        $answer = $this->answer($organization, $user);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($user)->withSession($session)
+            ->post(route('questionnaire-answers.approve', $answer))
+            ->assertRedirect();
+
+        $approvedAnswer = $answer->refresh();
+        $approvedAt = $approvedAnswer->approved_at;
+        $auditLogCount = AuditLog::query()
+            ->where('organization_id', $organization->id)
+            ->where('entity_id', $answer->id)
+            ->where('action', AuditLog::QuestionnaireAnswerApproved)
+            ->count();
+
+        $this->post(route('questionnaire-answers.approve', $answer))
+            ->assertForbidden();
+
+        $this->assertSame($user->id, $answer->refresh()->approved_by);
+        $this->assertEquals($approvedAt, $answer->approved_at);
+        $this->assertSame(1, $auditLogCount);
+        $this->assertSame($auditLogCount, AuditLog::query()
+            ->where('organization_id', $organization->id)
+            ->where('entity_id', $answer->id)
+            ->where('action', AuditLog::QuestionnaireAnswerApproved)
+            ->count());
+    }
+
+    public function test_operator_can_generate_unknown_questionnaire_draft_without_auto_approval(): void
+    {
+        config(['opsdeck.release_features.questionnaire_ai_draft' => true]);
         [$user, $organization] = $this->member(MembershipRole::Operator);
         $question = $this->question($organization, $user);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaires.ai-draft', $question->questionnaire_id), ['question_id' => $question->id])->assertRedirect();
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaires.ai-draft', $question->questionnaire_id), ['question_id' => $question->id])
+            ->assertRedirect()
+            ->assertSessionHas('status', '登録情報をもとに回答案を作成しました。根拠と内容を確認してから承認してください。');
 
         $this->assertDatabaseHas('questionnaire_answers', ['question_id' => $question->id, 'source_type' => 'UNKNOWN', 'answer_status' => 'draft', 'approved_by' => null]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->from(route('questionnaires.show', $question->questionnaire_id))
+            ->post(route('questionnaire-answers.store'), [
+                'question_id' => $question->id,
+                'answer_text' => 'AI下書きを重複させた回答',
+                'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+                'source_type' => 'FACT',
+            ])
+            ->assertRedirect(route('questionnaires.show', $question->questionnaire_id))
+            ->assertSessionHasErrors('question_id');
+
+        $this->assertSame(1, QuestionnaireAnswer::query()->where('question_id', $question->id)->count());
     }
 
-    public function test_ai_draft_marks_answer_fact_only_with_control_and_evidence(): void
+    public function test_questionnaire_draft_does_not_treat_unlinked_evidence_as_a_fact(): void
     {
+        config(['opsdeck.release_features.questionnaire_ai_draft' => true]);
         [$user, $organization] = $this->member(MembershipRole::Operator);
         $question = $this->question($organization, $user);
         SecurityControl::query()->create(['organization_id' => $organization->id, 'control_code' => 'MFA', 'title' => 'MFA', 'category' => 'access', 'description' => 'MFA control', 'status' => 'implemented']);
@@ -264,11 +497,92 @@ class QuestionnaireAnswerControllerTest extends TestCase
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('questionnaires.ai-draft', $question->questionnaire_id), ['question_id' => $question->id])->assertRedirect();
 
-        $this->assertDatabaseHas('questionnaire_answers', ['question_id' => $question->id, 'source_type' => 'FACT', 'approved_by' => null]);
+        $answer = QuestionnaireAnswer::query()->where('question_id', $question->id)->firstOrFail();
+        $this->assertSame('INFERENCE', $answer->source_type);
+        $this->assertStringContainsString('実際の運用状況と証跡を確認してください。', $answer->answer_text);
+        $this->assertNull($answer->approved_by);
+    }
+
+    public function test_questionnaire_draft_cannot_overwrite_an_approved_answer(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config(['opsdeck.release_features.questionnaire_ai_draft' => true]);
+        config(['app.debug' => false]);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $question = $this->question($organization, $user);
+        $answer = $question->answers()->create([
+            'answer_text' => '承認済みの回答',
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'source_type' => 'FACT',
+            'approved_by' => $user->id,
+            'approved_at' => now(),
+        ]);
+
+        $this->followingRedirects()
+            ->from(route('questionnaires.show', $question->questionnaire_id))
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaires.ai-draft', $question->questionnaire_id), ['question_id' => $question->id])
+            ->assertOk()
+            ->assertSee('承認済み回答は回答案で上書きできません。');
+
+        $this->assertDatabaseHas('questionnaire_answers', [
+            'id' => $answer->id,
+            'answer_text' => '承認済みの回答',
+            'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+            'approved_by' => $user->id,
+        ]);
+    }
+
+    public function test_questionnaire_draft_rechecks_approval_after_locking_the_current_answer(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config(['opsdeck.release_features.questionnaire_ai_draft' => true]);
+        config(['app.debug' => false]);
+        [$user, $organization] = $this->member(MembershipRole::Admin);
+        $question = $this->question($organization, $user);
+        $answer = $question->answers()->create([
+            'answer_text' => '承認前の回答',
+            'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+            'source_type' => 'FACT',
+            'approved_by' => null,
+            'approved_at' => null,
+        ]);
+        $approvalCommitted = false;
+
+        QuestionnaireAnswer::retrieved(static function (QuestionnaireAnswer $retrievedAnswer) use ($answer, $user, &$approvalCommitted): void {
+            if ($approvalCommitted || $retrievedAnswer->isNot($answer)) {
+                return;
+            }
+
+            QuestionnaireAnswer::query()->whereKey($answer->id)->update([
+                'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
+                'approved_by' => $user->id,
+                'approved_at' => now(),
+            ]);
+            $approvalCommitted = true;
+        });
+
+        $this->followingRedirects()
+            ->from(route('questionnaires.show', $question->questionnaire_id))
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaires.ai-draft', $question->questionnaire_id), ['question_id' => $question->id])
+            ->assertOk()
+            ->assertSee('承認済み回答は回答案で上書きできません。');
+
+        $this->assertTrue($approvalCommitted);
+        $this->assertDatabaseHas('questionnaire_answers', [
+            'id' => $answer->id,
+            'answer_text' => '承認前の回答',
+            'answer_status' => QuestionnaireAnswer::DRAFT_STATUS,
+            'approved_by' => null,
+        ]);
     }
 
     public function test_operator_cannot_create_an_ai_draft_for_another_organizations_questionnaire(): void
     {
+        config(['opsdeck.release_features.questionnaire_ai_draft' => true]);
         [$user, $organization] = $this->member(MembershipRole::Operator);
         [$otherUser, $otherOrganization] = $this->member(MembershipRole::Operator);
         $question = $this->question($otherOrganization, $otherUser);
@@ -283,6 +597,7 @@ class QuestionnaireAnswerControllerTest extends TestCase
 
     public function test_operator_cannot_overwrite_another_organizations_ai_draft(): void
     {
+        config(['opsdeck.release_features.questionnaire_ai_draft' => true]);
         [$user, $organization] = $this->member(MembershipRole::Operator);
         [$otherUser, $otherOrganization] = $this->member(MembershipRole::Operator);
         $answer = $this->answer($otherOrganization, $otherUser);
@@ -298,6 +613,20 @@ class QuestionnaireAnswerControllerTest extends TestCase
             'answer_text' => '別組織の既存回答',
             'source_type' => 'UNKNOWN',
         ]);
+    }
+
+    public function test_questionnaire_ai_draft_is_not_available_when_the_release_flag_is_disabled(): void
+    {
+        config(['opsdeck.release_features.questionnaire_ai_draft' => false]);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $question = $this->question($organization, $user);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaires.ai-draft', $question->questionnaire_id), ['question_id' => $question->id])
+            ->assertNotFound();
+
+        $this->assertDatabaseMissing('questionnaire_answers', ['question_id' => $question->id]);
     }
 
     /** @return array{0: User, 1: Organization} */

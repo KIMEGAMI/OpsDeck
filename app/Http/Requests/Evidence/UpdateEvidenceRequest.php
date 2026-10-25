@@ -32,9 +32,19 @@ class UpdateEvidenceRequest extends FormRequest
         return [
             'title' => ['required', 'string', 'max:'.$maximum],
             'evidence_type' => ['required', 'string', 'max:'.$maximum],
-            'description' => ['nullable', 'string'],
+            'description' => ['nullable', 'string', 'max:'.config('opsdeck.evidence.description_max_length')],
             'valid_from' => ['nullable', 'date'],
             'valid_until' => ['nullable', 'date'],
+        ];
+    }
+
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        $maximumDescriptionLength = number_format((int) config('opsdeck.evidence.description_max_length'));
+
+        return [
+            'description.max' => "説明は{$maximumDescriptionLength}文字以内で入力してください。",
         ];
     }
 }

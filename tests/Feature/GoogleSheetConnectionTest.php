@@ -9,6 +9,7 @@ use App\Jobs\PrepareImportMappingAnalysis;
 use App\Jobs\PrepareImportPreview;
 use App\Models\AuditLog;
 use App\Models\Contract;
+use App\Models\Employee;
 use App\Models\GoogleSheetConnection;
 use App\Models\ImportBatch;
 use App\Models\ImportRowResult;
@@ -18,16 +19,156 @@ use App\Models\User;
 use App\Services\Import\GoogleSheetDiffPreviewPreparationService;
 use App\Services\Import\ImportMappingAnalysisService;
 use App\Services\Import\ImportPreviewPreparationService;
+use App\Services\ImportBatchExecutionService;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 class GoogleSheetConnectionTest extends TestCase
 {
+    public function test_release_scope_disables_google_sheets_routes_and_queued_preview_reads(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member('premium');
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'previewing',
+        ]);
+        config(['opsdeck.release_features.google_sheets' => false]);
+        Http::preventStrayRequests();
+
+        $session = ['current_organization_id' => $organization->id];
+        $this->actingAs($user)->withSession($session)
+            ->get(route('google-sheets.connection'))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->get(route('google-sheets.connect'))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->get(route('google-sheets.callback'))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->get(route('imports.google-sheets'))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->post(route('imports.google-sheets.spreadsheet'))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->post(route('imports.google-sheet.store', $batch))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->post(route('imports.google-sheet.sync', $batch))
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->post(route('google-sheets.disconnect'))
+            ->assertNotFound();
+
+        try {
+            app(ImportPreviewPreparationService::class)->prepare($batch->id);
+            $this->fail('A queued Google Sheets preview must stop when the feature is disabled.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        Http::assertNothingSent();
+        $this->assertSame('previewing', $batch->refresh()->status);
+    }
+
+    public function test_release_scope_stops_queued_google_sheet_mapping_diff_and_execution_reads(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member('premium');
+        $mappingBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'headers_json' => ['名前'],
+            'status' => 'analyzing',
+        ]);
+        $mapping = $mappingBatch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['名前' => 'name'],
+            'normalization_rules' => [],
+            'status' => 'analyzing',
+            'created_by' => $user->id,
+        ]);
+        $mappingBatch->update(['mapping_id' => (string) $mapping->id]);
+        $sourceBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'completed',
+        ]);
+        $diffBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員差分',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'diff_source_batch_id' => $sourceBatch->id,
+            'status' => 'previewing',
+        ]);
+        $executionBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員取込',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'headers_json' => ['名前'],
+            'status' => 'queued',
+        ]);
+        $executionMapping = $executionBatch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['名前' => 'name'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+        $executionBatch->update(['mapping_id' => (string) $executionMapping->id]);
+        config(['opsdeck.release_features.google_sheets' => false]);
+        Http::preventStrayRequests();
+
+        try {
+            app(ImportMappingAnalysisService::class)->analyze($mappingBatch->id, $mapping->id);
+            $this->fail('A queued Google Sheets mapping analysis must stop when the feature is disabled.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        try {
+            app(GoogleSheetDiffPreviewPreparationService::class)->prepare($sourceBatch->id, $diffBatch->id);
+            $this->fail('A queued Google Sheets diff preview must stop when the feature is disabled.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        try {
+            app(ImportBatchExecutionService::class)->execute($executionBatch->id, $user->id, 'queued');
+            $this->fail('A queued Google Sheets import must stop when the feature is disabled.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        Http::assertNothingSent();
+        $this->assertSame('analyzing', $mappingBatch->refresh()->status);
+        $this->assertSame('previewing', $diffBatch->refresh()->status);
+        $this->assertSame('queued', $executionBatch->refresh()->status);
+        $this->assertSame(0, Employee::query()->where('organization_id', $organization->id)->count());
+    }
+
     public function test_free_plan_cannot_open_google_sheets_import(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -47,6 +188,21 @@ class GoogleSheetConnectionTest extends TestCase
             ->assertSee('Premiumプランで利用できます')
             ->assertSee(route('help.recovery', 'google_oauth'))
             ->assertDontSee(route('google-sheets.connect'));
+    }
+
+    public function test_premium_member_sees_plain_language_google_connection_action(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        $organization->update(['billing_status' => 'active']);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('google-sheets.connection'))
+            ->assertOk()
+            ->assertSee('Googleアカウントで接続する')
+            ->assertSee(route('google-sheets.connect'))
+            ->assertDontSee('Google OAuth')
+            ->assertDontSee('許可スコープ');
     }
 
     public function test_operator_can_start_google_oauth_with_state(): void
@@ -79,6 +235,11 @@ class GoogleSheetConnectionTest extends TestCase
         $this->assertSame('access-token', $connection->access_token);
         $this->assertSame('refresh-token', $connection->refresh_token);
         $this->assertNotSame('access-token', $connection->getRawOriginal('access_token'));
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $connection->id)->where('action', AuditLog::GoogleSheetConnected)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['status' => 'connected'], $auditLog->after_json);
+        $this->assertStringNotContainsString('access-token', json_encode($auditLog->toArray()));
+        $this->assertStringNotContainsString('refresh-token', json_encode($auditLog->toArray()));
     }
 
     public function test_callback_connection_failure_redirects_with_safe_recovery_reference(): void
@@ -185,11 +346,39 @@ class GoogleSheetConnectionTest extends TestCase
             'https://sheets.googleapis.com/v4/spreadsheets/sheet-id*' => Http::response(['sheets' => [['properties' => ['title' => '社員一覧']]]], 200),
         ]);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('imports.google-sheets'))->assertOk()->assertSee('台帳')->assertSee('1回の取込は最大20,000行');
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('imports.google-sheets'))
+            ->assertOk()
+            ->assertSee('取り込む表')
+            ->assertSee('履歴で見つけるための名前')
+            ->assertSee('今使っている社員名簿。後で履歴を見たとき、何の表か分かる名前にしてください。')
+            ->assertDontSee('2026年10月')
+            ->assertSee('この操作では、会社のデータはまだ登録・変更されません。')
+            ->assertSee('選んだ表のシートを確認する')
+            ->assertSee('台帳')
+            ->assertSee('1回に取り込めるのは最大20,000行です。');
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('imports.google-sheets.spreadsheet'), ['spreadsheet_id' => 'sheet-id', 'source_name' => 'Google社員'])->assertRedirect();
 
         $this->assertDatabaseHas('import_batches', ['organization_id' => $organization->id, 'source_type' => 'google_sheets', 'source_external_id' => 'sheet-id', 'status' => 'sheet_selection']);
         $this->assertSame(1, ImportBatch::query()->where('organization_id', $organization->id)->count());
+    }
+
+    public function test_operator_gets_recovery_guidance_when_no_spreadsheets_are_available(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'access-token', 'refresh_token' => 'refresh-token']);
+        Http::fake([
+            'https://www.googleapis.com/drive/v3/files*' => Http::response(['files' => []], 200),
+        ]);
+
+        $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('imports.google-sheets'));
+
+        $response->assertOk()
+            ->assertSee('取り込める表が見つかりません')
+            ->assertSee('接続したGoogleアカウントが、取り込みたい表を開けること。')
+            ->assertSee('Google連携の状態を確認する')
+            ->assertDontSee('name="spreadsheet_id"', false);
+        $this->assertSame(0, ImportBatch::query()->where('organization_id', $organization->id)->count());
     }
 
     public function test_selecting_google_sheet_queues_preview_without_fetching_values_in_request(): void
@@ -305,7 +494,7 @@ class GoogleSheetConnectionTest extends TestCase
         $batch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'google_sheets', 'source_name' => 'Google社員', 'source_external_id' => 'sheet-id', 'selected_sheet_name' => '社員一覧', 'headers_json' => ['名前', 'メール'], 'status' => 'completed']);
         $mapping = $batch->mappings()->create(['target_type' => 'employees', 'column_map' => ['名前' => 'name', 'メール' => 'email'], 'normalization_rules' => [], 'status' => 'ready', 'created_by' => $user->id]);
         $batch->update(['mapping_id' => (string) $mapping->id]);
-        ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'sheet_name' => '社員一覧', 'source_row_number' => 2, 'target_type' => 'employees', 'target_id' => 99, 'action' => 'inserted', 'after_json' => ['name' => 'Alice', 'email' => 'alice@example.test']]);
+        ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'sheet_name' => '社員一覧', 'source_row_number' => 2, 'target_type' => 'employees', 'target_id' => 99, 'action' => 'inserted', 'after_json' => ['name' => 'Alice', 'email' => 'alice@example.test', 'employment_status' => 'active', 'created_at' => '2026-10-01 00:00:00']]);
         ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'sheet_name' => '社員一覧', 'source_row_number' => 3, 'target_type' => 'employees', 'target_id' => 100, 'action' => 'inserted', 'after_json' => ['name' => 'Removed', 'email' => 'removed@example.test']]);
         config()->set('opsdeck.import.google_sheets_read_chunk_rows', 2);
         Http::preventStrayRequests();
@@ -327,12 +516,193 @@ class GoogleSheetConnectionTest extends TestCase
         (new PrepareGoogleSheetDiffPreview($batch->id, $preview->id))->handle(app(GoogleSheetDiffPreviewPreparationService::class));
 
         $preview->refresh();
-        $this->assertSame('preview', $preview->status);
+        $this->assertSame('ready', $preview->status);
         $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $preview->id, 'action' => 'unchanged']);
         $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $preview->id, 'action' => 'new_candidate']);
         $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $preview->id, 'action' => 'deleted_candidate']);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $preview->id, 'action' => 'unchanged', 'is_selected' => false]);
+        $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $preview->id, 'action' => 'deleted_candidate', 'is_selected' => false]);
+        $this->assertSame(1, $preview->refresh()->preview_new_rows);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.show', $preview))
+            ->assertOk()
+            ->assertDontSee('列マッピングを設定する');
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', $preview))
+            ->assertConflict();
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.mapping.store', $preview), [
+                'target_type' => 'employees',
+                'column_map' => ['名前' => 'name', 'メール' => 'email'],
+            ])
+            ->assertConflict();
+        $this->assertSame(1, $preview->mappings()->count());
+        Queue::assertNotPushed(PrepareImportMappingAnalysis::class);
         Http::assertSentCount(3);
         $this->assertSame('completed', $batch->refresh()->status);
+    }
+
+    public function test_ambiguous_historical_google_sheet_diff_keys_require_review_and_preserve_removed_rows(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'access-token', 'refresh_token' => 'refresh-token']);
+        $sourceBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員 前回',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'header_row_number' => 1,
+            'header_end_row_number' => 1,
+            'data_start_row_number' => 2,
+            'headers_json' => ['名前', 'メール'],
+            'status' => 'completed',
+            'executed_by' => $user->id,
+        ]);
+        $mapping = $sourceBatch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['名前' => 'name', 'メール' => 'email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+        $sourceBatch->update(['mapping_id' => (string) $mapping->id]);
+        foreach ([
+            ['row' => 2, 'id' => 91, 'name' => '重複社員A', 'email' => 'duplicate@example.test'],
+            ['row' => 3, 'id' => 92, 'name' => '重複社員B', 'email' => 'duplicate@example.test'],
+            ['row' => 4, 'id' => 93, 'name' => '削除候補A', 'email' => 'removed@example.test'],
+            ['row' => 5, 'id' => 94, 'name' => '削除候補B', 'email' => 'removed@example.test'],
+        ] as $previousRow) {
+            ImportRowResult::query()->create([
+                'import_batch_id' => $sourceBatch->id,
+                'sheet_name' => '社員一覧',
+                'source_row_number' => $previousRow['row'],
+                'target_type' => 'employees',
+                'target_id' => $previousRow['id'],
+                'action' => 'inserted',
+                'after_json' => ['name' => $previousRow['name'], 'email' => $previousRow['email']],
+            ]);
+        }
+        $diffBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員 今回',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'header_row_number' => 1,
+            'header_end_row_number' => 1,
+            'data_start_row_number' => 2,
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+            'diff_source_batch_id' => $sourceBatch->id,
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://sheets.googleapis.com/v4/spreadsheets/sheet-id?*' => Http::response(['sheets' => [['properties' => ['title' => '社員一覧', 'gridProperties' => ['rowCount' => 4]]]]], 200),
+            'https://sheets.googleapis.com/v4/spreadsheets/sheet-id/values/*' => Http::response(['values' => [
+                ['名前', 'メール'],
+                ['重複社員', 'duplicate@example.test'],
+                ['新規社員A', 'new@example.test'],
+                ['新規社員B', 'new@example.test'],
+            ]], 200),
+        ]);
+
+        app(GoogleSheetDiffPreviewPreparationService::class)->prepare($sourceBatch->id, $diffBatch->id);
+
+        $diffBatch->refresh();
+        $this->assertSame('ready', $diffBatch->status);
+        $this->assertSame(2, $diffBatch->preview_error_rows);
+        $this->assertSame(1, $diffBatch->preview_new_rows);
+        $this->assertDatabaseHas('import_row_results', [
+            'import_batch_id' => $diffBatch->id,
+            'source_row_number' => 2,
+            'action' => 'error',
+            'target_id' => null,
+            'is_selected' => false,
+        ]);
+        $this->assertDatabaseHas('import_row_results', [
+            'import_batch_id' => $diffBatch->id,
+            'source_row_number' => 3,
+            'action' => 'new_candidate',
+            'is_selected' => true,
+        ]);
+        $this->assertDatabaseHas('import_row_results', [
+            'import_batch_id' => $diffBatch->id,
+            'source_row_number' => 4,
+            'action' => 'error',
+            'is_selected' => false,
+        ]);
+        $this->assertSame(2, $diffBatch->rowResults()->where('action', 'deleted_candidate')->count());
+        $this->assertSame(2, $diffBatch->rowResults()->where('action', 'deleted_candidate')->where('is_selected', false)->count());
+        Http::assertSentCount(2);
+    }
+
+    public function test_google_sheet_diff_execution_uses_the_approved_preview_snapshot(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'access-token', 'refresh_token' => 'refresh-token']);
+        $email = 'diff-'.Str::uuid().'@example.test';
+        $employee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Before Preview',
+            'email' => $email,
+            'employment_status' => 'active',
+        ]);
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'header_row_number' => 1,
+            'header_end_row_number' => 1,
+            'data_start_row_number' => 2,
+            'headers_json' => ['名前', 'メール'],
+            'status' => 'completed',
+        ]);
+        $mapping = $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['名前' => 'name', 'メール' => 'email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+        $batch->update(['mapping_id' => (string) $mapping->id]);
+        ImportRowResult::query()->create([
+            'import_batch_id' => $batch->id,
+            'sheet_name' => '社員一覧',
+            'source_row_number' => 2,
+            'target_type' => 'employees',
+            'target_id' => $employee->id,
+            'action' => 'inserted',
+            'after_json' => ['name' => 'Before Preview', 'email' => $email, 'employment_status' => 'active'],
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://sheets.googleapis.com/v4/spreadsheets/sheet-id?*' => Http::response(['sheets' => [['properties' => ['title' => '社員一覧', 'gridProperties' => ['rowCount' => 2]]]]], 200),
+            'https://sheets.googleapis.com/v4/spreadsheets/sheet-id/values/*' => Http::response(['values' => [['名前', 'メール'], ['Preview Approved Name', $email]]], 200),
+        ]);
+        Queue::fake([PrepareGoogleSheetDiffPreview::class]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('imports.google-sheet.sync', $batch))
+            ->assertRedirect();
+
+        $preview = ImportBatch::query()->where('diff_source_batch_id', $batch->id)->firstOrFail();
+        (new PrepareGoogleSheetDiffPreview($batch->id, $preview->id))->handle(app(GoogleSheetDiffPreviewPreparationService::class));
+        $preview->refresh();
+        $candidate = $preview->rowResults()->where('action', 'update_candidate')->firstOrFail();
+        $this->assertTrue($candidate->is_selected);
+        $this->assertSame(1, $preview->preview_updated_rows);
+
+        $this->assertSame('ready', $preview->status);
+        app(ImportBatchExecutionService::class)->execute($preview->id, $user->id, 'ready');
+
+        $this->assertSame('Preview Approved Name', $employee->refresh()->name);
+        $this->assertSame('completed', $preview->refresh()->status);
+        Http::assertSentCount(2);
     }
 
     public function test_google_sheet_diff_normalizes_formatted_evidence_dates_before_comparison(): void
@@ -417,6 +787,62 @@ class GoogleSheetConnectionTest extends TestCase
         Queue::assertPushed(PrepareGoogleSheetDiffPreview::class, fn (PrepareGoogleSheetDiffPreview $job): bool => $job->sourceBatchId === $sourceBatch->id && $job->diffBatchId === $diffBatch->id);
     }
 
+    public function test_google_sheet_diff_preview_fails_without_saving_rows_when_a_mapped_header_is_missing(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member();
+        GoogleSheetConnection::query()->create(['organization_id' => $organization->id, 'access_token' => 'access-token', 'refresh_token' => 'refresh-token']);
+        $sourceBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'completed',
+        ]);
+        $mapping = $sourceBatch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['名前' => 'name', 'メール' => 'email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+        $sourceBatch->update(['mapping_id' => (string) $mapping->id]);
+        $diffBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'google_sheets',
+            'source_name' => 'Google社員 差分',
+            'source_external_id' => 'sheet-id',
+            'selected_sheet_name' => '社員一覧',
+            'status' => 'previewing',
+            'executed_by' => $user->id,
+            'diff_source_batch_id' => $sourceBatch->id,
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://sheets.googleapis.com/v4/spreadsheets/sheet-id?*' => Http::response(['sheets' => [['properties' => ['title' => '社員一覧', 'gridProperties' => ['rowCount' => 2]]]]], 200),
+            'https://sheets.googleapis.com/v4/spreadsheets/sheet-id/values/*' => Http::response(['values' => [['名前'], ['テスト社員']]], 200),
+        ]);
+        $job = new PrepareGoogleSheetDiffPreview($sourceBatch->id, $diffBatch->id);
+
+        try {
+            $job->handle(app(GoogleSheetDiffPreviewPreparationService::class));
+            $this->fail('A missing mapped header must stop the Google Sheets diff preview.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(
+                ['差分取込元の列見出しが前回のマッピングと一致しません。通常のPreviewで新しい列マッピングを確認してください。'],
+                $exception->errors()['file'],
+            );
+            $job->failed($exception);
+        }
+
+        $this->assertSame('failed', $diffBatch->refresh()->status);
+        $this->assertSame('新しいファイルの列見出しを確認してください。異なる列構成なら通常のPreviewから再度マッピングしてください。', $diffBatch->failure_message);
+        $this->assertSame(0, $diffBatch->mappings()->count());
+        $this->assertSame(0, $diffBatch->rowResults()->count());
+        Http::assertSentCount(2);
+    }
+
     public function test_saving_google_sheet_mapping_queues_analysis_without_fetching_rows_in_request(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -454,7 +880,7 @@ class GoogleSheetConnectionTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.show', $batch))
             ->assertOk()
-            ->assertSee('列マッピング後の重複候補と件数を分析しています');
+            ->assertSee('列の対応を設定した内容を調べています');
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.execute', $batch), ['confirm' => '1'])
             ->assertStatus(422);

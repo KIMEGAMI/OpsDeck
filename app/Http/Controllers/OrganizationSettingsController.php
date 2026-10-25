@@ -7,6 +7,7 @@ use App\Models\AuditLog;
 use App\Models\OnboardingStep;
 use App\Models\Organization;
 use App\Services\OnboardingProgressService;
+use App\Services\OrganizationStorageQuotaService;
 use App\Services\PlanFeatureService;
 use App\Services\PlanUsageService;
 use Illuminate\Contracts\View\View;
@@ -23,8 +24,9 @@ class OrganizationSettingsController extends Controller
         $limits = app(PlanUsageService::class)->forOrganization($organization);
 
         $aiEnabledAvailable = app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping');
+        $storageQuota = app(OrganizationStorageQuotaService::class)->summary($organization);
 
-        return view('settings.organization', compact('organization', 'limits', 'aiEnabledAvailable'));
+        return view('settings.organization', compact('organization', 'limits', 'aiEnabledAvailable', 'storageQuota'));
     }
 
     public function update(UpdateOrganizationSettingsRequest $request): RedirectResponse

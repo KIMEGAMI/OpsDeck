@@ -2,17 +2,25 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\StorageQuotaExceededException;
 use App\Http\Requests\Evidence\StoreEvidenceRequest;
 use App\Http\Requests\Evidence\UpdateEvidenceRequest;
 use App\Models\AuditLog;
 use App\Models\Evidence;
 use App\Models\Organization;
+use App\Services\OrganizationStorageQuotaService;
+use App\Services\PrivateUploadStorageService;
+use App\Services\ProductEventRecorder;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 class EvidenceController extends Controller
 {
@@ -38,7 +46,12 @@ class EvidenceController extends Controller
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
 
-        return view('evidence.form', ['evidence' => new Evidence, 'formAction' => route('evidence.store'), 'formMethod' => 'POST']);
+        return view('evidence.form', [
+            'evidence' => new Evidence,
+            'formAction' => route('evidence.store'),
+            'formMethod' => 'POST',
+            'storageQuota' => app(OrganizationStorageQuotaService::class)->summary($organization),
+        ]);
     }
 
     /**
@@ -51,18 +64,66 @@ class EvidenceController extends Controller
         $attributes = $request->validated();
         $disk = config('opsdeck.evidence.disk');
         $file = $request->file('file');
-        $path = $file->store('evidence/'.$organization->id, $disk);
-        unset($attributes['file']);
+        try {
+            $evidence = app(OrganizationStorageQuotaService::class)->storeWithinQuota(
+                $organization,
+                (int) $file->getSize(),
+                function () use ($attributes, $organization, $disk, $file, $request): Evidence {
+                    $path = app(PrivateUploadStorageService::class)->store(
+                        $file,
+                        'evidence/'.$organization->id,
+                        $disk,
+                        config('opsdeck.evidence.allowed_extensions'),
+                    );
 
-        $evidence = Evidence::query()->create([
-            ...$attributes,
-            'organization_id' => $organization->id,
-            'storage_disk' => $disk,
-            'storage_path' => $path,
-            'mime_type' => $file->getMimeType(),
-            'file_size' => $file->getSize(),
-            'uploaded_by' => $request->user()->id,
-        ]);
+                    unset($attributes['file']);
+
+                    try {
+                        return DB::transaction(function () use ($attributes, $organization, $disk, $file, $path, $request): Evidence {
+                            $evidence = Evidence::query()->create([
+                                ...$attributes,
+                                'organization_id' => $organization->id,
+                                'storage_disk' => $disk,
+                                'storage_path' => $path,
+                                'mime_type' => $file->getMimeType(),
+                                'file_size' => $file->getSize(),
+                                'uploaded_by' => $request->user()->id,
+                            ]);
+                            AuditLog::query()->create([
+                                'organization_id' => $organization->id,
+                                'actor_user_id' => $request->user()->id,
+                                'entity_type' => Evidence::class,
+                                'entity_id' => $evidence->id,
+                                'action' => AuditLog::EvidenceCreated,
+                                'after_json' => ['created_fields' => [...array_keys($attributes), 'file']],
+                            ]);
+
+                            return $evidence;
+                        });
+                    } catch (Throwable $exception) {
+                        try {
+                            $fileRemoved = Storage::disk($disk)->delete($path);
+                        } catch (Throwable) {
+                            $fileRemoved = false;
+                        }
+
+                        if (! $fileRemoved) {
+                            try {
+                                Log::warning('Evidence upload cleanup failed after evidence record persistence failed.');
+                            } catch (Throwable) {
+                                // Preserve the original persistence exception.
+                            }
+                        }
+
+                        throw $exception;
+                    }
+                },
+            );
+        } catch (StorageQuotaExceededException $exception) {
+            return back()->withErrors(['file' => $exception->getMessage()]);
+        }
+
+        app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
 
         return to_route('evidence.show', $evidence)->with('status', '証跡を登録しました。');
     }
@@ -113,6 +174,7 @@ class EvidenceController extends Controller
                     'action' => AuditLog::EvidenceUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 
@@ -122,13 +184,42 @@ class EvidenceController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function download(Request $request, Evidence $evidence)
+    public function download(Request $request, Evidence $evidence): Response|StreamedResponse
     {
         $evidence = $this->scopedEvidence($this->organization($request), $evidence);
         $this->authorize('view', $evidence);
         abort_if($evidence->storage_path === 'metadata-only', 404);
+        try {
+            $storage = Storage::disk($evidence->storage_disk);
+            $fileExists = $storage->exists($evidence->storage_path);
+        } catch (Throwable) {
+            return $this->evidenceStorageUnavailable();
+        }
+        abort_unless($fileExists, 404);
 
-        return Storage::disk($evidence->storage_disk)->download($evidence->storage_path, 'evidence-'.$evidence->id);
+        $extension = strtolower(pathinfo($evidence->storage_path, PATHINFO_EXTENSION));
+        $allowedExtensions = array_map('strtolower', config('opsdeck.evidence.allowed_extensions'));
+        $downloadName = 'evidence-'.$evidence->id;
+        if (in_array($extension, $allowedExtensions, true)) {
+            $downloadName .= '.'.$extension;
+        }
+
+        try {
+            return $storage->download($evidence->storage_path, $downloadName, ['Content-Type' => $evidence->mime_type]);
+        } catch (Throwable) {
+            return $this->evidenceStorageUnavailable();
+        }
+    }
+
+    private function evidenceStorageUnavailable(): Response
+    {
+        try {
+            Log::warning('Private evidence storage could not be read.');
+        } catch (Throwable) {
+            // Preserve the safe response shown to the user.
+        }
+
+        return response()->view('errors.503', [], 503);
     }
 
     private function organization(Request $request): Organization

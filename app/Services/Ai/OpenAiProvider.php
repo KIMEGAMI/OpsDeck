@@ -63,7 +63,7 @@ class OpenAiProvider implements AiProvider
                 ]],
             ]);
         if ($response->failed()) {
-            throw new RuntimeException('AI provider request failed.');
+            $response->throw();
         }
         if ($response->json('status') !== 'completed') {
             throw new RuntimeException('AI provider response did not complete.');
@@ -100,16 +100,37 @@ class OpenAiProvider implements AiProvider
             ];
         }
 
-        $usage = $response->json('usage', []);
+        $usage = $response->json('usage');
+        if (! is_array($usage)) {
+            throw new RuntimeException('AI provider returned invalid usage details.');
+        }
+
+        $inputTokens = $this->usageTokenCount($usage['input_tokens'] ?? null);
+        $outputTokens = $this->usageTokenCount($usage['output_tokens'] ?? null);
         $inputTokenDetails = is_array($usage['input_tokens_details'] ?? null) ? $usage['input_tokens_details'] : [];
+        $cachedInputTokens = $this->usageTokenCount($inputTokenDetails['cached_tokens'] ?? null, true);
+        $cacheWriteInputTokens = $this->usageTokenCount($inputTokenDetails['cache_write_tokens'] ?? null, true);
 
         return [
             'suggestions' => $suggestions,
-            'input_tokens' => max(0, (int) ($usage['input_tokens'] ?? 0)),
-            'cached_input_tokens' => max(0, (int) ($inputTokenDetails['cached_tokens'] ?? 0)),
-            'cache_write_input_tokens' => max(0, (int) ($inputTokenDetails['cache_write_tokens'] ?? 0)),
-            'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+            'input_tokens' => $inputTokens,
+            'cached_input_tokens' => $cachedInputTokens,
+            'cache_write_input_tokens' => $cacheWriteInputTokens,
+            'output_tokens' => $outputTokens,
         ];
+    }
+
+    private function usageTokenCount(mixed $value, bool $optional = false): int
+    {
+        if ($optional && $value === null) {
+            return 0;
+        }
+
+        if (! is_int($value) || $value < 0) {
+            throw new RuntimeException('AI provider returned invalid usage details.');
+        }
+
+        return $value;
     }
 
     private function apiEndpoint(): string

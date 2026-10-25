@@ -46,6 +46,10 @@ class RealizedSavingControllerTest extends TestCase
             'period' => 'annual',
             'evidence_reference' => $input['evidence_reference'],
         ]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
         $saving = $organization->realizedSavings()->firstOrFail();
         $this->assertSame($input['realized_on'], $saving->realized_on->format('Y-m-d'));
         $this->assertDatabaseHas('audit_logs', [
@@ -72,6 +76,10 @@ class RealizedSavingControllerTest extends TestCase
 
         $this->assertDatabaseMissing('realized_savings', ['organization_id' => $organization->id]);
         $this->assertDatabaseMissing('audit_logs', ['organization_id' => $organization->id, 'action' => 'cost_saving.realized']);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     public function test_viewer_cannot_void_a_savings_record(): void
@@ -121,7 +129,11 @@ class RealizedSavingControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
-            ->assertSee('保存済み証憑（任意）');
+            ->assertSee('関連する保存済み資料（任意）')
+            ->assertSee('何を見直しましたか？')
+            ->assertSee('削減できた金額')
+            ->assertSee('通貨（例：JPY＝日本円）')
+            ->assertSee('年間120,000円を削減できた場合');
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('realized-savings.store'), $this->validInput(['evidence_id' => $evidence->id]))
             ->assertRedirect(route('costs.dashboard'));
@@ -177,7 +189,7 @@ class RealizedSavingControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
-            ->assertDontSee('保存済み証憑（任意）');
+            ->assertDontSee('関連する保存済み資料（任意）');
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('realized-savings.store'), $this->validInput(['evidence_id' => $evidence->id]))
             ->assertForbidden();
@@ -250,6 +262,36 @@ class RealizedSavingControllerTest extends TestCase
         $this->assertDatabaseMissing('realized_savings', ['organization_id' => $organization->id]);
     }
 
+    public function test_invalid_realized_saving_highlights_only_the_realized_saving_form(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+
+        $this->from(route('costs.dashboard'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('realized-savings.store'), $this->validInput([
+                'amount' => '0',
+                'currency' => 'USD',
+                'evidence_reference' => 'Savings-invoice-001',
+                'costs_form' => 'realized_saving',
+            ]))
+            ->assertOk()
+            ->assertSee('id="amount-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="amount-error"', false)
+            ->assertSee('id="saving_amount" name="amount" type="number"', false)
+            ->assertSee('value="0"', false)
+            ->assertSee('id="saving_currency" name="currency" value="USD"', false)
+            ->assertSee('id="saving_evidence_reference" name="evidence_reference" value="Savings-invoice-001"', false)
+            ->assertDontSee('id="work_time_currency"', false)
+            ->assertDontSee('id="work_time_evidence_reference"', false)
+            ->assertDontSee('id="work-time-evidence-reference-error"', false);
+
+        $this->assertDatabaseMissing('realized_savings', ['organization_id' => $organization->id]);
+    }
+
     public function test_operator_can_void_a_savings_record_without_deleting_it(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -294,9 +336,19 @@ class RealizedSavingControllerTest extends TestCase
             ->assertRedirect(route('costs.dashboard'));
         $saving = $organization->realizedSavings()->firstOrFail();
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('realized-savings.void', $saving), [])
-            ->assertSessionHasErrors(['reason' => '取消理由を入力してください。']);
+        $this->from(route('costs.dashboard'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('realized-savings.void', $saving), [
+                'costs_form' => 'realized_saving_void',
+                'saving_id' => $saving->id,
+            ])
+            ->assertOk()
+            ->assertSee('id="saving-void-reason-'.$saving->id.'-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="saving-void-reason-'.$saving->id.'-error"', false)
+            ->assertDontSee('id="work-time-void-reason-'.$saving->id.'-error"', false);
 
         $this->assertNull($saving->refresh()->voided_at);
         $this->assertDatabaseMissing('audit_logs', ['entity_id' => $saving->id, 'action' => 'cost_saving.voided']);

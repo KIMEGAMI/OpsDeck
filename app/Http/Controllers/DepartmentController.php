@@ -7,6 +7,7 @@ use App\Http\Requests\Department\UpdateDepartmentRequest;
 use App\Models\AuditLog;
 use App\Models\Department;
 use App\Models\Organization;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,7 +37,19 @@ class DepartmentController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
-        Department::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
+        DB::transaction(function () use ($request, $organization): void {
+            $attributes = $this->validatedForOrganization($request->validated(), $organization);
+            $department = Department::query()->create($attributes + ['organization_id' => $organization->id]);
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => Department::class,
+                'entity_id' => $department->id,
+                'action' => AuditLog::DepartmentCreated,
+                'after_json' => ['created_fields' => array_keys($attributes)],
+            ]);
+        });
+        app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
 
         return to_route('departments.index')->with('status', '部署を登録しました。');
     }
@@ -71,6 +84,7 @@ class DepartmentController extends Controller
                     'action' => AuditLog::DepartmentUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 

@@ -3,8 +3,14 @@
 namespace App\Providers;
 
 use App\Contracts\AiProvider;
+use App\Enums\MembershipStatus;
+use App\Mail\PrivacySafeLogMailTransport;
+use App\Mail\ProductionLogMailTransport;
 use App\Mail\ResendIdempotentTransport;
+use App\Models\AuditLog;
+use App\Models\OrganizationMembership;
 use App\Models\User;
+use App\Observers\BusinessChangeObserver;
 use App\Services\Ai\NullAiProvider;
 use App\Services\Ai\OpenAiProvider;
 use App\Services\QueueWorkerHeartbeatRecorder;
@@ -12,12 +18,14 @@ use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use Symfony\Component\Mailer\Transport\TransportInterface;
 use Symfony\Component\Mime\Email;
 
 class AppServiceProvider extends ServiceProvider
@@ -35,10 +43,21 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        AuditLog::observe(BusinessChangeObserver::class);
+
         Mail::extend('resend_idempotent', static fn (array $config = []): ResendIdempotentTransport => new ResendIdempotentTransport(
             (string) ($config['key'] ?? ''),
             max(1, (int) ($config['timeout'] ?? 10)),
         ));
+        $logTransportFactory = function (array $config = []): TransportInterface {
+            if ($this->app->environment('production')) {
+                return new ProductionLogMailTransport;
+            }
+
+            return new PrivacySafeLogMailTransport;
+        };
+        Mail::extend('log', $logTransportFactory);
+        Mail::extend('Log', $logTransportFactory);
 
         RateLimiter::for('login', fn ($request) => Limit::perMinute(config('opsdeck.auth.max_login_attempts'))->by($request->ip()));
         RateLimiter::for('register', fn ($request) => Limit::perMinute(config('opsdeck.auth.max_login_attempts'))->by($request->ip()));
@@ -63,6 +82,38 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('invitation-create', fn ($request) => Limit::perMinute(
             config('opsdeck.invitations.create_attempts_per_minute'),
         )->by(hash('sha256', (string) $request->attributes->get('currentOrganization')?->getKey())));
+        RateLimiter::for('file-uploads', static function (Request $request): array {
+            $userId = $request->user()?->getAuthIdentifier();
+            $organizationId = $request->attributes->get('currentOrganization')?->getKey();
+            if ($organizationId === null && $userId !== null) {
+                $organizationMembership = OrganizationMembership::query()
+                    ->where('user_id', $userId)
+                    ->where('status', MembershipStatus::Active->value);
+                $selectedOrganizationId = $request->session()->get('current_organization_id');
+                if ($selectedOrganizationId !== null) {
+                    $organizationMembership->where('organization_id', $selectedOrganizationId);
+                }
+                $organizationId = $organizationMembership->value('organization_id');
+            }
+            $organizationId = (string) ($organizationId ?? 'unknown');
+            $memberId = (string) ($userId ?? 'unknown');
+            $limitedResponse = static function (Request $request, array $headers) {
+                $retryAfterSeconds = max(1, (int) ($headers['Retry-After'] ?? 60));
+
+                return response()->view('errors.file-upload-rate-limit', [
+                    'retryAfterSeconds' => $retryAfterSeconds,
+                ], 429, $headers + ['Cache-Control' => 'no-store']);
+            };
+
+            return [
+                Limit::perMinute(config('opsdeck.file_uploads.per_member_attempts_per_minute'))
+                    ->by('member:'.hash('sha256', $organizationId.':'.$memberId))
+                    ->response($limitedResponse),
+                Limit::perMinute(config('opsdeck.file_uploads.per_organization_attempts_per_minute'))
+                    ->by('organization:'.hash('sha256', $organizationId))
+                    ->response($limitedResponse),
+            ];
+        });
 
         ResetPassword::toMailUsing(static function (User $user, string $token): MailMessage {
             $resetPath = route('password.reset', [

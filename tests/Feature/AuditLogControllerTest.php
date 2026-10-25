@@ -13,19 +13,44 @@ use Tests\TestCase;
 
 class AuditLogControllerTest extends TestCase
 {
+    public function test_audit_log_displays_japanese_operation_and_entity_labels(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Admin);
+        AuditLog::query()->create([
+            'organization_id' => $organization->id,
+            'actor_user_id' => $user->id,
+            'entity_type' => 'App\\Models\\GoogleSheetConnection',
+            'action' => AuditLog::GoogleSheetDisconnected,
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('audit-logs.index'))
+            ->assertOk()
+            ->assertSee('Googleスプレッドシートの接続を解除')
+            ->assertSee('Googleスプレッドシート接続')
+            ->assertDontSee(AuditLog::GoogleSheetDisconnected);
+    }
+
     public function test_admin_can_view_current_organization_audit_logs(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         AuditLog::query()->create(['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'entity_type' => 'QuestionnaireAnswer', 'action' => AuditLog::QuestionnaireAnswerApproved]);
+        AuditLog::query()->create(['organization_id' => $organization->id, 'entity_type' => 'FutureRecord', 'action' => 'future.internal_action']);
         [, $otherOrganization] = $this->member(MembershipRole::Admin);
         AuditLog::query()->create(['organization_id' => $otherOrganization->id, 'entity_type' => 'QuestionnaireAnswer', 'action' => 'other_organization.private_action']);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('audit-logs.index'))
             ->assertOk()
-            ->assertSee(AuditLog::QuestionnaireAnswerApproved)
+            ->assertSee('質問票の回答を承認')
+            ->assertSee('質問票の回答')
+            ->assertSee('その他の操作')
+            ->assertSee('記録')
             ->assertDontSee($user->email)
+            ->assertDontSee(AuditLog::QuestionnaireAnswerApproved)
+            ->assertDontSee('future.internal_action')
             ->assertDontSee('other_organization.private_action');
     }
 
@@ -35,21 +60,21 @@ class AuditLogControllerTest extends TestCase
         config(['opsdeck.pagination.per_page' => 1]);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         $createdAt = now()->startOfSecond();
-        $firstLog = AuditLog::query()->create(['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'entity_type' => 'Employee', 'action' => 'employee.created.first', 'created_at' => $createdAt]);
-        $secondLog = AuditLog::query()->create(['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'entity_type' => 'Employee', 'action' => 'employee.created.second', 'created_at' => $createdAt]);
+        $firstLog = AuditLog::query()->create(['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'entity_type' => 'Employee', 'action' => AuditLog::EmployeeCreated, 'created_at' => $createdAt]);
+        $secondLog = AuditLog::query()->create(['organization_id' => $organization->id, 'actor_user_id' => $user->id, 'entity_type' => 'Employee', 'action' => AuditLog::EmployeeUpdated, 'created_at' => $createdAt]);
         $session = ['current_organization_id' => $organization->id];
 
         $this->actingAs($user)->withSession($session)
             ->get(route('audit-logs.index', ['page' => 1]))
             ->assertOk()
-            ->assertSee($secondLog->action)
-            ->assertDontSee($firstLog->action);
+            ->assertSee('社員情報を変更')
+            ->assertDontSee('社員を登録');
 
         $this->actingAs($user)->withSession($session)
             ->get(route('audit-logs.index', ['page' => 2]))
             ->assertOk()
-            ->assertSee($firstLog->action)
-            ->assertDontSee($secondLog->action);
+            ->assertSee('社員を登録')
+            ->assertDontSee('社員情報を変更');
     }
 
     public function test_viewer_cannot_view_audit_logs(): void

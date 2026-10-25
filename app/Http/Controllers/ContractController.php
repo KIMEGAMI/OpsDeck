@@ -46,9 +46,22 @@ class ContractController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
-        $contract = Contract::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
+        $contract = DB::transaction(function () use ($request, $organization): Contract {
+            $attributes = $this->validatedForOrganization($request->validated(), $organization);
+            $contract = Contract::query()->create($attributes + ['organization_id' => $organization->id]);
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => Contract::class,
+                'entity_id' => $contract->id,
+                'action' => AuditLog::ContractCreated,
+                'after_json' => ['created_fields' => array_keys($attributes)],
+            ]);
+
+            return $contract;
+        });
         app(ProductEventRecorder::class)->recordOnce('first_contract_registered', $organization);
-        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
+        app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
 
         return to_route('contracts.show', $contract)->with('status', '契約を登録しました。');
@@ -102,6 +115,7 @@ class ContractController extends Controller
                     'action' => AuditLog::ContractUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 

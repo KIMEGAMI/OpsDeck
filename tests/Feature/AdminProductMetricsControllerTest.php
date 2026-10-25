@@ -7,8 +7,10 @@ use App\Enums\MembershipStatus;
 use App\Models\Announcement;
 use App\Models\AnnouncementDelivery;
 use App\Models\AnnouncementRead;
+use App\Models\CancellationFeedback;
 use App\Models\Employee;
 use App\Models\ImportBatch;
+use App\Models\ImportMapping;
 use App\Models\ImportReviewCandidate;
 use App\Models\OnboardingStep;
 use App\Models\Organization;
@@ -17,6 +19,7 @@ use App\Models\OrganizationMembership;
 use App\Models\ProductEvent;
 use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
+use App\Models\SupportRequest;
 use App\Models\User;
 use App\Services\ImportFailureMetrics;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -34,7 +37,75 @@ class AdminProductMetricsControllerTest extends TestCase
         ProductEvent::query()->create(['event_key' => 'registered', 'occurred_at' => now()]);
         $response = $this->actingAs($admin)->get(route('admin.product-metrics'));
 
-        $response->assertOk()->assertSee('registered')->assertSee('製品利用状況')->assertSee('プラン上限に近い組織数')->assertSee('利用率'.config('opsdeck.limits.warning_percentage').'%以上')->assertDontSee($admin->email);
+        $response->assertOk()->assertSee('新規登録')->assertSee('製品利用状況')->assertSee('AI候補の人手採用率：計測データなし（確認対象0件）')->assertSee('プラン上限に近い組織数')->assertSee('利用率'.config('opsdeck.limits.warning_percentage').'%以上')->assertDontSee('<td>registered</td>', false)->assertDontSee($admin->email);
+    }
+
+    public function test_privacy_support_category_is_displayed_as_a_human_readable_metric(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-privacy-support-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        SupportRequest::query()->create([
+            'category' => 'privacy',
+            'message' => '個人情報に関する問い合わせ本文',
+            'reference_code' => 'SUP-00000000-0000-4000-8000-000000000099',
+        ]);
+
+        $this->actingAs($admin)
+            ->get(route('admin.product-metrics'))
+            ->assertOk()
+            ->assertSee('個人情報・データの取扱い')
+            ->assertDontSee('個人情報に関する問い合わせ本文');
+    }
+
+    public function test_support_status_metrics_use_japanese_labels_and_hide_unknown_status_codes(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-support-status-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+
+        foreach (['open', 'in_progress', 'resolved', 'legacy_status'] as $status) {
+            SupportRequest::query()->create([
+                'category' => 'usage',
+                'message' => '問い合わせ内容',
+                'status' => $status,
+            ]);
+        }
+
+        $response = $this->actingAs($admin)->get(route('admin.product-metrics'))->assertOk();
+
+        foreach (['受付', '対応中', '解決済み', '状態を確認してください'] as $label) {
+            $response->assertSee('<td>'.$label.'</td>', false);
+        }
+
+        foreach (['open', 'in_progress', 'resolved', 'legacy_status'] as $status) {
+            $response->assertDontSee('<td>'.$status.'</td>', false);
+        }
+    }
+
+    public function test_cancellation_feedback_reasons_are_human_readable_and_scoped_as_self_reported(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-cancellation-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        $organization = Organization::query()->create([
+            'name' => 'Cancellation feedback organization',
+            'slug' => 'cancellation-feedback-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => 'active',
+        ]);
+        CancellationFeedback::query()->create([
+            'organization_id' => $organization->id,
+            'reason' => 'missing_feature',
+            'details' => '社内状況がわかる補足文は画面に表示しない',
+        ]);
+
+        $this->actingAs($admin)
+            ->get(route('admin.product-metrics'))
+            ->assertOk()
+            ->assertSee('解約検討・実施理由（自己申告）')
+            ->assertSee('必要な機能がない')
+            ->assertSee('実際の解約組織数とは一致しません')
+            ->assertDontSee('missing_feature')
+            ->assertDontSee('社内状況がわかる補足文は画面に表示しない');
     }
 
     public function test_activation_metrics_use_only_matured_seven_day_registration_cohorts(): void
@@ -61,7 +132,8 @@ class AdminProductMetricsControllerTest extends TestCase
 
         $this->actingAs($admin)->get(route('admin.product-metrics'))
             ->assertOk()
-            ->assertSee('登録組織数（全期間）</dt><dd>4', false)
+            ->assertSee('Activationは「登録」イベントが記録されている組織を対象にします。イベント計測開始前に登録された組織は含まれません。', false)
+            ->assertSee('登録イベント記録済み組織数</dt><dd>4', false)
             ->assertSee('登録後7日経過</dt><dd>3', false)
             ->assertSee('7日以内に初回Preview到達した組織数</dt><dd>3', false)
             ->assertSee('7日以内のPreview到達率</dt><dd>100%', false)
@@ -122,19 +194,68 @@ class AdminProductMetricsControllerTest extends TestCase
         config(['opsdeck.platform_admin_emails' => [$admin->email]]);
         $organization = Organization::query()->create(['name' => 'Metrics AI '.Str::random(8), 'slug' => 'metrics-ai-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
         $batch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => 'candidates', 'status' => 'preview']);
+        $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['氏名' => 'name', '社員番号' => 'department_name'],
+            'normalization_rules' => [],
+            'ai_suggestion_count' => 2,
+            'ai_suggestion_accepted_count' => 1,
+            'status' => 'ready',
+            'created_by' => $admin->id,
+        ]);
         ImportReviewCandidate::query()->create(['import_batch_id' => $batch->id, 'candidate_type' => 'duplicate', 'source_row_numbers_json' => [1], 'confidence' => 0.9, 'details_json' => [], 'status' => 'accepted', 'reviewed_by' => $admin->id, 'reviewed_at' => now()]);
         ImportReviewCandidate::query()->create(['import_batch_id' => $batch->id, 'candidate_type' => 'duplicate', 'source_row_numbers_json' => [2], 'confidence' => 0.8, 'details_json' => [], 'status' => 'rejected', 'reviewed_by' => $admin->id, 'reviewed_at' => now()]);
         OnboardingStep::query()->create(['organization_id' => $organization->id, 'step_key' => 'renewal_checked', 'completed_at' => now(), 'completed_by' => $admin->id]);
         Organization::query()->create(['name' => 'Metrics Cancelled '.Str::random(8), 'slug' => 'metrics-cancelled-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => 'cancelled']);
-        $reviewed = ImportReviewCandidate::query()->whereNotNull('reviewed_at')->count();
-        $approved = ImportReviewCandidate::query()->where('status', 'accepted')->whereNotNull('reviewed_at')->count();
+        $reviewed = (int) ImportMapping::query()->whereNotNull('ai_suggestion_count')->sum('ai_suggestion_count');
+        $approved = (int) ImportMapping::query()->whereNotNull('ai_suggestion_count')->sum('ai_suggestion_accepted_count');
         $approvalRate = round(($approved / $reviewed) * 100, 2);
         $renewalChecks = OnboardingStep::query()->where('step_key', 'renewal_checked')->count();
         $totalBillable = ProductEvent::query()->where('event_key', 'billing_active')->whereNotNull('organization_id')->distinct('organization_id')->count('organization_id');
         $cancelled = ProductEvent::query()->where('event_key', 'billing_cancelled')->whereNotNull('organization_id')->distinct('organization_id')->count('organization_id');
         $cancellationRate = $totalBillable > 0 ? round(($cancelled / $totalBillable) * 100, 2) : 0.0;
 
-        $this->actingAs($admin)->get(route('admin.product-metrics'))->assertOk()->assertSee('AI候補の人手承認率：'.$approvalRate.'%')->assertSee('更新期限確認数：'.$renewalChecks.'件')->assertSee('累計解約率：'.$cancellationRate.'%');
+        $this->actingAs($admin)->get(route('admin.product-metrics'))->assertOk()->assertSee('AI候補の人手採用率：'.$approvalRate.'%')->assertSee('更新期限確認数：'.$renewalChecks.'件')->assertSee('累計解約率：'.$cancellationRate.'%');
+    }
+
+    public function test_platform_admin_sees_business_change_label_for_legacy_event_key(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-business-change-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        ProductEvent::query()->create([
+            'event_key' => 'first_dashboard_action_completed',
+            'occurred_at' => now(),
+        ]);
+
+        $this->actingAs($admin)->get(route('admin.product-metrics'))
+            ->assertOk()
+            ->assertSee('初回業務変更成功')
+            ->assertSee('画面を開いただけでは記録されません。')
+            ->assertDontSee('first_dashboard_action_completed');
+    }
+
+    public function test_product_event_metrics_use_japanese_labels_and_hide_unknown_keys(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-event-labels-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        $eventLabels = config('opsdeck.product_event_labels');
+        $eventKeys = [...array_keys($eventLabels), 'legacy_unknown_event'];
+
+        foreach ($eventKeys as $eventKey) {
+            ProductEvent::query()->create(['event_key' => $eventKey, 'occurred_at' => now()]);
+        }
+
+        $response = $this->actingAs($admin)->get(route('admin.product-metrics'))->assertOk();
+
+        foreach ($eventLabels as $label) {
+            $response->assertSee('<td>'.$label.'</td>', false);
+        }
+
+        $response->assertSee('<td>その他の計測イベント</td>', false);
+
+        foreach ($eventKeys as $eventKey) {
+            $response->assertDontSee('<td>'.$eventKey.'</td>', false);
+        }
     }
 
     public function test_platform_admin_can_view_referral_conversion_metrics(): void
@@ -179,12 +300,73 @@ class AdminProductMetricsControllerTest extends TestCase
         $this->assertStringContainsString('organizations_at_plan_limit', $response->streamedContent());
         $this->assertStringContainsString('plan_limit_warning_percentage', $response->streamedContent());
         $this->assertStringContainsString('activation_eligible_organizations', $response->streamedContent());
+        $this->assertStringContainsString('activation_tracking_scope', $response->streamedContent());
+        $this->assertStringContainsString('イベント計測開始前の登録は含まれない。', $response->streamedContent());
         $this->assertStringContainsString('preview_activation_rate', $response->streamedContent());
         $this->assertStringContainsString('announcement_delivery_manual_review', $response->streamedContent());
         $this->assertStringContainsString('weekly_summary_delivery_manual_review', $response->streamedContent());
         $this->assertStringContainsString('invitation_created', $response->streamedContent());
         $this->assertStringContainsString('invitation_email_delivery_success_rate', $response->streamedContent());
         $this->assertStringContainsString('invitation_email_manual_review', $response->streamedContent());
+    }
+
+    public function test_product_metrics_csv_exports_only_aggregated_cancellation_feedback_reasons(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-cancellation-csv-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        $organization = Organization::query()->create([
+            'name' => 'Cancellation CSV '.Str::random(8),
+            'slug' => 'cancellation-csv-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => 'active',
+        ]);
+        CancellationFeedback::query()->create([
+            'organization_id' => $organization->id,
+            'reason' => 'price',
+            'details' => 'この自由記述を集計CSVへ含めてはいけない',
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.product-metrics.export'));
+        $csv = $response->streamedContent();
+
+        $response->assertOk();
+        $this->assertStringContainsString('cancellation_feedback_scope,', $csv);
+        $this->assertStringContainsString('cancellation_reason:price,1', $csv);
+        $this->assertStringNotContainsString('この自由記述を集計CSVへ含めてはいけない', $csv);
+        $this->assertStringNotContainsString($organization->name, $csv);
+    }
+
+    public function test_product_metrics_csv_exports_first_business_change_by_organization_and_preserves_legacy_event_count(): void
+    {
+        $admin = User::factory()->create(['email' => 'metrics-business-change-csv-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        $organizations = collect(range(1, 2))->map(fn (int $number): Organization => Organization::query()->create([
+            'name' => 'Metrics Business Change '.$number.' '.Str::random(8),
+            'slug' => 'metrics-business-change-'.$number.'-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]));
+
+        foreach ($organizations as $organization) {
+            ProductEvent::query()->create([
+                'event_key' => 'first_dashboard_action_completed',
+                'organization_id' => $organization->id,
+                'occurred_at' => now(),
+            ]);
+        }
+
+        ProductEvent::query()->create([
+            'event_key' => 'first_dashboard_action_completed',
+            'occurred_at' => now(),
+        ]);
+
+        $response = $this->actingAs($admin)->get(route('admin.product-metrics.export'));
+
+        $response->assertOk();
+        $this->assertStringContainsString('first_business_change_completed_organizations,2', $response->streamedContent());
+        $this->assertStringContainsString('event:first_dashboard_action_completed,3', $response->streamedContent());
     }
 
     public function test_platform_admin_can_view_invitation_conversion_metrics(): void

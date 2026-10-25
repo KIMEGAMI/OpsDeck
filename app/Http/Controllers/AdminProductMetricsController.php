@@ -10,7 +10,7 @@ use App\Models\AnnouncementRead;
 use App\Models\Asset;
 use App\Models\CancellationFeedback;
 use App\Models\Employee;
-use App\Models\ImportReviewCandidate;
+use App\Models\ImportMapping;
 use App\Models\OnboardingStep;
 use App\Models\Organization;
 use App\Models\OrganizationInvitation;
@@ -70,17 +70,31 @@ class AdminProductMetricsController extends Controller
         $referrals = $this->referralMetrics();
         $announcementReadRate = $this->announcementReadRate();
         $invitationMetrics = $this->invitationMetrics();
+        $cancellationReasons = CancellationFeedback::query()
+            ->select('reason')
+            ->selectRaw('COUNT(*) as reason_count')
+            ->groupBy('reason')
+            ->orderBy('reason')
+            ->get();
         $deliveryRates = $this->deliveryRates();
         $deliveryFailures = $this->deliveryFailures();
         $planLimitMetrics = $this->planLimitMetrics($planAccessService);
-        $metrics = ['monthly_active_organizations' => $this->monthlyActiveOrganizations(), 'registered_organizations' => $activation['registered'], 'activation_eligible_organizations' => $activation['eligible'], 'activation_rate' => $activation['activation_rate'], 'previewed_within_7_days' => $activation['previewed'], 'preview_activation_rate' => $activation['preview_activation_rate'], 'preview_to_completion_rate' => $activation['preview_to_completion_rate'], 'average_time_to_value_hours' => $activation['average_time_to_value_hours'] ?? '', 'onboarding_completion_rate' => $onboarding['completion_rate'], 'retention_30_day_rate' => $retention['rate'], 'import_failure_rate' => $importFailureRate['rate'], 'ai_candidate_approval_rate' => $aiApproval['rate'], 'renewal_deadline_confirmation_count' => $renewalChecks, 'cancellation_rate' => $cancellation['rate'], 'referral_clicks' => $referrals['clicks'], 'referral_registrations' => $referrals['registrations'], 'referral_conversion_rate' => $referrals['rate'], 'announcement_read_rate' => $announcementReadRate['rate'], 'invitation_created' => $invitationMetrics['created'], 'invitation_joined' => $invitationMetrics['joined'], 'invitation_conversion_rate' => $invitationMetrics['rate'], 'organizations_near_plan_limit' => $planLimitMetrics['near_limit'], 'organizations_at_plan_limit' => $planLimitMetrics['at_limit'], 'plan_limit_warning_percentage' => config('opsdeck.limits.warning_percentage'), 'announcement_delivery_success_rate' => $deliveryRates['announcement'], 'weekly_summary_delivery_success_rate' => $deliveryRates['weekly_summary'], 'invitation_email_delivery_success_rate' => $deliveryRates['invitation_email'], 'announcement_delivery_failures' => $deliveryFailures['announcement'], 'announcement_delivery_manual_review' => $deliveryFailures['announcement_manual_review'], 'weekly_summary_delivery_failures' => $deliveryFailures['weekly_summary'], 'weekly_summary_delivery_manual_review' => $deliveryFailures['weekly_summary_manual_review'], 'invitation_email_failures' => $deliveryFailures['invitation_email'], 'invitation_email_manual_review' => $deliveryFailures['invitation_email_manual_review'], 'support_requests' => SupportRequest::query()->count()];
+        $firstBusinessChangeOrganizations = ProductEvent::query()
+            ->where('event_key', 'first_dashboard_action_completed')
+            ->whereNotNull('organization_id')
+            ->distinct('organization_id')
+            ->count('organization_id');
+        $metrics = ['monthly_active_organizations' => $this->monthlyActiveOrganizations(), 'registered_organizations' => $activation['registered'], 'activation_tracking_scope' => '登録イベント記録済み組織のみ。イベント計測開始前の登録は含まれない。', 'activation_eligible_organizations' => $activation['eligible'], 'activation_rate' => $activation['activation_rate'], 'previewed_within_7_days' => $activation['previewed'], 'preview_activation_rate' => $activation['preview_activation_rate'], 'preview_to_completion_rate' => $activation['preview_to_completion_rate'], 'average_time_to_value_hours' => $activation['average_time_to_value_hours'] ?? '', 'onboarding_completion_rate' => $onboarding['completion_rate'], 'retention_30_day_rate' => $retention['rate'], 'import_failure_rate' => $importFailureRate['rate'], 'ai_candidate_approval_rate' => $aiApproval['rate'] ?? '', 'renewal_deadline_confirmation_count' => $renewalChecks, 'first_business_change_completed_organizations' => $firstBusinessChangeOrganizations, 'cancellation_rate' => $cancellation['rate'], 'cancellation_feedback_scope' => '任意の自己申告。解約検討中の回答を含み、実際の解約組織数とは一致しない。', 'referral_clicks' => $referrals['clicks'], 'referral_registrations' => $referrals['registrations'], 'referral_conversion_rate' => $referrals['rate'], 'announcement_read_rate' => $announcementReadRate['rate'], 'invitation_created' => $invitationMetrics['created'], 'invitation_joined' => $invitationMetrics['joined'], 'invitation_conversion_rate' => $invitationMetrics['rate'], 'organizations_near_plan_limit' => $planLimitMetrics['near_limit'], 'organizations_at_plan_limit' => $planLimitMetrics['at_limit'], 'plan_limit_warning_percentage' => config('opsdeck.limits.warning_percentage'), 'announcement_delivery_success_rate' => $deliveryRates['announcement'], 'weekly_summary_delivery_success_rate' => $deliveryRates['weekly_summary'], 'invitation_email_delivery_success_rate' => $deliveryRates['invitation_email'], 'announcement_delivery_failures' => $deliveryFailures['announcement'], 'announcement_delivery_manual_review' => $deliveryFailures['announcement_manual_review'], 'weekly_summary_delivery_failures' => $deliveryFailures['weekly_summary'], 'weekly_summary_delivery_manual_review' => $deliveryFailures['weekly_summary_manual_review'], 'invitation_email_failures' => $deliveryFailures['invitation_email'], 'invitation_email_manual_review' => $deliveryFailures['invitation_email_manual_review'], 'support_requests' => SupportRequest::query()->count()];
 
-        return response()->streamDownload(static function () use ($events, $recentEvents, $metrics): void {
+        return response()->streamDownload(static function () use ($events, $recentEvents, $metrics, $cancellationReasons): void {
             $handle = fopen('php://output', 'wb');
             fwrite($handle, "\xEF\xBB\xBF");
             fputcsv($handle, ['metric_key', 'value'], ',', '"', '');
             foreach ($metrics as $key => $value) {
                 fputcsv($handle, [$key, $value], ',', '"', '');
+            }
+            foreach ($cancellationReasons as $reason) {
+                fputcsv($handle, ['cancellation_reason:'.$reason->reason, $reason->reason_count], ',', '"', '');
             }
             foreach ($events as $event) {
                 fputcsv($handle, ['event:'.$event->event_key, $event->event_count], ',', '"', '');
@@ -227,13 +241,13 @@ class AdminProductMetricsController extends Controller
         return ['completed' => $completed, 'completion_rate' => $registered > 0 ? round(($completed / $registered) * 100, 2) : 0.0];
     }
 
-    /** @return array{reviewed:int, approved:int, rate:float} */
+    /** @return array{reviewed:int, approved:int, rate:float|null} */
     private function aiApprovalMetrics(): array
     {
-        $reviewed = ImportReviewCandidate::query()->whereNotNull('reviewed_at')->count();
-        $approved = ImportReviewCandidate::query()->where('status', 'accepted')->whereNotNull('reviewed_at')->count();
+        $reviewed = (int) ImportMapping::query()->whereNotNull('ai_suggestion_count')->sum('ai_suggestion_count');
+        $approved = (int) ImportMapping::query()->whereNotNull('ai_suggestion_count')->sum('ai_suggestion_accepted_count');
 
-        return ['reviewed' => $reviewed, 'approved' => $approved, 'rate' => $reviewed > 0 ? round(($approved / $reviewed) * 100, 2) : 0.0];
+        return ['reviewed' => $reviewed, 'approved' => $approved, 'rate' => $reviewed > 0 ? round(($approved / $reviewed) * 100, 2) : null];
     }
 
     /** @return array{total:int, cancelled:int, rate:float, current_total:int, current_cancelled:int, current_rate:float} */

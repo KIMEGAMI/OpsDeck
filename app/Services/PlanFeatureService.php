@@ -10,6 +10,11 @@ class PlanFeatureService
 
     public function isAvailable(Organization $organization, string $feature): bool
     {
+        $releaseFeature = config('opsdeck.release_features.'.$feature);
+        if (is_bool($releaseFeature) && ! $releaseFeature) {
+            return false;
+        }
+
         $planCode = $this->planAccessService->effectivePlanCode($organization);
         $legacyPlan = $planCode === config('opsdeck.legacy_plan_code');
 

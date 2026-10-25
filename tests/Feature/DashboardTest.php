@@ -12,6 +12,7 @@ use App\Models\Evidence;
 use App\Models\ImportBatch;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
+use App\Models\ProductEvent;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireAnswer;
 use App\Models\QuestionnaireQuestion;
@@ -31,18 +32,44 @@ class DashboardTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->ownerOrganization();
         $layout = file_get_contents(resource_path('views/components/layouts/app.blade.php'));
+        $styles = file_get_contents(resource_path('css/app.css'));
 
         $this->assertIsString($layout);
+        $this->assertIsString($styles);
         $this->assertStringContainsString('font-size: clamp(1rem, 4vw, 1.4rem);', $layout);
         $this->assertStringContainsString('overflow-wrap: anywhere;', $layout);
         $this->assertStringContainsString("@vite(['resources/css/app.css', 'resources/js/app.js'])", $layout);
+        $this->assertStringContainsString('.skip-link:focus-visible', $styles);
 
-        $this->actingAs($user)
+        $response = $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
-            ->get(route('dashboard'))
-            ->assertOk()
+            ->get(route('dashboard'));
+        $response->assertOk()
+            ->assertSee('<a class="skip-link" href="#main-content">本文へスキップ</a>', false)
+            ->assertSee('<main id="main-content" tabindex="-1">', false)
+            ->assertSee('クラウドサービス')
+            ->assertSee('Excelなどの取込')
+            ->assertSee('費用の見直し')
+            ->assertSee('保存した一覧')
+            ->assertSee(route('saved-views.index'))
+            ->assertSee('使い方・よくある質問')
+            ->assertSee('月額費用合計（円）')
+            ->assertSee('前に保存した一覧を見る')
+            ->assertSee('<summary>よく使う機能を開く</summary>', false)
+            ->assertSee('<nav class="dashboard-links" aria-label="よく使う機能">', false)
+            ->assertSee('直近7日間のまとめを見る')
+            ->assertSee('メールが届かないとき')
+            ->assertSee('プラン・お支払い')
             ->assertSee('@media (max-width: 48rem)', false)
             ->assertSee('repeat(2, minmax(0, 1fr))', false);
+        $this->assertMatchesRegularExpression(
+            '/href="'.preg_quote(route('dashboard'), '/').'"\s+class="is-active"\s+aria-current="page"/',
+            $response->getContent(),
+        );
+        $this->assertDoesNotMatchRegularExpression(
+            '/href="'.preg_quote(route('imports.index'), '/').'"\s+class="is-active"\s+aria-current="page"/',
+            $response->getContent(),
+        );
     }
 
     public function test_dashboard_shows_contract_metrics_and_links(): void
@@ -78,14 +105,17 @@ class DashboardTest extends TestCase
             ->get(route('dashboard'));
 
         $response->assertOk()
-            ->assertSee('現在の組織データと、優先して確認すべき項目を表示しています。')
-            ->assertDontSee('更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。')
-            ->assertSee('10,000.00')
+            ->assertSee('社員・パソコン・契約など、会社の情報をまとめて確認する画面です。')
+            ->assertDontSee('更新期限の確認、書類の保管、セキュリティ確認、質問票は有料プラン（Premium）で利用できます。')
+            ->assertSee('10,000')
+            ->assertDontSee('10,000.00')
             ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の更新アラート')
             ->assertSee('要対応セキュリティ項目')
-            ->assertSee('未確認Importエラー行数')
-            ->assertSee('未確認Import実行失敗')
+            ->assertSee('取込で確認が必要な行')
+            ->assertSee('取り込みに失敗した履歴')
             ->assertSee('今日やること')
+            ->assertSee('<details class="dashboard-panel">', false)
+            ->assertSee('<summary>すべての注意件数を見る</summary>', false)
             ->assertSee(route('costs.dashboard'))
             ->assertSee(route('security-controls.index', ['attention' => 1]))
             ->assertSee(route('evidence.index', ['expired' => 1]))
@@ -97,17 +127,17 @@ class DashboardTest extends TestCase
             ->assertSee(route('contracts.index'))
             ->assertSee(route('settings.members'))
             ->assertSee('未割当または退職者に紐づく資産を確認する')
-            ->assertSee('未割当または退職者に紐づくSaaSを確認する')
+            ->assertSee('利用者未登録・退職済み社員のサービスを確認する')
             ->assertSee('（1件）')
             ->assertSee('（2件）')
             ->assertSeeInOrder([
                 '期限切れ証跡を確認する',
-                '期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新を確認する',
-                '未確認Importエラーを確認する',
-                '未確認のImport実行失敗を確認する',
-                '未対応のSecurity Controlを確認する',
+                '期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約期限を確認する',
+                '取込で確認が必要な行を確認する',
+                '取り込みに失敗した履歴を確認する',
+                '未対応のセキュリティ項目を確認する',
                 '未割当または退職者に紐づく資産を確認する',
-                '未割当または退職者に紐づくSaaSを確認する',
+                '利用者未登録・退職済み社員のサービスを確認する',
             ]);
 
         $this->assertDatabaseMissing('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
@@ -123,7 +153,7 @@ class DashboardTest extends TestCase
             ->get(route('dashboard'))
             ->assertOk()
             ->assertSee('このプランで確認できる範囲では、優先対応が必要な項目はありません。')
-            ->assertSee('更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。')
+            ->assertSee('更新期限の確認、書類の保管、セキュリティ確認、質問票は有料プラン（Premium）で利用できます。')
             ->assertSee(route('billing.index'))
             ->assertSee('プランと料金を確認');
     }
@@ -144,7 +174,7 @@ class DashboardTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])
             ->get(route('dashboard'))
             ->assertOk()
-            ->assertSee('更新リマインダー、証跡、セキュリティ管理、質問票機能はPremiumプランで利用できます。')
+            ->assertSee('更新期限の確認、書類の保管、セキュリティ確認、質問票は有料プラン（Premium）で利用できます。')
             ->assertSee('プランの確認は組織Ownerにご相談ください。')
             ->assertDontSee(route('billing.index'));
     }
@@ -199,7 +229,45 @@ class DashboardTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])->get(route('dashboard'))
             ->assertOk()
             ->assertDontSee('プラン上限の注意')
-            ->assertDontSee('利用上限について問い合わせる');
+            ->assertDontSee('利用上限について問い合わせる')
+            ->assertDontSee('次に行うこと')
+            ->assertDontSee('管理表のImportを始める');
+    }
+
+    public function test_owner_sees_a_compact_import_and_onboarding_next_step(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$owner, $organization] = $this->ownerOrganization();
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('初めて使う方へ')
+            ->assertSee('今使っている管理表のコピーを選んでください。元のファイルは変更せず、登録前に内容を確認できます。')
+            ->assertSee('管理表のコピーを選んで確認する')
+            ->assertSee('確認しただけでは会社のデータは変わりません。内容を確かめてから、取込を実行できます。')
+            ->assertDontSee('Migration Studio')
+            ->assertDontSee('Preview')
+            ->assertSee(route('imports.create'))
+            ->assertSee(route('onboarding.index'));
+    }
+
+    public function test_owner_dashboard_hides_the_first_time_panel_after_onboarding_is_complete(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$owner, $organization] = $this->ownerOrganization();
+        ProductEvent::query()->create([
+            'organization_id' => $organization->id,
+            'event_key' => 'onboarding_completed',
+            'occurred_at' => now(),
+        ]);
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertDontSee('first-step-title', false)
+            ->assertDontSee('初めて使う方へ')
+            ->assertSee('導入チェックリストを確認');
     }
 
     public function test_dashboard_layout_keeps_high_visibility_keyboard_focus_indicators(): void
@@ -211,7 +279,18 @@ class DashboardTest extends TestCase
             ->get(route('dashboard'))
             ->assertOk()
             ->assertSee(':focus-visible { outline: 3px solid #005f73; outline-offset: 2px; }', false)
+            ->assertSee('header :focus-visible { outline-color: #f6c945; }', false)
             ->assertSee('.app-navigation a:focus-visible { outline-color: #f6c945; }', false)
+            ->assertSee('--interactive-target-min-height: 2.75rem;', false)
+            ->assertSee('input:not([type="checkbox"]):not([type="radio"]), select, textarea', false)
+            ->assertSee('input[type="checkbox"], input[type="radio"] { width: 1.25rem; height: 1.25rem;', false)
+            ->assertSee('min-height: var(--interactive-target-min-height);', false)
+            ->assertSee('<div class="desktop-navigation">', false)
+            ->assertSee('<details class="mobile-navigation">', false)
+            ->assertSee('メニューを開く', false)
+            ->assertSee('メニューを閉じる', false)
+            ->assertSee('.desktop-navigation { display: none; }', false)
+            ->assertSee('.mobile-navigation[open] > .app-navigation { display: flex;', false)
             ->assertDontSee('outline: none', false);
     }
 
@@ -225,7 +304,20 @@ class DashboardTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('dashboard'))
             ->assertOk()
-            ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新を確認する</a>（1件）', false);
+            ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約期限を確認する</a>（1件）', false);
+    }
+
+    public function test_dashboard_includes_cancellation_deadlines_in_its_alert_count(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->ownerOrganization();
+        $organization->update(['plan_code' => config('opsdeck.premium_plan_code')]);
+        Contract::query()->create(['organization_id' => $organization->id, 'vendor_name' => 'Cancellation vendor', 'contract_name' => 'Cancellation cutoff soon', 'contract_type' => 'service', 'billing_cycle' => 'monthly', 'amount' => 1000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'cancellation_deadline' => today()->addDays(10)]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'))
+            ->assertOk()
+            ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約期限を確認する</a>（1件）', false);
     }
 
     public function test_dashboard_labels_overdue_contracts_in_its_renewal_alert_count(): void
@@ -238,7 +330,7 @@ class DashboardTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('dashboard'))
             ->assertOk()
-            ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新を確認する</a>（1件）', false);
+            ->assertSee('期限切れ・'.ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約期限を確認する</a>（1件）', false);
     }
 
     public function test_dashboard_pending_answers_require_server_recorded_approval(): void

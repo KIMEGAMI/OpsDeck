@@ -8,6 +8,7 @@ use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\RealizedSaving;
 use App\Services\PlanFeatureService;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -34,6 +35,7 @@ class RealizedSavingController extends Controller
                 'action' => AuditLog::RealizedSavingRecorded,
                 'after_json' => ['changed_fields' => array_keys($attributes)],
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         });
 
         return to_route('costs.dashboard')->with('status', '削減実績を記録しました。金額は入力した通貨と期間ごとに集計されます。');
@@ -68,6 +70,7 @@ class RealizedSavingController extends Controller
                 'before_json' => ['voided_at' => null],
                 'after_json' => ['voided_at' => $saving->voided_at->toIso8601String(), 'voided_by' => $saving->voided_by],
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         });
 
         return to_route('costs.dashboard')->with('status', '削減実績を取り消し、記録を残しました。');

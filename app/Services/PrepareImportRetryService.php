@@ -3,8 +3,10 @@
 namespace App\Services;
 
 use App\Models\ImportBatch;
+use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 
 class PrepareImportRetryService
 {
@@ -49,6 +51,9 @@ class PrepareImportRetryService
             }
 
             abort_unless($sourceBatch->organization_id === $retryBatch->organization_id, 404);
+            $actor = User::query()->find($userId);
+            abort_unless($actor !== null, 403);
+            Gate::forUser($actor)->authorize('update', $sourceBatch);
 
             $this->copyContents($sourceBatch, $retryBatch, $userId, $chunkSize);
             $sourceBatch->update(['status' => 'failed']);
@@ -71,7 +76,10 @@ class PrepareImportRetryService
         }
 
         $previewActions = ['new_candidate', 'update_candidate', 'confirmation_required', 'error', 'preview'];
-        $sourceBatch->rowResults()->chunkById($chunkSize, function (Collection $rowResults) use ($retryBatch, $previewActions): bool {
+        $latestRowResultIds = $sourceBatch->rowResults()
+            ->selectRaw('MAX(import_row_results.id)')
+            ->groupBy('source_row_number');
+        $sourceBatch->rowResults()->whereIn('id', $latestRowResultIds)->chunkById($chunkSize, function (Collection $rowResults) use ($retryBatch, $previewActions): bool {
             foreach ($rowResults as $rowResult) {
                 $action = in_array($rowResult->action, $previewActions, true) ? $rowResult->action : 'preview';
                 $retryBatch->rowResults()->create([

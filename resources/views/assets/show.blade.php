@@ -2,7 +2,7 @@
     <section class="card" aria-labelledby="asset-title">
         <h1 id="asset-title">{{ $asset->asset_number }}</h1>
         @if (session('status'))<p role="status">{{ session('status') }}</p>@endif
-        <dl><dt>種別</dt><dd>{{ $asset->asset_type }}</dd><dt>状態</dt><dd>{{ $asset->status }}</dd><dt>メーカー</dt><dd>{{ $asset->manufacturer ?? '未設定' }}</dd><dt>型番</dt><dd>{{ $asset->model ?? '未設定' }}</dd><dt>シリアル番号</dt><dd>{{ $asset->serial_number ?? '未設定' }}</dd><dt>保証期限</dt><dd>{{ $asset->warranty_until?->format('Y-m-d') ?? '未設定' }}</dd></dl>
+        <dl><dt>種別</dt><dd>{{ config('opsdeck.asset_type_labels.'.$asset->asset_type, $asset->asset_type) }}</dd><dt>状態</dt><dd>{{ config('opsdeck.asset_status_labels.'.$asset->status, $asset->status) }}</dd><dt>メーカー</dt><dd>{{ $asset->manufacturer ?? '未設定' }}</dd><dt>型番</dt><dd>{{ $asset->model ?? '未設定' }}</dd><dt>シリアル番号</dt><dd>{{ $asset->serial_number ?? '未設定' }}</dd><dt>保証期限</dt><dd>{{ $asset->warranty_until?->format('Y-m-d') ?? '未設定' }}</dd></dl>
         @can('update', $asset)<p><a href="{{ route('assets.edit', $asset) }}">編集する</a></p>@endcan
         @can('update', $asset)
             @if ($activeAssignment)
@@ -12,9 +12,12 @@
                         @csrf
                         @method('PUT')
                         <label for="returned_at">返却日</label>
-                        <input id="returned_at" type="date" name="returned_at" value="{{ old('returned_at', now()->toDateString()) }}" required>
+                        <input id="returned_at" type="date" name="returned_at" value="{{ old('returned_at', now()->toDateString()) }}" required @error('returned_at') aria-invalid="true" aria-describedby="returned_at-error" @enderror>
+                        <x-field-error field="returned_at" />
+
                         <label for="return_note">返却メモ</label>
-                        <input id="return_note" name="note" value="{{ old('note', $activeAssignment->note) }}">
+                        <input id="return_note" name="note" value="{{ old('note', $activeAssignment->note) }}" @error('note') aria-invalid="true" aria-describedby="note-error" @enderror>
+                        <x-field-error field="note" />
                         <button type="submit">返却を記録する</button>
                     </form>
                 </section>
@@ -25,16 +28,21 @@
                         @csrf
                         <input type="hidden" name="asset_id" value="{{ $asset->id }}">
                         <label for="employee_id">利用者</label>
-                        <select id="employee_id" name="employee_id" required>
+                        <select id="employee_id" name="employee_id" required @error('employee_id') aria-invalid="true" aria-describedby="employee_id-error" @enderror>
                             <option value="">選択してください</option>
                             @foreach ($employees as $employee)
-                                <option value="{{ $employee->id }}" @selected((string) old('employee_id') === (string) $employee->id)>{{ $employee->name }}</option>
+                                <option value="{{ $employee->id }}" @selected((string) old('employee_id', $selectedEmployeeId) === (string) $employee->id)>{{ $employee->name }}</option>
                             @endforeach
                         </select>
+                        <x-field-error field="employee_id" />
+
                         <label for="assigned_at">割当日</label>
-                        <input id="assigned_at" type="date" name="assigned_at" value="{{ old('assigned_at', now()->toDateString()) }}" required>
+                        <input id="assigned_at" type="date" name="assigned_at" value="{{ old('assigned_at', now()->toDateString()) }}" required @error('assigned_at') aria-invalid="true" aria-describedby="assigned_at-error" @enderror>
+                        <x-field-error field="assigned_at" />
+
                         <label for="assignment_note">割当メモ</label>
-                        <input id="assignment_note" name="note" value="{{ old('note') }}">
+                        <input id="assignment_note" name="note" value="{{ old('note') }}" @error('note') aria-invalid="true" aria-describedby="note-error" @enderror>
+                        <x-field-error field="note" />
                         <button type="submit">貸出を記録する</button>
                     </form>
                 </section>

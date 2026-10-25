@@ -2,10 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\StorageQuotaExceededException;
+use App\Models\Evidence;
 use App\Models\Organization;
+use App\Models\User;
+use App\Services\OrganizationStorageQuotaService;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -55,6 +60,57 @@ class EnforceBillingGracePeriodTest extends TestCase
             'event_key' => 'billing_past_due_grace_expired',
             'organization_id' => $organization->id,
         ]);
+    }
+
+    public function test_expired_storage_addon_grace_uses_free_quota_and_preserves_existing_files(): void
+    {
+        config([
+            'opsdeck.billing.past_due_grace_days' => 7,
+            'opsdeck.storage_quotas.plan_limit_megabytes.free' => 1,
+        ]);
+        $organization = $this->organization([
+            'storage_addon_gib' => 2,
+            'storage_addon_pending_gib' => 1,
+            'storage_addon_effective_at' => now()->addDay(),
+        ]);
+        $user = User::factory()->create();
+        $diskName = (string) config('opsdeck.import.disk');
+        Storage::fake($diskName);
+        $existingFilePath = 'grace-existing/'.Str::uuid().'.pdf';
+        $incomingFilePath = 'grace-new/'.Str::uuid().'.pdf';
+        Storage::disk($diskName)->put($existingFilePath, 'existing customer file');
+        $evidence = Evidence::query()->create([
+            'organization_id' => $organization->id,
+            'title' => '猶予期間後も残す証跡',
+            'evidence_type' => 'policy',
+            'storage_disk' => $diskName,
+            'storage_path' => $existingFilePath,
+            'mime_type' => 'application/pdf',
+            'file_size' => ((int) config('opsdeck.storage_quotas.bytes_per_megabyte')) + 1,
+            'uploaded_by' => $user->id,
+        ]);
+
+        $this->artisan('opsdeck:billing:enforce-grace')->assertExitCode(0);
+
+        $quota = app(OrganizationStorageQuotaService::class)->summary($organization->refresh());
+        $this->assertSame(config('opsdeck.free_plan_code'), $organization->plan_code);
+        $this->assertSame((int) config('opsdeck.storage_quotas.bytes_per_megabyte'), $quota['limit_bytes']);
+        $this->assertSame(0, $quota['addon_gib']);
+        $this->assertNull($quota['pending_addon_gib']);
+        $this->assertNull($quota['addon_effective_at_display']);
+
+        try {
+            app(OrganizationStorageQuotaService::class)->storeWithinQuota(
+                $organization,
+                1,
+                static fn (): bool => Storage::disk($diskName)->put($incomingFilePath, 'new customer file'),
+            );
+            $this->fail('The upload should be rejected after the Free storage limit is exceeded.');
+        } catch (StorageQuotaExceededException) {
+            $this->assertTrue(Storage::disk($diskName)->exists($existingFilePath));
+            $this->assertFalse(Storage::disk($diskName)->exists($incomingFilePath));
+            $this->assertDatabaseHas('evidence', ['id' => $evidence->id]);
+        }
     }
 
     public function test_premium_access_remains_during_the_grace_period(): void

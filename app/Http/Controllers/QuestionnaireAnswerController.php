@@ -9,10 +9,12 @@ use App\Models\Organization;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireAnswer;
 use App\Models\QuestionnaireQuestion;
+use App\Services\ProductEventRecorder;
 use App\Services\QuestionnaireDraftService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class QuestionnaireAnswerController extends Controller
 {
@@ -21,10 +23,18 @@ class QuestionnaireAnswerController extends Controller
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
         $attributes = $request->validated();
-        $question = QuestionnaireQuestion::query()
-            ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
-            ->findOrFail($attributes['question_id']);
-        DB::transaction(function () use ($request, $organization, $attributes): void {
+        $question = DB::transaction(function () use ($request, $organization, $attributes): QuestionnaireQuestion {
+            $question = QuestionnaireQuestion::query()
+                ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
+                ->lockForUpdate()
+                ->findOrFail($attributes['question_id']);
+
+            if ($question->answers()->whereNull('approved_at')->exists()) {
+                throw ValidationException::withMessages([
+                    'question_id' => 'この質問には未承認の回答案があります。既存の回答を確認してください。',
+                ]);
+            }
+
             $answer = QuestionnaireAnswer::query()->create($attributes);
 
             AuditLog::query()->create([
@@ -35,6 +45,9 @@ class QuestionnaireAnswerController extends Controller
                 'action' => AuditLog::QuestionnaireAnswerCreated,
                 'after_json' => ['changed_fields' => array_keys($attributes)],
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
+
+            return $question;
         });
 
         return to_route('questionnaires.show', $question->questionnaire_id)->with('status', '回答を登録しました。');
@@ -50,19 +63,25 @@ class QuestionnaireAnswerController extends Controller
         $attributes = $request->validated();
 
         DB::transaction(function () use ($request, $organization, $questionnaireAnswer, $attributes): void {
-            $questionnaireAnswer->fill($attributes);
-            $changedFields = array_keys($questionnaireAnswer->getDirty());
-            $questionnaireAnswer->save();
+            $lockedAnswer = QuestionnaireAnswer::query()
+                ->whereKey($questionnaireAnswer->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->authorize('update', $lockedAnswer);
+            $lockedAnswer->fill($attributes);
+            $changedFields = array_keys($lockedAnswer->getDirty());
+            $lockedAnswer->save();
 
             if ($changedFields !== []) {
                 AuditLog::query()->create([
                     'organization_id' => $organization->id,
                     'actor_user_id' => $request->user()->id,
                     'entity_type' => QuestionnaireAnswer::class,
-                    'entity_id' => $questionnaireAnswer->id,
+                    'entity_id' => $lockedAnswer->id,
                     'action' => AuditLog::QuestionnaireAnswerUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 
@@ -75,9 +94,13 @@ class QuestionnaireAnswerController extends Controller
         $question = QuestionnaireQuestion::query()
             ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
             ->findOrFail($questionnaireAnswer->question_id);
-        $this->authorize('approve', $questionnaireAnswer);
         DB::transaction(function () use ($request, $organization, $questionnaireAnswer): void {
-            $questionnaireAnswer->update([
+            $lockedAnswer = QuestionnaireAnswer::query()
+                ->whereKey($questionnaireAnswer->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->authorize('approve', $lockedAnswer);
+            $lockedAnswer->update([
                 'answer_status' => QuestionnaireAnswer::APPROVED_STATUS,
                 'approved_by' => $request->user()->id,
                 'approved_at' => now(),
@@ -86,9 +109,10 @@ class QuestionnaireAnswerController extends Controller
                 'organization_id' => $organization->id,
                 'actor_user_id' => $request->user()->id,
                 'entity_type' => QuestionnaireAnswer::class,
-                'entity_id' => $questionnaireAnswer->id,
+                'entity_id' => $lockedAnswer->id,
                 'action' => AuditLog::QuestionnaireAnswerApproved,
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         });
 
         return to_route('questionnaires.show', $question->questionnaire_id)->with('status', '回答を承認しました。');
@@ -103,7 +127,7 @@ class QuestionnaireAnswerController extends Controller
         $question = $questionnaire->questions()->findOrFail($validated['question_id']);
         app(QuestionnaireDraftService::class)->generate($organization, $question);
 
-        return to_route('questionnaires.show', $questionnaire)->with('status', 'AI回答下書きを作成しました。内容を確認してから承認してください。');
+        return to_route('questionnaires.show', $questionnaire)->with('status', '登録情報をもとに回答案を作成しました。根拠と内容を確認してから承認してください。');
     }
 
     private function organization(Request $request): Organization

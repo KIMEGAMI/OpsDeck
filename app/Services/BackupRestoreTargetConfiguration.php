@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
 use Pdo\Mysql;
 use Throwable;
@@ -9,6 +10,16 @@ use Throwable;
 class BackupRestoreTargetConfiguration
 {
     private const DATABASE_PREFIX = 'opsdeck_restore_test_';
+
+    private const MYSQL_ACCESS_DENIED_ERROR = 1044;
+
+    private const MYSQL_UNKNOWN_DATABASE_ERROR = 1049;
+
+    private const MYSQL_USER_AUTHENTICATION_ERROR = 1045;
+
+    private const MYSQL_TABLE_ACCESS_DENIED_ERROR = 1142;
+
+    public function __construct(private ResolvedDatabaseConfiguration $resolvedDatabaseConfiguration) {}
 
     /**
      * Confirm that the restore target is dedicated, driver-compatible, and isolated from the application DB.
@@ -23,7 +34,12 @@ class BackupRestoreTargetConfiguration
     {
         $restoreConnectionName = (string) config('opsdeck.backup.restore_connection');
         $defaultConnectionName = (string) config('database.default');
-        $restoreConfiguration = config('database.connections.'.$restoreConnectionName);
+        try {
+            $restoreConfiguration = $this->resolvedDatabaseConfiguration->for($restoreConnectionName);
+            $defaultConfiguration = $this->resolvedDatabaseConfiguration->for($defaultConnectionName);
+        } catch (Throwable) {
+            return ['restore_connection_not_separate'];
+        }
 
         if ($restoreConnectionName === ''
             || $restoreConnectionName === $defaultConnectionName
@@ -33,9 +49,9 @@ class BackupRestoreTargetConfiguration
 
         $databaseName = $restoreConfiguration['database'] ?? null;
         $driver = $restoreConfiguration['driver'] ?? null;
-        $defaultDriver = config('database.connections.'.$defaultConnectionName.'.driver');
+        $defaultDriver = $defaultConfiguration['driver'] ?? null;
         $username = $restoreConfiguration['username'] ?? null;
-        $defaultUsername = config('database.connections.'.$defaultConnectionName.'.username');
+        $defaultUsername = $defaultConfiguration['username'] ?? null;
         $host = $restoreConfiguration['host'] ?? null;
         $socket = $restoreConfiguration['unix_socket'] ?? null;
         $port = $restoreConfiguration['port'] ?? null;
@@ -66,7 +82,7 @@ class BackupRestoreTargetConfiguration
             || preg_match('/\Aopsdeck_restore_test_[a-z0-9_]+\z/', $databaseName) !== 1) {
             $issues[] = 'restore_database_name_must_use_reserved_prefix';
         }
-        if ($databaseName === config('database.connections.'.$defaultConnectionName.'.database')) {
+        if ($databaseName === ($defaultConfiguration['database'] ?? null)) {
             $issues[] = 'restore_database_must_differ_from_application_database';
         }
         if (! is_string($username) || trim($username) === '' || $username === $defaultUsername) {
@@ -106,13 +122,63 @@ class BackupRestoreTargetConfiguration
             $connectionName = (string) config('opsdeck.backup.restore_connection');
             $connection = DB::connection($connectionName);
             $connection->getPdo();
-            $schema = $connection->getSchemaBuilder();
 
-            return $schema->getTableListing() === [] && $schema->getViews() === []
+            return $this->targetIsEmpty($connection)
                 ? 'ready'
                 : 'target_not_empty';
-        } catch (Throwable) {
-            return 'connection_unavailable';
+        } catch (Throwable $exception) {
+            return $this->connectionFailureStatus($exception);
         }
+    }
+
+    private function connectionFailureStatus(Throwable $exception): string
+    {
+        $currentException = $exception;
+        while ($currentException !== null) {
+            if ($currentException instanceof \PDOException) {
+                $driverErrorCode = is_array($currentException->errorInfo)
+                    && isset($currentException->errorInfo[1])
+                    && is_numeric($currentException->errorInfo[1])
+                    ? (int) $currentException->errorInfo[1]
+                    : (is_numeric($currentException->getCode()) ? (int) $currentException->getCode() : null);
+
+                return match ($driverErrorCode) {
+                    self::MYSQL_USER_AUTHENTICATION_ERROR => 'credentials_rejected',
+                    self::MYSQL_ACCESS_DENIED_ERROR, self::MYSQL_TABLE_ACCESS_DENIED_ERROR => 'database_access_denied',
+                    self::MYSQL_UNKNOWN_DATABASE_ERROR => 'database_not_found',
+                    default => 'connection_unavailable',
+                };
+            }
+
+            $currentException = $currentException->getPrevious();
+        }
+
+        return 'connection_unavailable';
+    }
+
+    /**
+     * Confirm that the dedicated restore target has no tables, views, routines, or scheduled events.
+     */
+    public function targetIsEmpty(ConnectionInterface $connection): bool
+    {
+        $databaseName = $connection->getDatabaseName();
+        $schema = $connection->getSchemaBuilder();
+
+        if ($schema->getTableListing($databaseName, false) !== [] || $schema->getViews($databaseName) !== []) {
+            return false;
+        }
+
+        $hasRoutines = $connection->selectOne(
+            'SELECT 1 FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? LIMIT 1',
+            [$databaseName],
+        ) !== null;
+        if ($hasRoutines) {
+            return false;
+        }
+
+        return $connection->selectOne(
+            'SELECT 1 FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ? LIMIT 1',
+            [$databaseName],
+        ) === null;
     }
 }

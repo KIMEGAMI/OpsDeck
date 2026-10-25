@@ -14,7 +14,7 @@ class AnnouncementRecipientQuery
      */
     public function eligibleFor(array $organizationIds = []): Builder
     {
-        return User::query()->whereHas('organizationMemberships', function (Builder $membershipQuery) use ($organizationIds): void {
+        return User::query()->canReceiveNonTransactionalEmail()->whereHas('organizationMemberships', function (Builder $membershipQuery) use ($organizationIds): void {
             $membershipQuery->where('status', 'active')
                 ->when($organizationIds !== [], fn (Builder $query): Builder => $query->whereIn('organization_id', $organizationIds))
                 ->whereNotExists(function (QueryBuilder $preferenceQuery): void {

@@ -22,6 +22,7 @@ class GoogleSheetConnectionController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('view', $organization);
+        abort_unless(config('opsdeck.release_features.google_sheets'), 404);
         $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->first();
         $featureAvailable = app(PlanFeatureService::class)->isAvailable($organization, 'google_sheets');
 
@@ -78,18 +79,28 @@ class GoogleSheetConnectionController extends Controller
             return $this->tokenExchangeFailed($response->status());
         }
         $expiresIn = max(0, (int) $response->json('expires_in', 3600));
-        $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->first();
-        GoogleSheetConnection::query()->updateOrCreate(
-            ['organization_id' => $organization->id],
-            [
-                'connected_by' => $request->user()->id,
-                'access_token' => $response->json('access_token'),
-                'refresh_token' => $response->json('refresh_token') ?: $connection?->refresh_token,
-                'token_expires_at' => now()->addSeconds($expiresIn),
-                'scopes_json' => config('services.google.scopes', []),
-                'revoked_at' => null,
-            ],
-        );
+        DB::transaction(function () use ($request, $organization, $response, $expiresIn): void {
+            $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->first();
+            $connection = GoogleSheetConnection::query()->updateOrCreate(
+                ['organization_id' => $organization->id],
+                [
+                    'connected_by' => $request->user()->id,
+                    'access_token' => $response->json('access_token'),
+                    'refresh_token' => $response->json('refresh_token') ?: $connection?->refresh_token,
+                    'token_expires_at' => now()->addSeconds($expiresIn),
+                    'scopes_json' => config('services.google.scopes', []),
+                    'revoked_at' => null,
+                ],
+            );
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => GoogleSheetConnection::class,
+                'entity_id' => $connection->id,
+                'action' => AuditLog::GoogleSheetConnected,
+                'after_json' => ['status' => 'connected'],
+            ]);
+        });
 
         return to_route('google-sheets.connection')->with('status', 'Google Sheetsを接続しました。');
     }

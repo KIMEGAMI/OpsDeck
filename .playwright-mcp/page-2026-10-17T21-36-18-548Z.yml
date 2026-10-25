@@ -1,0 +1,30 @@
+- generic [active] [ref=f2e1]:
+  - link "本文へスキップ" [ref=f2e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - banner [ref=f2e3]:
+    - strong [ref=f2e5]: OpsDeck
+  - main [ref=f2e6]:
+    - region [ref=f2e7]:
+      - heading "OpsDeckへログイン" [level=1] [ref=f2e8]
+      - paragraph [ref=f2e9]: 社員・パソコン・使っているサービス・契約をまとめて管理できます。
+      - generic [ref=f2e10]:
+        - generic [ref=f2e11]: メールアドレス
+        - textbox "メールアドレス" [ref=f2e12]
+        - generic [ref=f2e13]: パスワード
+        - generic [ref=f2e14]:
+          - textbox "パスワード" [ref=f2e15]
+          - button "パスワードを表示" [ref=f2e16] [cursor=pointer]: 表示
+        - paragraph [ref=f2e17]:
+          - link "パスワードをお忘れですか？" [ref=f2e18] [cursor=pointer]:
+            - /url: http://127.0.0.1:8007/forgot-password
+        - generic [ref=f2e19]:
+          - checkbox "ログイン状態を保持する" [ref=f2e20]
+          - text: ログイン状態を保持する
+        - paragraph [ref=f2e21]: 共有のパソコンでは、チェックを外してください。
+        - button "ログイン" [ref=f2e22] [cursor=pointer]
+      - paragraph [ref=f2e23]:
+        - link "組織を新規登録する" [ref=f2e24] [cursor=pointer]:
+          - /url: http://127.0.0.1:8007/register
+      - paragraph [ref=f2e25]:
+        - link "使い方に困ったらヘルプを見る" [ref=f2e26] [cursor=pointer]:
+          - /url: http://127.0.0.1:8007/help

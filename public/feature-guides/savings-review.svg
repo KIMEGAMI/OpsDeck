@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">費用見直し候補と削減実績</title>
+  <desc id="description">見直し候補の概算と担当者が確認して登録した削減実績を分けて管理する図</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <text x="48" y="62" fill="#102a43" font-family="sans-serif" font-size="22" font-weight="700">費用を見直すときの流れ</text>
+  <g font-family="sans-serif" fill="#102a43">
+    <rect x="48" y="94" width="314" height="196" rx="12" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <text x="70" y="130" font-size="20" font-weight="700">見直し候補の概算</text>
+    <text x="70" y="170" font-size="16">・更新が近い契約</text>
+    <text x="70" y="202" font-size="16">・利用者が未登録のサービス</text>
+    <text x="70" y="234" font-size="16">・未割当などの端末</text>
+    <text x="70" y="270" font-size="14" fill="#486581">利用状況と契約条件を人が確認</text>
+    <path d="M383 190h34m-10-10 10 10-10 10" fill="none" stroke="#005f73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="438" y="94" width="314" height="196" rx="12" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <text x="460" y="130" font-size="20" font-weight="700">確認済みの削減実績</text>
+    <text x="460" y="170" font-size="16">・担当者が内容と金額を入力</text>
+    <text x="460" y="202" font-size="16">・期間と確認日を記録</text>
+    <text x="460" y="234" font-size="16">・根拠資料を関連付け</text>
+    <text x="460" y="270" font-size="14" fill="#334e68">候補額とは分けて記録</text>
+  </g>
+</svg>

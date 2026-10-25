@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\DeleteSavedViewRequest;
 use App\Http\Requests\StoreSavedViewRequest;
 use App\Models\Asset;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Organization;
 use App\Models\SaasAssignment;
@@ -15,6 +16,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
+use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class SavedViewController extends Controller
@@ -40,7 +42,26 @@ class SavedViewController extends Controller
     {
         $organization = $this->organization($request);
         $role = $request->attributes->get('currentMembership')?->role?->value;
-        SavedView::query()->create(['organization_id' => $organization->id, 'created_by' => $request->user()->id, 'name' => $request->string('name')->toString(), 'view_key' => $request->string('view_key')->toString(), 'is_shared' => in_array($role, ['owner', 'admin'], true) && $request->boolean('is_shared')]);
+        DB::transaction(function () use ($request, $organization, $role): void {
+            $savedView = SavedView::query()->create([
+                'organization_id' => $organization->id,
+                'created_by' => $request->user()->id,
+                'name' => $request->string('name')->toString(),
+                'view_key' => $request->string('view_key')->toString(),
+                'is_shared' => in_array($role, ['owner', 'admin'], true) && $request->boolean('is_shared'),
+            ]);
+
+            if ($savedView->is_shared) {
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => SavedView::class,
+                    'entity_id' => $savedView->id,
+                    'action' => AuditLog::SavedViewCreated,
+                    'after_json' => ['view_key' => $savedView->view_key, 'is_shared' => true],
+                ]);
+            }
+        });
 
         return to_route('saved-views.index')->with('status', '定型ビューを保存しました。');
     }
@@ -57,7 +78,24 @@ class SavedViewController extends Controller
 
     public function destroy(DeleteSavedViewRequest $request, SavedView $savedView): RedirectResponse
     {
-        $savedView->delete();
+        DB::transaction(function () use ($request, $savedView): void {
+            $organizationId = $savedView->organization_id;
+            $entityId = $savedView->id;
+            $viewKey = $savedView->view_key;
+            $isShared = $savedView->is_shared;
+            $savedView->delete();
+
+            if ($isShared) {
+                AuditLog::query()->create([
+                    'organization_id' => $organizationId,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => SavedView::class,
+                    'entity_id' => $entityId,
+                    'action' => AuditLog::SavedViewDeleted,
+                    'before_json' => ['view_key' => $viewKey, 'is_shared' => true],
+                ]);
+            }
+        });
 
         return to_route('saved-views.index')->with('status', '定型ビューを削除しました。');
     }
@@ -69,7 +107,9 @@ class SavedViewController extends Controller
 
         return match ($key) {
             'renewals' => Contract::query()->where('organization_id', $organization->id)->whereIn('status', ['active', 'pending_cancel'])->where(function ($query) use ($today): void {
-                $query->whereBetween('renewal_date', [$today->toDateString(), $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString()])->orWhereBetween('ends_at', [$today->toDateString(), $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString()]);
+                $query->whereBetween('renewal_date', [$today->toDateString(), $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString()])
+                    ->orWhereBetween('ends_at', [$today->toDateString(), $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString()])
+                    ->orWhereBetween('cancellation_deadline', [$today->toDateString(), $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)->toDateString()]);
             })->orderBy('renewal_date')->orderBy('ends_at')->orderBy('id')->paginate($perPage)->withQueryString(),
             'unassigned_assets' => Asset::query()->where('organization_id', $organization->id)->whereNotIn('status', config('opsdeck.asset_non_operational_statuses', []))->whereDoesntHave('assignments', fn ($query) => $query->whereNull('returned_at'))->orderBy('asset_number')->paginate($perPage)->withQueryString(),
             'mfa_unknown' => SaasAssignment::query()->where('organization_id', $organization->id)->where('mfa_status', config('opsdeck.saas_assignment_mfa_status.unknown'))->whereNull('ended_at')->whereHas('service', fn ($query) => $query->where('status', config('opsdeck.saas_service_active_status')))->orderBy('account_identifier')->orderBy('id')->paginate($perPage)->withQueryString(),

@@ -11,6 +11,7 @@ use App\Models\UserNotificationPreference;
 use App\Models\WeeklySummaryDelivery;
 use App\Services\PlanFeatureService;
 use App\Services\ResendIdempotencyWindow;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\QueryException;
@@ -20,7 +21,7 @@ use Illuminate\Support\Facades\Mail;
 use RuntimeException;
 use Throwable;
 
-class SendWeeklySummaryEmail implements ShouldBeUnique, ShouldQueue
+class SendWeeklySummaryEmail implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 {
     use Queueable, SerializesModels;
 
@@ -34,7 +35,7 @@ class SendWeeklySummaryEmail implements ShouldBeUnique, ShouldQueue
 
     public function uniqueId(): string
     {
-        return $this->organizationId.':'.$this->userId.':'.$this->weekStart;
+        return hash_hmac('sha256', $this->organizationId.':'.$this->userId.':'.$this->weekStart, (string) config('app.key'));
     }
 
     /**
@@ -46,7 +47,7 @@ class SendWeeklySummaryEmail implements ShouldBeUnique, ShouldQueue
     {
         $user = User::query()->find($this->userId);
         $organization = Organization::query()->find($this->organizationId);
-        if ($user === null || $organization === null) {
+        if ($user === null || $organization === null || ! $user->hasVerifiedEmail()) {
             return;
         }
         $preference = UserNotificationPreference::query()->where('user_id', $user->id)->where('organization_id', $organization->id)->first();

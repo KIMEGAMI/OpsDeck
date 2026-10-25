@@ -6,11 +6,13 @@ use App\Models\Contract;
 use App\Models\Evidence;
 use App\Models\Organization;
 use App\Models\RealizedSaving;
+use App\Models\WorkTimeMeasurement;
 use App\Services\ContractMonthlyCostCalculator;
 use App\Services\ContractRenewalWindow;
 use App\Services\CostSavingsEstimator;
 use App\Services\PlanFeatureService;
 use App\Services\RealizedSavingsSummary;
+use App\Services\WorkTimeMeasurementSummary;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -20,7 +22,7 @@ class CostDashboardController extends Controller
     /**
      * Handle the incoming request.
      */
-    public function __invoke(Request $request, RealizedSavingsSummary $realizedSavingsSummary): View
+    public function __invoke(Request $request, RealizedSavingsSummary $realizedSavingsSummary, WorkTimeMeasurementSummary $workTimeMeasurementSummary): View
     {
         /** @var Organization $organization */
         $organization = $request->attributes->get('currentOrganization');
@@ -34,11 +36,17 @@ class CostDashboardController extends Controller
         $renewalAlertsAvailable = $planFeatureService->isAvailable($organization, 'renewal_alerts');
         $savingsOpportunitiesAvailable = $planFeatureService->isAvailable($organization, 'savings_opportunities');
         $realizedSavingsAvailable = $planFeatureService->isAvailable($organization, 'realized_savings');
+        $workTimeTrackingAvailable = $planFeatureService->isAvailable($organization, 'work_time_tracking');
         $renewals = $renewalAlertsAvailable
-            ? $contracts->map(fn (Contract $contract): array => [
-                'contract' => $contract,
-                'date' => $renewalWindow->dateWithin($contract, $today, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)),
-            ])->filter(fn (array $renewal): bool => $renewal['date'] !== null)
+            ? $contracts->map(function (Contract $contract) use ($renewalWindow, $today): array {
+                $date = $renewalWindow->reminderDateWithin($contract, $today, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS));
+
+                return [
+                    'contract' => $contract,
+                    'date' => $date,
+                    'date_label' => $date === null ? null : $renewalWindow->reminderDateLabel($contract, $date),
+                ];
+            })->filter(fn (array $renewal): bool => $renewal['date'] !== null)
                 ->sortBy(fn (array $renewal) => $renewal['date'])
             : collect();
 
@@ -54,7 +62,20 @@ class CostDashboardController extends Controller
                 ->where('organization_id', $organization->id)
                 ->latest('realized_on')
                 ->latest('id')
-                ->paginate(config('opsdeck.pagination.per_page'))
+                ->paginate(config('opsdeck.pagination.per_page'), ['*'], 'realized_savings_page')
+                ->withQueryString()
+            : collect();
+        $workTimeSummary = $workTimeTrackingAvailable
+            ? $workTimeMeasurementSummary->forOrganization($organization)
+            : ['monthly_minutes' => 0, 'monthly_hours' => 0.0, 'monthly_labor_equivalent_by_currency' => []];
+        $workTimeMeasurements = $workTimeTrackingAvailable
+            ? WorkTimeMeasurement::query()
+                ->with(['creator', 'voidingUser'])
+                ->where('organization_id', $organization->id)
+                ->latest('measured_on')
+                ->latest('id')
+                ->paginate(config('opsdeck.pagination.per_page'), ['*'], 'work_time_page')
+                ->withQueryString()
             : collect();
         $evidenceAvailable = $planFeatureService->isAvailable($organization, 'evidence');
         $availableEvidence = $evidenceAvailable
@@ -65,6 +86,6 @@ class CostDashboardController extends Controller
                 ->get(['id', 'title'])
             : collect();
 
-        return view('costs.dashboard', compact('organization', 'monthlyCosts', 'renewals', 'savingsEstimate', 'availableContracts', 'realizedSavingsTotals', 'realizedSavings', 'evidenceAvailable', 'availableEvidence', 'renewalAlertsAvailable', 'savingsOpportunitiesAvailable', 'realizedSavingsAvailable'));
+        return view('costs.dashboard', compact('organization', 'monthlyCosts', 'renewals', 'savingsEstimate', 'availableContracts', 'realizedSavingsTotals', 'realizedSavings', 'evidenceAvailable', 'availableEvidence', 'renewalAlertsAvailable', 'savingsOpportunitiesAvailable', 'realizedSavingsAvailable', 'workTimeTrackingAvailable', 'workTimeSummary', 'workTimeMeasurements'));
     }
 }

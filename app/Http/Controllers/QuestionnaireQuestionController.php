@@ -8,6 +8,7 @@ use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireQuestion;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -31,6 +32,7 @@ class QuestionnaireQuestionController extends Controller
                 'action' => AuditLog::QuestionnaireQuestionCreated,
                 'after_json' => ['changed_fields' => array_keys($attributes)],
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         });
 
         return to_route('questionnaires.show', $questionnaire)->with('status', '質問を追加しました。');
@@ -57,6 +59,7 @@ class QuestionnaireQuestionController extends Controller
                     'action' => AuditLog::QuestionnaireQuestionUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 

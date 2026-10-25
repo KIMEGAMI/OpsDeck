@@ -23,6 +23,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        // Existing delivery state is preserved during rollbacks.
+        throw new LogicException('This migration is forward-only; apply a new migration to change the schema.');
     }
 };

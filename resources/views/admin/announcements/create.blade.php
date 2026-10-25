@@ -4,18 +4,27 @@
         <p class="muted">公開すると、対象ユーザーごとにメール送信キューへ登録されます。対象組織を未選択にすると全組織が対象です。</p>
         <p class="muted">送信元：{{ config('opsdeck.admin_mail_from_address') }}／問い合わせ先：{{ config('opsdeck.support_email') }}</p>
         <p>全組織配信時の現在の対象ユーザー数：{{ $eligibleRecipientCount }}人（配信停止ユーザーを除く）</p>
+        @php
+            $selectedOrganizationIds = collect(old('organization_ids', []))
+                ->filter(fn ($id) => is_string($id) || is_int($id))
+                ->map(fn (string|int $id): string => (string) $id)
+                ->all();
+        @endphp
         <form method="post" action="{{ route('admin.announcements.store') }}" onsubmit="if (!confirm('表示された配信対象ユーザー数を確認しました。お知らせを公開してメール送信しますか？')) { return false; } this.querySelector('button[type=submit]').disabled = true; return true;">
             @csrf
             <label for="title">タイトル</label>
-            <input id="title" name="title" value="{{ old('title') }}" maxlength="200" required>
+            <input id="title" name="title" value="{{ old('title') }}" maxlength="200" required @error('title') aria-invalid="true" aria-describedby="title-error" @enderror>
+            <x-field-error field="title" />
             <label for="body">本文</label>
-            <textarea id="body" name="body" maxlength="10000" required>{{ old('body') }}</textarea>
+            <textarea id="body" name="body" maxlength="10000" required @error('body') aria-invalid="true" aria-describedby="body-error" @enderror>{{ old('body') }}</textarea>
+            <x-field-error field="body" />
             <label for="organization_ids">対象組織（未選択：全組織）</label>
-            <select id="organization_ids" name="organization_ids[]" multiple size="6" data-recipient-count-url="{{ route('admin.announcements.recipient-count') }}">
+            <select id="organization_ids" name="organization_ids[]" multiple size="6" data-recipient-count-url="{{ route('admin.announcements.recipient-count') }}" @error('organization_ids') aria-invalid="true" aria-describedby="organization_ids-error" @enderror>
                 @foreach ($organizations as $organization)
-                    <option value="{{ $organization->id }}" @selected(in_array($organization->id, old('organization_ids', []), true))>{{ $organization->name }}</option>
+                    <option value="{{ $organization->id }}" @selected(in_array((string) $organization->id, $selectedOrganizationIds, true))>{{ $organization->name }}</option>
                 @endforeach
             </select>
+            <x-field-error field="organization_ids" />
             <p id="recipient-count" aria-live="polite" aria-busy="false">選択中の配信対象ユーザー数：{{ $eligibleRecipientCount }}人</p>
             <button id="announcement-submit" type="submit" aria-disabled="false">公開してメール送信</button>
         </form>

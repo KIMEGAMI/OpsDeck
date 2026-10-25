@@ -26,7 +26,7 @@ class StoreSupportRequestRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'category' => ['required', 'string', Rule::in(['usage', 'import', 'billing', 'security', 'other'])],
+            'category' => ['required', 'string', Rule::in(array_keys(config('opsdeck.support.categories', [])))],
             'message' => ['required', 'string', 'max:5000'],
             'error_reference' => ['nullable', 'string', 'max:'.SupportErrorReference::MAX_LENGTH, new SupportErrorReferenceRule],
         ];

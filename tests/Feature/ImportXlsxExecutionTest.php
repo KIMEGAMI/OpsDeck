@@ -272,7 +272,7 @@ class ImportXlsxExecutionTest extends TestCase
         }
     }
 
-    public function test_free_plan_cannot_execute_an_import_batch(): void
+    public function test_free_plan_import_with_a_missing_file_is_marked_failed_without_changes(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member('free');
@@ -281,9 +281,9 @@ class ImportXlsxExecutionTest extends TestCase
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.execute', $batch), ['confirm' => '1'])
-            ->assertForbidden();
+            ->assertStatus(422);
 
-        $this->assertSame('ready', $batch->refresh()->status);
+        $this->assertSame('failed', $batch->refresh()->status);
         $this->assertSame(0, Employee::query()->where('organization_id', $organization->id)->count());
     }
 

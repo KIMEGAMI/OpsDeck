@@ -5,7 +5,7 @@ namespace App\Services;
 class PhpExtensionReadiness
 {
     /** @var list<string> */
-    private const REQUIRED_EXTENSIONS = ['mbstring', 'openssl', 'pdo_mysql', 'xmlreader', 'zip'];
+    private const REQUIRED_EXTENSIONS = ['mbstring', 'openssl', 'pdo_mysql', 'sodium', 'xmlreader', 'zip'];
 
     /** @param list<string>|null $loadedExtensions */
     public function missingExtensions(?array $loadedExtensions = null): array

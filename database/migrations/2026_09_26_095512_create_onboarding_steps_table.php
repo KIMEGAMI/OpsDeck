@@ -27,6 +27,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        // Existing data is preserved during normal application rollbacks.
+        throw new LogicException('This migration is forward-only; apply a new migration to change the schema.');
     }
 };

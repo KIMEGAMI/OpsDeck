@@ -1,0 +1,108 @@
+- generic [active] [ref=f1e1]:
+  - link "本文へスキップ" [ref=f1e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - banner [ref=f1e3]:
+    - strong [ref=f1e5]: OpsDeck
+  - main [ref=f1e6]:
+    - status "デモデータに関する注意" [ref=f1e7]:
+      - strong [ref=f1e8]: 読み取り専用デモ
+      - paragraph [ref=f1e9]: 以下は架空のサンプル値です。入力・保存はできず、顧客データ、AI、メール、決済サービスにも接続しません。
+    - region [ref=f1e10]:
+      - heading "サンプル組織のIT運用ダッシュボード" [level=1] [ref=f1e11]
+      - paragraph [ref=f1e12]: 社員・端末・SaaS・契約をまとめ、確認が必要な項目と月次コストを把握する画面の例です。
+      - region [ref=f1e13]:
+        - heading "デモを見たら次はこちら" [level=2] [ref=f1e14]
+        - navigation "デモを見た後の案内" [ref=f1e15]:
+          - link "Freeプランで自社の台帳を始める" [ref=f1e16] [cursor=pointer]:
+            - /url: http://localhost:8007/register
+          - link "サービスのFAQを見る" [ref=f1e17] [cursor=pointer]:
+            - /url: http://localhost:8007/help
+      - generic "デモの主要指標" [ref=f1e18]:
+        - article [ref=f1e19]:
+          - generic [ref=f1e20]: 社員
+          - strong [ref=f1e21]: 42名
+        - article [ref=f1e22]:
+          - generic [ref=f1e23]: 管理端末
+          - strong [ref=f1e24]: 58台
+        - article [ref=f1e25]:
+          - generic [ref=f1e26]: 利用SaaS
+          - strong [ref=f1e27]: 17件
+        - article [ref=f1e28]:
+          - generic [ref=f1e29]: 有効契約
+          - strong [ref=f1e30]: 12件
+        - article [ref=f1e31]:
+          - generic [ref=f1e32]: 月次コスト
+          - strong [ref=f1e33]: 1,284,000円
+      - generic [ref=f1e34]:
+        - region [ref=f1e35]:
+          - heading "今日やること（サンプル）" [level=2] [ref=f1e36]
+          - list [ref=f1e37]:
+            - listitem [ref=f1e38]:
+              - strong [ref=f1e39]: 更新期限が近い契約を確認（3件）
+              - text: 更新前に利用状況と条件を確認します。
+            - listitem [ref=f1e40]:
+              - strong [ref=f1e41]: 未割当の端末を確認（4台）
+              - text: 利用者と端末の紐付け漏れを確認します。
+            - listitem [ref=f1e42]:
+              - strong [ref=f1e43]: ログイン時の追加確認が済んでいないアカウントを確認（2件）
+              - text: クラウドサービスごとに、確認が済んでいないアカウントを整理します。
+            - listitem [ref=f1e44]:
+              - strong [ref=f1e45]: Importの確認待ち（3行）
+              - text: 元の行とプレビューを見比べて判断します。
+        - region [ref=f1e46]:
+          - heading "経費を見直す手がかり（サンプル）" [level=2] [ref=f1e47]
+          - generic [ref=f1e48]:
+            - term [ref=f1e49]: 重複利用の確認候補
+            - definition [ref=f1e50]: 2件
+            - term [ref=f1e51]: 契約内容の再確認候補
+            - definition [ref=f1e52]: 3件
+            - term [ref=f1e53]: 削減実績
+            - definition [ref=f1e54]: 未確定
+          - paragraph [ref=f1e55]: 候補を見つけた後、契約条件と利用状況を人が確認します。ここに削減額の保証や確定額は表示していません。
+      - region [ref=f1e56]:
+        - heading "既存の管理表から始める" [level=2] [ref=f1e57]
+        - paragraph [ref=f1e58]: 元のExcelを作り直す必要はありません。CSVまたはXLSXをプレビューし、列の対応や新規・更新・確認待ちを見てから反映します。
+        - paragraph [ref=f1e59]: このデモ自体はサンプルの登録やImportを行いません。
+        - heading "社員CSVの取込前プレビュー（架空データ）" [level=3] [ref=f1e60]
+        - paragraph [ref=f1e61]: 表を左右に動かすと、画面に隠れた列も確認できます。
+        - region "社員CSVの取込前プレビュー（横にスクロールできます）" [ref=f1e62]:
+          - table [ref=f1e63]:
+            - rowgroup [ref=f1e64]:
+              - row [ref=f1e65]:
+                - columnheader "CSVの列" [ref=f1e66]
+                - columnheader "OpsDeck項目" [ref=f1e67]
+                - columnheader "サンプル値" [ref=f1e68]
+            - rowgroup [ref=f1e69]:
+              - row [ref=f1e70]:
+                - cell "社員番号" [ref=f1e71]
+                - cell "社員番号" [ref=f1e72]
+                - cell "EMP-SAMPLE-001" [ref=f1e73]
+              - row [ref=f1e74]:
+                - cell "氏名" [ref=f1e75]
+                - cell "名称・氏名" [ref=f1e76]
+                - cell "サンプル太郎" [ref=f1e77]
+              - row [ref=f1e78]:
+                - cell "メール" [ref=f1e79]
+                - cell "メールアドレス" [ref=f1e80]
+                - cell "sample@example.test" [ref=f1e81]
+              - row [ref=f1e82]:
+                - cell "在籍状況" [ref=f1e83]
+                - cell "在籍状況" [ref=f1e84]
+                - cell "active" [ref=f1e85]
+        - heading "Import Preview結果の例（架空データ）" [level=3] [ref=f1e86]
+        - paragraph [ref=f1e87]: 以下は分類の見本です。実際のCSVは処理しておらず、登録・更新・メール送信は行いません。
+        - generic "プレビュー分類ごとのサンプル件数" [ref=f1e88]:
+          - article [ref=f1e89]:
+            - generic [ref=f1e90]: 新規登録候補
+            - strong [ref=f1e91]: 1件
+          - article [ref=f1e92]:
+            - generic [ref=f1e93]: 更新候補
+            - strong [ref=f1e94]: 1件
+          - article [ref=f1e95]:
+            - generic [ref=f1e96]: 重複確認が必要
+            - strong [ref=f1e97]: 1件
+          - article [ref=f1e98]:
+            - generic [ref=f1e99]: エラー
+            - strong [ref=f1e100]: 1件
+        - group [ref=f1e101]:
+          - generic "取り込み結果の判定理由を見る" [ref=f1e102]

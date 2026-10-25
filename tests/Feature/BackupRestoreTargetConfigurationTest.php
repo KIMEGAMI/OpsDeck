@@ -6,21 +6,37 @@ use App\Services\BackupRestoreTargetConfiguration;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Builder;
 use Illuminate\Support\Facades\DB;
+use Mockery;
 use Pdo\Mysql;
 use RuntimeException;
 use Tests\TestCase;
 
 class BackupRestoreTargetConfigurationTest extends TestCase
 {
+    private const MYSQL_ACCESS_DENIED_ERROR = 1044;
+
+    private const MYSQL_UNKNOWN_DATABASE_ERROR = 1049;
+
+    private const MYSQL_USER_AUTHENTICATION_ERROR = 1045;
+
     public function test_ready_target_is_reachable_and_empty(): void
     {
         $this->configureSafeTarget();
         $schema = $this->mock(Builder::class);
-        $schema->shouldReceive('getTableListing')->once()->andReturn([]);
-        $schema->shouldReceive('getViews')->once()->andReturn([]);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->with('opsdeck_restore_test_ready')->andReturn([]);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.ROUTINES')), ['opsdeck_restore_test_ready'])
+            ->andReturnNull();
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.EVENTS')), ['opsdeck_restore_test_ready'])
+            ->andReturnNull();
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
         $this->assertSame('ready', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
@@ -34,6 +50,7 @@ class BackupRestoreTargetConfigurationTest extends TestCase
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
         $this->assertSame('target_not_empty', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
@@ -47,6 +64,21 @@ class BackupRestoreTargetConfigurationTest extends TestCase
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
         $this->assertSame('connection_unavailable', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+    }
+
+    public function test_rejected_restore_credentials_have_a_secret_free_diagnostic(): void
+    {
+        $this->assertPdoFailureStatus(self::MYSQL_USER_AUTHENTICATION_ERROR, 'credentials_rejected');
+    }
+
+    public function test_restore_database_permission_failure_has_a_specific_diagnostic(): void
+    {
+        $this->assertPdoFailureStatus(self::MYSQL_ACCESS_DENIED_ERROR, 'database_access_denied');
+    }
+
+    public function test_missing_restore_database_has_a_specific_diagnostic(): void
+    {
+        $this->assertPdoFailureStatus(self::MYSQL_UNKNOWN_DATABASE_ERROR, 'database_not_found');
     }
 
     public function test_unsafe_target_reports_unsafe_configuration_without_opening_a_database_connection(): void
@@ -66,11 +98,20 @@ class BackupRestoreTargetConfigurationTest extends TestCase
     {
         $this->configureSafeTarget();
         $schema = $this->mock(Builder::class);
-        $schema->shouldReceive('getTableListing')->once()->andReturn([]);
-        $schema->shouldReceive('getViews')->once()->andReturn([]);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->with('opsdeck_restore_test_ready')->andReturn([]);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.ROUTINES')), ['opsdeck_restore_test_ready'])
+            ->andReturnNull();
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.EVENTS')), ['opsdeck_restore_test_ready'])
+            ->andReturnNull();
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
         $this->assertTrue(app(BackupRestoreTargetConfiguration::class)->isReadyForRestoreTest());
@@ -80,10 +121,11 @@ class BackupRestoreTargetConfigurationTest extends TestCase
     {
         $this->configureSafeTarget();
         $schema = $this->mock(Builder::class);
-        $schema->shouldReceive('getTableListing')->once()->andReturn(['existing_table']);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn(['existing_table']);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
         $this->assertFalse(app(BackupRestoreTargetConfiguration::class)->isReadyForRestoreTest());
@@ -93,14 +135,76 @@ class BackupRestoreTargetConfigurationTest extends TestCase
     {
         $this->configureSafeTarget();
         $schema = $this->mock(Builder::class);
-        $schema->shouldReceive('getTableListing')->once()->andReturn([]);
-        $schema->shouldReceive('getViews')->once()->andReturn([['name' => 'existing_view']]);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->with('opsdeck_restore_test_ready')->andReturn([['name' => 'existing_view']]);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
         DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
 
         $this->assertFalse(app(BackupRestoreTargetConfiguration::class)->isReadyForRestoreTest());
+    }
+
+    public function test_target_with_existing_stored_routines_is_not_ready(): void
+    {
+        $this->configureSafeTarget();
+        $schema = $this->mock(Builder::class);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->with('opsdeck_restore_test_ready')->andReturn([]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.ROUTINES')), ['opsdeck_restore_test_ready'])
+            ->andReturn((object) ['exists' => 1]);
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
+        $this->assertSame('target_not_empty', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+    }
+
+    public function test_target_with_existing_scheduled_events_is_not_ready(): void
+    {
+        $this->configureSafeTarget();
+        $schema = $this->mock(Builder::class);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->with('opsdeck_restore_test_ready')->andReturn([]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.ROUTINES')), ['opsdeck_restore_test_ready'])
+            ->andReturnNull();
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.EVENTS')), ['opsdeck_restore_test_ready'])
+            ->andReturn((object) ['exists' => 1]);
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
+        $this->assertSame('target_not_empty', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
+    }
+
+    public function test_target_metadata_permission_errors_fail_closed_without_leaking_details(): void
+    {
+        $this->configureSafeTarget();
+        $schema = $this->mock(Builder::class);
+        $schema->shouldReceive('getTableListing')->once()->with('opsdeck_restore_test_ready', false)->andReturn([]);
+        $schema->shouldReceive('getViews')->once()->with('opsdeck_restore_test_ready')->andReturn([]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($schema);
+        $connection->shouldReceive('getDatabaseName')->once()->andReturn('opsdeck_restore_test_ready');
+        $connection->shouldReceive('selectOne')
+            ->once()
+            ->with(Mockery::on(static fn (string $query): bool => str_contains($query, 'information_schema.ROUTINES')), ['opsdeck_restore_test_ready'])
+            ->andThrow(new RuntimeException('sensitive routine privilege detail'));
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
+        $this->assertSame('connection_unavailable', app(BackupRestoreTargetConfiguration::class)->readinessStatus());
     }
 
     public function test_unreachable_target_is_not_ready(): void
@@ -182,5 +286,22 @@ class BackupRestoreTargetConfigurationTest extends TestCase
             ],
             'opsdeck.backup.restore_connection' => 'backup_restore',
         ]);
+    }
+
+    private function assertPdoFailureStatus(int $driverErrorCode, string $expectedStatus): void
+    {
+        $this->configureSafeTarget();
+        $driverException = new \PDOException('DB_PASSWORD_SENTINEL', $driverErrorCode);
+        $driverException->errorInfo = ['HY000', $driverErrorCode, 'DB_PASSWORD_SENTINEL'];
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')
+            ->once()
+            ->andThrow(new RuntimeException('DB_PASSWORD_SENTINEL', 0, $driverException));
+        DB::shouldReceive('connection')->once()->with('backup_restore')->andReturn($connection);
+
+        $status = app(BackupRestoreTargetConfiguration::class)->readinessStatus();
+
+        $this->assertSame($expectedStatus, $status);
+        $this->assertStringNotContainsString('DB_PASSWORD_SENTINEL', $status);
     }
 }

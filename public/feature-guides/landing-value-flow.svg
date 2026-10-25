@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="420" viewBox="0 0 840 420" role="img" aria-labelledby="title description">
+  <title id="title">情報整理から費用の見直しへ</title>
+  <desc id="description">社員や端末、サービス、契約の情報を集めて、費用見直し候補と確認済みの削減実績を整理する流れ</desc>
+  <rect width="840" height="420" rx="20" fill="#ffffff"/>
+  <g font-family="sans-serif" fill="#102a43">
+    <text x="36" y="48" font-size="20" font-weight="700">IT運用の情報をまとめ、次の判断につなげる</text>
+    <rect x="36" y="78" width="230" height="278" rx="16" fill="#f4f7fb" stroke="#9fb3c8" stroke-width="2"/>
+    <text x="60" y="116" font-size="19" font-weight="700">ひとつの台帳へ</text>
+    <rect x="58" y="138" width="186" height="42" rx="8" fill="#ffffff" stroke="#486581" stroke-width="2"/>
+    <text x="76" y="166" font-size="16">社員・部署</text>
+    <rect x="58" y="190" width="186" height="42" rx="8" fill="#ffffff" stroke="#486581" stroke-width="2"/>
+    <text x="76" y="218" font-size="16">端末・資産</text>
+    <rect x="58" y="242" width="186" height="42" rx="8" fill="#ffffff" stroke="#486581" stroke-width="2"/>
+    <text x="76" y="270" font-size="16">サービス・契約</text>
+    <text x="58" y="326" font-size="14" fill="#334e68">登録情報を整理して確認</text>
+    <path d="M280 218h38m-12-12 12 12-12 12" fill="none" stroke="#005f73" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="332" y="94" width="470" height="116" rx="16" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <circle cx="374" cy="152" r="22" fill="#005f73"/>
+    <path d="M364 152h20M374 142v20" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+    <text x="412" y="140" font-size="19" font-weight="700">費用の見直し候補</text>
+    <text x="412" y="171" font-size="15" fill="#334e68">契約更新・未割当サービス・対象端末を確認</text>
+    <rect x="332" y="230" width="470" height="116" rx="16" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <circle cx="374" cy="288" r="22" fill="#9b3d12"/>
+    <path d="M366 288h16M374 280v16" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+    <text x="412" y="276" font-size="19" font-weight="700">確認済みの削減実績</text>
+    <text x="412" y="307" font-size="15" fill="#334e68">内容・金額・期間を担当者が確認して記録</text>
+    <text x="36" y="392" font-size="14" fill="#334e68">候補額と担当者が確認した実績は分けて管理します。</text>
+  </g>
+</svg>

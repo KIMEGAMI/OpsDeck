@@ -15,11 +15,15 @@
         <h1>導入効果レポート</h1>
         <p class="muted">現在のOpsDeckデータから集計した効果指標です。導入前スナップショットがない項目は比較できません。</p>
         <dl>
+            <dt>対象組織</dt><dd>{{ $organization->name }}</dd>
+            <dt>作成日時</dt><dd>{{ $generatedAt->format('Y-m-d H:i') }}（{{ $organization->timezone }}）</dd>
+        </dl>
+        <dl>
             <dt>社員</dt><dd>{{ $metrics['employees'] }}件</dd>
             <dt>資産</dt><dd>{{ $metrics['assets'] }}件</dd>
             <dt>SaaS</dt><dd>{{ $metrics['saas_services'] }}件</dd>
             <dt>期限切れ証跡</dt><dd>{{ $metrics['evidence_expired'] }}件</dd>
-            <dt>未対応Security Control</dt><dd>{{ $metrics['security_open'] }}件</dd>
+            <dt>未対応のセキュリティ管理項目</dt><dd>{{ $metrics['security_open'] }}件</dd>
             <dt>{{ \App\Services\ContractRenewalWindow::ALERT_WINDOW_DAYS }}日以内の更新期限</dt><dd>{{ $metrics['renewals_30_days'] }}件</dd>
             <dt>未確認Importエラー</dt><dd>{{ $metrics['import_errors'] }}行</dd>
             <dt>未確認Import実行失敗</dt><dd><a href="{{ route('imports.index', ['status' => 'failed', 'unreviewed' => 1]) }}">{{ $metrics['import_failed_batches'] }}バッチ</a></dd>
@@ -50,7 +54,29 @@
                 <p>記録された削減実績はありません。</p>
             @endif
         </section>
-        <p class="muted">「確認が必要な項目の合計」は上記の異なる管理カテゴリの件数を単純合算した値で、経費削減額や作業時間の実測値ではありません。</p>
+        <section aria-labelledby="impact-work-time-title">
+            <h2 id="impact-work-time-title">作業時間の変化（担当者入力の参考値）</h2>
+            <p class="muted">改善前・改善後の1回あたりの作業時間と月あたりの回数から計算しています。担当者の入力値であり、OpsDeckが計測・検証したものではありません。実際の経費削減額とは分けて表示しています。</p>
+            <p><strong>月あたりの時間変化：</strong>
+                @if ($metrics['work_time_monthly_hours'] > 0)
+                    {{ number_format($metrics['work_time_monthly_hours'], config('opsdeck.work_time.decimal_places')) }}時間短縮
+                @elseif ($metrics['work_time_monthly_hours'] < 0)
+                    {{ number_format(abs($metrics['work_time_monthly_hours']), config('opsdeck.work_time.decimal_places')) }}時間増加
+                @else
+                    変化なし
+                @endif
+            </p>
+            @if ($metrics['work_time_labor_equivalent_by_currency'] !== [])
+                <p>時間単価を入力した作業の金額換算参考値（月あたり）：
+                    @foreach ($metrics['work_time_labor_equivalent_by_currency'] as $currency => $amount)
+                        {{ $currency }} {{ number_format($amount, config('opsdeck.work_time.decimal_places')) }}@unless ($loop->last) / @endunless
+                    @endforeach
+                </p>
+                <p class="muted">この金額は入力された時間単価との掛け算による参考値です。実際の経費削減ではありません。</p>
+            @endif
+            <p><a href="{{ route('costs.dashboard') }}">作業時間の記録・修正はこちら</a></p>
+        </section>
+        <p class="muted">「確認が必要な項目の合計」は異なる管理カテゴリの件数を単純合算した値です。経費削減額ではありません。作業時間は担当者入力の参考値で、自動計測ではありません。</p>
         <section aria-labelledby="impact-import-comparison-title">
             <h2 id="impact-import-comparison-title">最新Importの前後比較</h2>
             @if ($comparison !== null)
@@ -96,6 +122,7 @@
             @endif
         </section>
         @can('export', $organization)
+            <p class="impact-report-actions" role="note">PDFにする場合は、このボタンを押した後の印刷画面で「PDFに保存」を選びます。紙で使う場合は、プリンターを選んで印刷します。</p>
             <p class="impact-report-actions"><a href="{{ route('impact-report.download') }}">CSVをダウンロード</a> <button type="button" aria-label="導入効果レポートを印刷またはPDF保存" onclick="window.print()">印刷・PDF保存</button></p>
         @endcan
     </section>

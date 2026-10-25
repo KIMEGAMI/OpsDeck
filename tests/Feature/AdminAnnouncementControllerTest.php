@@ -12,10 +12,13 @@ use App\Models\User;
 use App\Models\UserNotificationPreference;
 use App\Services\AnnouncementRecipientQuery;
 use Illuminate\Bus\UniqueLock;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -39,13 +42,39 @@ class AdminAnnouncementControllerTest extends TestCase
         $this->assertSame([17, 83], $job->backoff());
     }
 
+    public function test_database_queue_encrypts_announcement_recipient_identity_before_persistence(): void
+    {
+        config(['queue.default' => 'database']);
+        $announcement = new Announcement;
+        $job = new SendAnnouncementEmail($announcement, 987654321);
+
+        $this->assertInstanceOf(ShouldBeEncrypted::class, $job);
+        $job::dispatch($job->announcement, $job->recipientUserId);
+
+        $queuedJob = DB::table('jobs')->sole();
+        try {
+            $this->assertStringNotContainsString('987654321', $queuedJob->payload);
+
+            $payload = json_decode($queuedJob->payload, true, 512, JSON_THROW_ON_ERROR);
+            $decryptedCommand = Crypt::decryptString($payload['data']['command']);
+            $this->assertStringContainsString('987654321', $decryptedCommand);
+        } finally {
+            DB::table('jobs')->where('id', $queuedJob->id)->delete();
+        }
+    }
+
     public function test_platform_admin_can_publish_announcement_and_queue_one_email_per_user(): void
     {
         Queue::fake();
         $admin = User::factory()->create(['email' => 'platform-'.Str::uuid().'@example.test']);
         $recipient = User::factory()->create(['email' => 'recipient-'.Str::uuid().'@example.test']);
+        $unverifiedRecipient = User::factory()->unverified()->create([
+            'email' => 'recipient-unverified-'.Str::uuid().'@example.test',
+            'email_verification_required_at' => now(),
+        ]);
         $organization = Organization::query()->create(['name' => 'Broadcast '.Str::random(6), 'slug' => 'broadcast-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $unverifiedRecipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
         config(['opsdeck.platform_admin_emails' => [$admin->email]]);
 
         $response = $this->actingAs($admin)->post(route('admin.announcements.store'), ['title' => 'メンテナンスのお知らせ', 'body' => '9月30日にメンテナンスを実施します。']);
@@ -56,6 +85,37 @@ class AdminAnnouncementControllerTest extends TestCase
         $this->assertDatabaseHas('product_events', ['event_key' => 'announcement_published', 'organization_id' => null]);
         Queue::assertPushed(SendAnnouncementEmail::class, $eligibleRecipients);
         Queue::assertPushed(SendAnnouncementEmail::class, fn (SendAnnouncementEmail $job): bool => $job->recipientUserId === $recipient->id);
+        Queue::assertNotPushed(SendAnnouncementEmail::class, fn (SendAnnouncementEmail $job): bool => $job->recipientUserId === $unverifiedRecipient->id);
+    }
+
+    public function test_queue_dispatch_failure_is_recorded_and_shown_as_retryable(): void
+    {
+        Mail::fake();
+        $admin = User::factory()->create(['email' => 'platform-queue-failure-'.Str::uuid().'@example.test']);
+        $recipient = User::factory()->create(['email' => 'recipient-queue-failure-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Queue Failure '.Str::random(6), 'slug' => 'queue-failure-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        Queue::shouldReceive('connection')->once()->andThrow(new RuntimeException('queue backend unavailable'));
+        Log::shouldReceive('warning')->once()->withArgs(fn (string $message, array $context): bool => $message === 'Announcement email queue dispatch failed.'
+            && $context['announcement_id'] > 0
+            && $context['delivery_id'] > 0
+            && $context['exception_class'] === RuntimeException::class
+            && ! str_contains(json_encode($context), $recipient->email));
+
+        $this->actingAs($admin)->post(route('admin.announcements.store'), [
+            'title' => 'Queue unavailable',
+            'body' => 'This message is not sent during the test.',
+            'organization_ids' => [$organization->id],
+        ])->assertRedirect(route('admin.announcements.index'))
+            ->assertSessionHas('status', 'お知らせを公開し、0件をメール送信キューへ登録しました。 1件はキュー登録に失敗しました。管理画面の失敗件数から再送できます。');
+
+        $announcement = Announcement::query()->where('title', 'Queue unavailable')->firstOrFail();
+        $delivery = AnnouncementDelivery::query()->where('announcement_id', $announcement->id)->where('user_id', $recipient->id)->firstOrFail();
+        $this->assertNotNull($delivery->failed_at);
+        $this->assertSame(1, $announcement->recipients_count);
+        $this->actingAs($admin)->get(route('admin.announcements.index'))->assertOk()->assertSee('失敗 1')->assertSee('再送');
+        Mail::assertNothingSent();
     }
 
     public function test_platform_admin_can_view_eligible_recipient_count_before_publishing(): void
@@ -65,6 +125,43 @@ class AdminAnnouncementControllerTest extends TestCase
 
         $eligible = app(AnnouncementRecipientQuery::class)->eligibleFor()->count();
         $this->actingAs($admin)->get(route('admin.announcements.create'))->assertOk()->assertSee('全組織配信時の現在の対象ユーザー数：'.$eligible.'人')->assertSee('送信元：'.config('opsdeck.admin_mail_from_address'))->assertSee('問い合わせ先：'.config('opsdeck.support_email'))->assertSee('お知らせを公開してメール送信しますか？')->assertSee('disabled = true')->assertSee('announcement-submit')->assertSee('aria-disabled')->assertSee('organizationIds.forEach')->assertSee('AbortController')->assertSee('aria-busy')->assertSee('配信対象人数を取得中です')->assertSee('配信対象人数を取得できませんでした');
+    }
+
+    public function test_announcement_form_restores_selected_organization_after_other_validation_error(): void
+    {
+        $admin = User::factory()->create(['email' => 'platform-selection-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Selection '.Str::random(6), 'slug' => 'selection-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+
+        $this->from(route('admin.announcements.create'))
+            ->followingRedirects()
+            ->actingAs($admin)
+            ->post(route('admin.announcements.store'), [
+                'title' => '',
+                'body' => '入力をやり直す本文',
+                'organization_ids' => [(string) $organization->id],
+            ])
+            ->assertOk()
+            ->assertSee('id="title-error"', false)
+            ->assertSee('value="'.$organization->id.'" selected', false);
+    }
+
+    public function test_malformed_announcement_organization_selection_renders_validation_error(): void
+    {
+        $admin = User::factory()->create(['email' => 'platform-malformed-selection-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+
+        $this->from(route('admin.announcements.create'))
+            ->followingRedirects()
+            ->actingAs($admin)
+            ->post(route('admin.announcements.store'), [
+                'title' => '入力内容の確認',
+                'body' => '本文',
+                'organization_ids' => 'not-an-array',
+            ])
+            ->assertOk()
+            ->assertSee('id="organization_ids-error"', false)
+            ->assertSee('aria-describedby="organization_ids-error"', false);
     }
 
     public function test_platform_admin_can_preview_targeted_recipient_count(): void
@@ -142,6 +239,32 @@ class AdminAnnouncementControllerTest extends TestCase
         $this->actingAs($admin)->post(route('admin.announcements.retry', $announcement))->assertRedirect(route('admin.announcements.index'));
         $this->assertNotNull($delivery->fresh()->failed_at);
         Queue::assertPushed(SendAnnouncementEmail::class, fn (SendAnnouncementEmail $job): bool => $job->recipientUserId === $recipient->id);
+    }
+
+    public function test_retry_queue_failure_keeps_announcement_delivery_retryable(): void
+    {
+        Mail::fake();
+        $admin = User::factory()->create(['email' => 'platform-retry-failure-'.Str::uuid().'@example.test']);
+        $recipient = User::factory()->create(['email' => 'retry-failure-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Retry Failure '.Str::random(6), 'slug' => 'retry-failure-'.Str::lower(Str::random(8)), 'timezone' => 'Asia/Tokyo', 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $recipient->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+        $announcement = Announcement::query()->create(['title' => '再送の再試行', 'body' => '本文', 'created_by' => $admin->id, 'published_at' => now(), 'recipients_count' => 1]);
+        $announcement->organizations()->attach($organization->id);
+        $delivery = AnnouncementDelivery::query()->create(['announcement_id' => $announcement->id, 'user_id' => $recipient->id, 'failed_at' => now()]);
+        Queue::shouldReceive('connection')->once()->andThrow(new RuntimeException('queue backend unavailable'));
+        Log::shouldReceive('warning')->once()->withArgs(fn (string $message, array $context): bool => $message === 'Announcement email queue dispatch failed.'
+            && $context['announcement_id'] === $announcement->id
+            && $context['delivery_id'] === $delivery->id
+            && $context['exception_class'] === RuntimeException::class);
+
+        $this->actingAs($admin)->post(route('admin.announcements.retry', $announcement))
+            ->assertRedirect(route('admin.announcements.index'))
+            ->assertSessionHas('status', '0件のお知らせメールを再送キューへ登録しました。 1件はキュー登録に失敗しました。失敗件数を確認して再試行してください。');
+
+        $this->assertNotNull($delivery->fresh()->failed_at);
+        $this->actingAs($admin)->get(route('admin.announcements.index'))->assertOk()->assertSee('失敗 1')->assertSee('再送');
+        Mail::assertNothingSent();
     }
 
     public function test_failed_announcement_is_not_retried_for_a_recipient_who_opted_out(): void
@@ -296,7 +419,9 @@ class AdminAnnouncementControllerTest extends TestCase
         (new SendAnnouncementEmail($announcement, $recipient->id))->handle();
 
         Mail::assertNothingSent();
-        $this->assertDatabaseMissing('announcement_deliveries', ['announcement_id' => $announcement->id, 'user_id' => $recipient->id]);
+        $delivery = AnnouncementDelivery::query()->where('announcement_id', $announcement->id)->where('user_id', $recipient->id)->firstOrFail();
+        $this->assertNotNull($delivery->suppressed_at);
+        $this->assertNull($delivery->sent_at);
     }
 
     public function test_announcement_job_ignores_opt_out_preferences_for_unrelated_organizations(): void

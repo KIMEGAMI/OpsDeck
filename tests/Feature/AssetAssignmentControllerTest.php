@@ -19,6 +19,13 @@ class AssetAssignmentControllerTest extends TestCase
 {
     use DatabaseTransactions;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+    }
+
     public function test_operator_cannot_create_asset_beyond_plan_limit(): void
     {
         config(['opsdeck.plans.free.limits.assets' => 1]);
@@ -66,6 +73,10 @@ class AssetAssignmentControllerTest extends TestCase
             'id' => $asset->id,
             'status' => config('opsdeck.asset_status.assigned'),
         ]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $assignment->id)->where('action', AuditLog::AssetAssignmentCreated)->sole();
         $this->assertSame($user->id, $auditLog->actor_user_id);
         $this->assertSame(['changed_fields' => ['asset_id', 'employee_id', 'assigned_at']], $auditLog->after_json);
@@ -106,24 +117,63 @@ class AssetAssignmentControllerTest extends TestCase
             'assigned_at' => '2026-09-21',
         ]);
 
-        $this->actingAs($user)
+        $this->from(route('assets.show', $asset))
+            ->followingRedirects()
+            ->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
             ->put(route('asset-assignments.update', $assignment), ['returned_at' => '2026-09-20'])
-            ->assertSessionHasErrors(['returned_at' => '返却日は割当日以降の日付を指定してください。']);
+            ->assertOk()
+            ->assertSee('id="returned_at-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="returned_at-error"', false)
+            ->assertSee('value="2026-09-20"', false);
+
+        $this->assertNull($assignment->refresh()->returned_at);
     }
 
     public function test_assignment_rejects_an_employee_who_is_not_active(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Operator);
+        $asset = $this->asset($organization);
+        $inactiveEmployee = $this->employee($organization, config('opsdeck.employee_status.scheduled'));
+
+        $this->from(route('assets.show', $asset))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('asset-assignments.store'), [
+                'asset_id' => $asset->id,
+                'employee_id' => $inactiveEmployee->id,
+                'assigned_at' => '2026-09-21',
+            ])
+            ->assertOk()
+            ->assertSee('id="employee_id-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="employee_id-error"', false);
+    }
+
+    public function test_assignment_rejects_a_retired_employee_without_creating_an_open_assignment(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $asset = $this->asset($organization);
+        $retiredEmployee = $this->employee($organization, config('opsdeck.employee_status.retired'));
 
         $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
             ->post(route('asset-assignments.store'), [
-                'asset_id' => $this->asset($organization)->id,
-                'employee_id' => $this->employee($organization, config('opsdeck.employee_status.scheduled'))->id,
-                'assigned_at' => '2026-09-21',
+                'asset_id' => $asset->id,
+                'employee_id' => $retiredEmployee->id,
+                'assigned_at' => '2026-10-24',
             ])
             ->assertSessionHasErrors(['employee_id' => '在籍中の社員のみ端末を割り当てられます。']);
+
+        $this->assertDatabaseMissing('asset_assignments', [
+            'organization_id' => $organization->id,
+            'asset_id' => $asset->id,
+            'employee_id' => $retiredEmployee->id,
+            'returned_at' => null,
+        ]);
+        $this->assertSame(config('opsdeck.asset_status.in_stock'), $asset->refresh()->status);
     }
 
     public function test_operator_sees_the_assignment_form_with_active_employees(): void
@@ -166,6 +216,10 @@ class AssetAssignmentControllerTest extends TestCase
         $this->assertDatabaseHas('assets', [
             'id' => $asset->id,
             'status' => config('opsdeck.asset_status.in_stock'),
+        ]);
+        $this->assertDatabaseHas('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
         ]);
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $assignment->id)->where('action', AuditLog::AssetAssignmentReturned)->sole();
         $this->assertSame($user->id, $auditLog->actor_user_id);
@@ -219,6 +273,11 @@ class AssetAssignmentControllerTest extends TestCase
                 'assigned_at' => '2026-09-21',
             ])
             ->assertForbidden();
+
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'first_dashboard_action_completed',
+        ]);
     }
 
     /** @return array{0: User, 1: Organization} */

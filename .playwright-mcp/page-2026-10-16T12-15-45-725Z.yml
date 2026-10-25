@@ -1,0 +1,27 @@
+- generic [active] [ref=f21e1]:
+  - banner [ref=f21e2]:
+    - strong [ref=f21e4]: OpsDeck
+  - main [ref=f21e5]:
+    - region [ref=f21e6]:
+      - heading "OpsDeckへログイン" [level=1] [ref=f21e7]
+      - paragraph [ref=f21e8]: 社員・パソコン・使っているサービス・契約をまとめて管理できます。
+      - generic [ref=f21e9]:
+        - generic [ref=f21e10]: メールアドレス
+        - textbox "メールアドレス" [ref=f21e11]
+        - generic [ref=f21e12]: パスワード
+        - generic [ref=f21e13]:
+          - textbox "パスワード" [ref=f21e14]
+          - button "パスワードを表示" [ref=f21e15] [cursor=pointer]: 表示
+        - paragraph [ref=f21e16]:
+          - link "パスワードをお忘れですか？" [ref=f21e17] [cursor=pointer]:
+            - /url: http://localhost:8007/forgot-password
+        - generic [ref=f21e18]:
+          - checkbox "ログイン状態を保持する" [ref=f21e19]
+          - text: ログイン状態を保持する
+        - button "ログイン" [ref=f21e20] [cursor=pointer]
+      - paragraph [ref=f21e21]:
+        - link "組織を新規登録する" [ref=f21e22] [cursor=pointer]:
+          - /url: http://localhost:8007/register
+      - paragraph [ref=f21e23]:
+        - link "使い方に困ったらヘルプを見る" [ref=f21e24] [cursor=pointer]:
+          - /url: http://localhost:8007/help

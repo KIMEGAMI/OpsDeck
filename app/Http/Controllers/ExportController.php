@@ -36,6 +36,14 @@ class ExportController extends Controller
         $organization = $this->organization($request);
         $this->authorize('export', $organization);
         abort_unless(in_array($resource, config('opsdeck.export_resources'), true), 404);
+        AuditLog::query()->create([
+            'organization_id' => $organization->id,
+            'actor_user_id' => $request->user()->id,
+            'entity_type' => Organization::class,
+            'entity_id' => $organization->id,
+            'action' => AuditLog::DataExportStarted,
+            'after_json' => ['resource' => $resource],
+        ]);
         $filename = 'opsdeck-'.$resource.'-'.now()->format('Ymd-His').'.csv';
 
         return response()->streamDownload(function () use ($organization, $resource): void {

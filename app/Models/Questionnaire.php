@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 class Questionnaire extends Model
 {
@@ -33,5 +34,17 @@ class Questionnaire extends Model
     public function questions(): HasMany
     {
         return $this->hasMany(QuestionnaireQuestion::class);
+    }
+
+    public function pendingAnswers(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            QuestionnaireAnswer::class,
+            QuestionnaireQuestion::class,
+            'questionnaire_id',
+            'question_id',
+            'id',
+            'id',
+        )->whereNull('approved_at');
     }
 }

@@ -10,7 +10,7 @@ class ExampleTest extends TestCase
     {
         $this->get('/')
             ->assertOk()
-            ->assertSee('社員・端末・SaaS・契約を、ひとつの場所で管理。')
+            ->assertSee('見つける。見直す。')
             ->assertSee(route('register'));
     }
 }

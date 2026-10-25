@@ -17,6 +17,70 @@ use Tests\TestCase;
 
 class SaasServiceControllerTest extends TestCase
 {
+    public function test_saas_service_screens_show_japanese_status_labels(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'saas-labels-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'SaaS Labels '.$suffix,
+            'slug' => 'saas-labels-'.$suffix,
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Operator,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $service = SaasService::query()->create([
+            'organization_id' => $organization->id,
+            'name' => '社内チャット',
+            'status' => 'inactive',
+        ]);
+        $employee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => '入社する社員',
+            'employment_status' => config('opsdeck.employee_status.active'),
+        ]);
+        $retiredEmployee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => '退職済み社員',
+            'employment_status' => config('opsdeck.employee_status.retired'),
+        ]);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($user)->withSession($session)
+            ->get(route('saas-services.index'))
+            ->assertOk()
+            ->assertSee('クラウドサービス')
+            ->assertSee('会社で使っているWebサービスやアプリの契約・利用状況をまとめて管理します。')
+            ->assertSee('利用停止');
+
+        $this->get(route('saas-services.show', $service))
+            ->assertOk()
+            ->assertSee('ログイン時の追加確認')
+            ->assertSee('利用停止');
+
+        $this->get(route('saas-services.show', ['saas_service' => $service, 'employee_id' => $employee->id]))
+            ->assertOk()
+            ->assertSee('<option value="'.$employee->id.'" selected>'.$employee->name.'</option>', false);
+
+        $this->get(route('saas-services.show', $service))
+            ->assertOk()
+            ->assertDontSee('<option value="'.$retiredEmployee->id.'">'.$retiredEmployee->name.'</option>', false);
+
+        $this->get(route('saas-services.create'))
+            ->assertOk()
+            ->assertSee('クラウドサービスを登録')
+            ->assertSee('提供会社（ベンダー）')
+            ->assertSee('利用中')
+            ->assertSee('利用終了');
+    }
+
     public function test_operator_cannot_create_saas_service_beyond_plan_limit(): void
     {
         Config::set('opsdeck.plans.free.limits.saas_services', 1);
@@ -46,10 +110,54 @@ class SaasServiceControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('saas-services.store'), ['name' => 'Slack', 'status' => 'active'])->assertRedirect();
 
         $this->assertDatabaseHas('saas_services', ['organization_id' => $organization->id, 'name' => 'Slack']);
+        $service = SaasService::query()->where('organization_id', $organization->id)->where('name', 'Slack')->sole();
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $service->id)->where('action', AuditLog::SaasServiceCreated)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['created_fields' => ['name', 'status']], $auditLog->after_json);
+        $this->assertStringNotContainsString('Slack', json_encode($auditLog->toArray()));
         $this->assertDatabaseHas('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
+    }
+
+    public function test_invalid_saas_website_is_shown_and_invalid_status_falls_back_to_default(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $user = User::factory()->create(['email' => 'saas-invalid-url-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'SaaS Validation Org',
+            'slug' => 'saas-validation-'.Str::lower(Str::random(8)),
+            'timezone' => 'Asia/Tokyo',
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Operator,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+
+        $this->from(route('saas-services.create'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('saas-services.store'), [
+                'name' => '社内サービス',
+                'website_url' => 'not-a-url',
+                'status' => 'not-a-configured-status',
+            ])
+            ->assertOk()
+            ->assertSee('id="website_url-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="website_url-error"', false)
+            ->assertSee('value="not-a-url"', false)
+            ->assertSee('id="status-error" class="errors field-error"', false)
+            ->assertSee('<option value="active" selected>利用中</option>', false);
+
+        $this->assertDatabaseMissing('saas_services', ['organization_id' => $organization->id, 'name' => '社内サービス']);
     }
 
     public function test_saas_service_list_attention_filter_shows_unassigned_and_former_employee_services_only(): void
@@ -253,6 +361,7 @@ class SaasServiceControllerTest extends TestCase
         $this->assertSame($service->id, $auditLog->entity_id);
         $this->assertSame(['changed_fields' => ['name']], $auditLog->after_json);
         $this->assertStringNotContainsString('Changed Service', json_encode($auditLog->toArray()));
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
     }
 
     public function test_operator_cannot_update_a_saas_service_in_another_organization(): void

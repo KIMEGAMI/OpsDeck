@@ -9,6 +9,7 @@ use App\Models\AssetAssignment;
 use App\Models\AuditLog;
 use App\Models\Employee;
 use App\Models\Organization;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -29,6 +30,7 @@ class AssetAssignmentController extends Controller
                 ->findOrFail($attributes['asset_id']);
             $employee = Employee::query()
                 ->where('organization_id', $organization->id)
+                ->lockForUpdate()
                 ->findOrFail($attributes['employee_id']);
 
             if ($employee->employment_status !== config('opsdeck.employee_status.active')) {
@@ -58,6 +60,7 @@ class AssetAssignmentController extends Controller
                 'action' => AuditLog::AssetAssignmentCreated,
                 'after_json' => ['changed_fields' => ['asset_id', 'employee_id', 'assigned_at']],
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
 
             return $assignment;
         });
@@ -98,6 +101,7 @@ class AssetAssignmentController extends Controller
                     'action' => AuditLog::AssetAssignmentReturned,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
 
             if (! AssetAssignment::query()

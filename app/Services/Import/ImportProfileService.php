@@ -39,8 +39,29 @@ class ImportProfileService
     }
 
     /**
+     * @param  list<string>  $targetTypes
+     * @return list<string>
+     */
+    public function targetTypesWithDifferentLayoutProfiles(Organization $organization, ?string $selectedSheetName, string $sourceSignature, array $targetTypes): array
+    {
+        $query = ImportProfile::query()
+            ->where('organization_id', $organization->id)
+            ->whereIn('target_type', $targetTypes)
+            ->where('source_signature', '!=', $sourceSignature);
+
+        if ($selectedSheetName === null) {
+            $query->whereNull('selected_sheet_name');
+        } else {
+            $query->where('selected_sheet_name', $selectedSheetName);
+        }
+
+        return $query->distinct()->orderBy('target_type')->pluck('target_type')->all();
+    }
+
+    /**
      * @param  array<string, string|null>  $columnMap
      * @param  array<string, mixed>  $normalizationRules
+     * @param  array<string, list<array{source: string, target: string}>>  $valueMappings
      * @param  list<string>  $headers
      */
     public function saveVersion(
@@ -56,6 +77,7 @@ class ImportProfileService
         string $name,
         array $columnMap,
         array $normalizationRules,
+        array $valueMappings,
         int $userId,
     ): ImportProfile {
         $existingProfile = $profileId === null
@@ -95,6 +117,7 @@ class ImportProfileService
             'source_headers' => array_values($headers),
             'column_map' => $columnMap,
             'normalization_rules' => $normalizationRules,
+            'value_mappings' => $valueMappings,
             'created_by' => $userId,
         ]);
     }

@@ -4,6 +4,7 @@ namespace App\Services\Import;
 
 use App\Models\GoogleSheetConnection;
 use App\Models\ImportBatch;
+use App\Services\PlanFeatureService;
 use App\Services\ProductEventRecorder;
 use Generator;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +28,10 @@ class ImportPreviewPreparationService
         $importBatch = ImportBatch::query()->whereKey($importBatchId)->where('status', 'previewing')->first();
         if ($importBatch === null) {
             return;
+        }
+
+        if ($importBatch->source_type === 'google_sheets') {
+            app(PlanFeatureService::class)->assertAvailable($importBatch->organization, 'google_sheets', 'Google Sheets連携は現在利用できません。');
         }
 
         $stagingStream = tmpfile();
@@ -85,7 +90,7 @@ class ImportPreviewPreparationService
         $this->sourceIntegrityService->assertUnchanged($importBatch);
 
         if ($importBatch->source_type === 'csv' && $importBatch->source_file_path !== null) {
-            $sourceStream = Storage::disk(config('opsdeck.import.disk'))->readStream($importBatch->source_file_path);
+            $sourceStream = Storage::disk($importBatch->sourceStorageDiskName())->readStream($importBatch->source_file_path);
             if (! is_resource($sourceStream)) {
                 throw new RuntimeException('CSVを読み込めません。');
             }
@@ -106,15 +111,19 @@ class ImportPreviewPreparationService
         }
 
         if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null && $importBatch->selected_sheet_name !== null) {
-            return $this->xlsxImportSource->parseEach(
-                Storage::disk(config('opsdeck.import.disk'))->path($importBatch->source_file_path),
-                $importBatch->selected_sheet_name,
-                function (array $row) use ($stagingStream): void {
-                    $this->writeSourceRowNumber($stagingStream, $row);
-                },
-                headerRowNumber: (int) $importBatch->header_row_number,
-                dataStartRowNumber: $importBatch->data_start_row_number,
-                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+            return app(ImportFileLocalStager::class)->withLocalCopy(
+                $importBatch->sourceStorageDiskName(),
+                $importBatch->source_file_path,
+                fn (string $localPath): array => $this->xlsxImportSource->parseEach(
+                    $localPath,
+                    $importBatch->selected_sheet_name,
+                    function (array $row) use ($stagingStream): void {
+                        $this->writeSourceRowNumber($stagingStream, $row);
+                    },
+                    headerRowNumber: (int) $importBatch->header_row_number,
+                    dataStartRowNumber: $importBatch->data_start_row_number,
+                    headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+                ),
             );
         }
 

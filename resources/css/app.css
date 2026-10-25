@@ -6,3 +6,171 @@
     --font-sans: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
+
+.skip-link {
+    position: absolute;
+    top: 0;
+    left: -9999px;
+    z-index: 1000;
+    padding: .75rem 1rem;
+    border-radius: .35rem;
+    background: #f6c945;
+    color: #102a43;
+}
+
+.skip-link:focus-visible {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+}
+
+.password-input-row {
+    display: flex;
+    align-items: stretch;
+    gap: .5rem;
+}
+
+.password-input-row input {
+    flex: 1;
+    min-width: 0;
+}
+
+.password-toggle {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
+
+.onboarding-step-status {
+    display: inline-block;
+    min-width: 5rem;
+    padding: .2rem .5rem;
+    border: 1px solid;
+    border-radius: .35rem;
+    font-weight: 700;
+    text-align: center;
+}
+
+.onboarding-step-status--complete {
+    border-color: #2f6842;
+    color: #17452a;
+    background: #e7f4ea;
+}
+
+.onboarding-step-status--upcoming {
+    border-color: #627d98;
+    color: #243b53;
+    background: #f0f4f8;
+}
+
+.table-scroll.help-plan-table-scroll table {
+    width: 100%;
+    table-layout: fixed;
+}
+
+.help-plan-table-scroll th,
+.help-plan-table-scroll td {
+    overflow-wrap: anywhere;
+    vertical-align: top;
+}
+
+.help-plan-table-scroll td ul {
+    margin: 0;
+    padding-left: 1.25rem;
+}
+
+.help-quick-nav ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+    gap: .5rem;
+    padding: 0;
+    list-style: none;
+}
+
+.help-quick-nav a {
+    display: flex;
+    min-height: var(--interactive-target-min-height);
+    align-items: center;
+    padding: .5rem .75rem;
+    border: 1px solid #9fb3c8;
+    border-radius: .35rem;
+    background: #f7fafc;
+    text-decoration: none;
+}
+
+.help-quick-nav a:hover,
+.help-quick-nav a:focus-visible {
+    border-color: #005f73;
+    background: #e6f6f8;
+}
+
+.help-faq {
+    border-top: 1px solid #bcccdc;
+    padding: .75rem 0;
+}
+
+.help-faq > summary {
+    min-height: var(--interactive-target-min-height);
+    padding: .5rem 0;
+    cursor: pointer;
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.help-faq > p {
+    margin: .5rem 0 0;
+}
+
+@media (max-width: 64rem) {
+    .help-plan-table-scroll {
+        overflow-x: visible;
+    }
+
+    .help-plan-table-scroll table,
+    .help-plan-table-scroll tbody,
+    .help-plan-table-scroll tr {
+        display: block;
+        width: 100%;
+    }
+
+    .help-plan-table-scroll thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .help-plan-table-scroll tbody tr {
+        margin-bottom: 1rem;
+        border: 1px solid #bcccdc;
+        border-radius: .35rem;
+    }
+
+    .help-plan-table-scroll tbody th[scope="row"] {
+        display: block;
+        background: #f0f4f8;
+        font-size: 1.1rem;
+    }
+
+    .help-plan-table-scroll td {
+        display: grid;
+        grid-template-columns: minmax(5.5rem, .4fr) minmax(0, 1fr);
+        gap: .75rem;
+        border-bottom: 1px solid #d9e2ec;
+        overflow-wrap: anywhere;
+    }
+
+    .help-plan-table-scroll td::before {
+        content: attr(data-label);
+        color: #102a43;
+        font-weight: 700;
+    }
+
+    .help-plan-table-scroll td:last-child {
+        border-bottom: 0;
+    }
+}

@@ -16,14 +16,14 @@ class RollbackImportBatch implements ShouldQueue
 
     public int $timeout;
 
-    public function __construct(public int $importBatchId)
+    public function __construct(public int $importBatchId, public int $actorUserId)
     {
         $this->timeout = max(1, (int) config('opsdeck.import.job_timeout_seconds'));
     }
 
     public function handle(ImportBatchRollbackService $rollbackService): void
     {
-        $rollbackService->rollback($this->importBatchId);
+        $rollbackService->rollback($this->importBatchId, $this->actorUserId);
     }
 
     public function failed(?Throwable $exception): void

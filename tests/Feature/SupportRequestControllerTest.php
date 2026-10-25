@@ -9,6 +9,35 @@ use Tests\TestCase;
 
 class SupportRequestControllerTest extends TestCase
 {
+    public function test_platform_admin_sees_japanese_labels_for_support_request_statuses(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $statuses = [
+            'open' => '受付',
+            'in_progress' => '対応中',
+            'resolved' => '解決済み',
+            'legacy_status' => '状態を確認してください',
+        ];
+
+        foreach ($statuses as $status => $label) {
+            SupportRequest::query()->create([
+                'category' => 'usage',
+                'message' => '問い合わせ内容',
+                'status' => $status,
+            ]);
+        }
+
+        $admin = User::factory()->create(['email' => 'support-status-admin-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+
+        $response = $this->actingAs($admin)->get(route('admin.support.index'))->assertOk();
+
+        foreach ($statuses as $status => $label) {
+            $response->assertSee('<td>'.$label.'</td>', false);
+            $response->assertDontSee('<td>'.$status.'</td>', false);
+        }
+    }
+
     public function test_support_request_pages_use_a_stable_order_when_creation_times_match(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -63,7 +92,7 @@ class SupportRequestControllerTest extends TestCase
         config(['opsdeck.platform_admin_emails' => [$admin->email]]);
         $this->actingAs($admin)->get(route('admin.support.index'))
             ->assertOk()
-            ->assertSee('usage')
+            ->assertSee('使い方')
             ->assertSee($supportRequest->reference_code)
             ->assertSee($errorReference)
             ->assertDontSee('使い方を教えてください');
@@ -81,7 +110,7 @@ class SupportRequestControllerTest extends TestCase
         $this->actingAs($admin)->get(route('admin.support.index', ['reference_code' => strtolower($targetRequest->reference_code)]))
             ->assertOk()
             ->assertSee($targetRequest->reference_code)
-            ->assertSee('billing')
+            ->assertSee('Billing')
             ->assertDontSee('SUP-00000000-0000-4000-8000-000000000002');
     }
 
@@ -133,6 +162,30 @@ class SupportRequestControllerTest extends TestCase
             ->assertSee($errorReference);
     }
 
+    public function test_privacy_category_can_be_selected_submitted_and_reviewed_by_platform_admin(): void
+    {
+        $this->get(route('support.create', ['category' => 'privacy']))
+            ->assertOk()
+            ->assertSee('value="privacy" selected', false)
+            ->assertSee('個人情報・データの取扱い');
+
+        $this->post(route('support.store'), [
+            'category' => 'privacy',
+            'message' => '保存データの取扱いについて相談したいです。',
+        ])->assertRedirect(route('support.create'));
+
+        $supportRequest = SupportRequest::query()->where('category', 'privacy')->latest('id')->firstOrFail();
+        $admin = User::factory()->create(['email' => 'privacy-support-admin-'.Str::uuid().'@example.test']);
+        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
+
+        $this->actingAs($admin)
+            ->get(route('admin.support.index'))
+            ->assertOk()
+            ->assertSee($supportRequest->reference_code)
+            ->assertSee('個人情報・データの取扱い')
+            ->assertDontSee('保存データの取扱いについて相談したいです。');
+    }
+
     public function test_support_request_rejects_an_unsafe_import_error_reference(): void
     {
         $this->from(route('support.create'))
@@ -144,9 +197,14 @@ class SupportRequestControllerTest extends TestCase
     public function test_support_request_rejects_a_malformed_error_reference(): void
     {
         $this->from(route('support.create'))
+            ->followingRedirects()
             ->post(route('support.store'), ['category' => 'other', 'message' => 'エラーについて', 'error_reference' => 'not-a-uuid'])
-            ->assertRedirect(route('support.create'))
-            ->assertSessionHasErrors('error_reference');
+            ->assertOk()
+            ->assertSee('id="error_reference-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="error-reference-help error_reference-error"', false)
+            ->assertSee('value="not-a-uuid"', false)
+            ->assertDontSee('エラーについて', false);
     }
 
     public function test_support_submissions_are_rate_limited_per_ip_without_blocking_the_form(): void

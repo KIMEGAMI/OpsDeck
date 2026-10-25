@@ -38,6 +38,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        // Intentionally non-destructive. Production financial history is forward-only.
+        throw new LogicException('This migration is forward-only; apply a new migration to change the schema.');
     }
 };

@@ -1,8 +1,5 @@
-<div>
-    <!-- Do what you can, with what you have, where you are. - Theodore Roosevelt -->
-</div>
 <x-layouts.app>
-    <section class="card" aria-labelledby="forgot-password-title">
+    <section class="card auth-card" aria-labelledby="forgot-password-title">
         <h1 id="forgot-password-title">パスワードをお忘れの場合</h1>
         <p class="muted">登録したメールアドレスを入力してください。該当する場合は、再設定用リンクをお送りします。</p>
         @if (session('status'))

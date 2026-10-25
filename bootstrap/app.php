@@ -3,6 +3,7 @@
 use App\Http\Middleware\EnsureOrganizationMembership;
 use App\Http\Middleware\EnsurePlanFeature;
 use App\Http\Middleware\EnsurePlatformAdmin;
+use App\Http\Middleware\EnsureReleaseFeature;
 use App\Http\Middleware\SecurityHeaders;
 use App\Services\ServerErrorAlertDispatcher;
 use Illuminate\Console\Scheduling\Schedule;
@@ -27,9 +28,14 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('opsdeck:retry-weekly-summary-emails --limit=100')->hourly()->timezone(config('app.timezone'));
         $schedule->command('opsdeck:retry-announcement-emails --limit=100')->hourly()->timezone(config('app.timezone'));
         $schedule->command('opsdeck:billing:enforce-grace')->hourly()->timezone(config('app.timezone'));
+        if (config('opsdeck.release_features.storage_addon')) {
+            $schedule->command('opsdeck:storage-addon:reconcile')->monthlyOn(1, '03:00')->timezone(config('app.timezone'))->onOneServer()->withoutOverlapping();
+        }
         $schedule->command('auth:clear-resets')->everyFifteenMinutes();
-        $schedule->command('opsdeck:impact:snapshots')->hourly()->timezone(config('app.timezone'));
-        $schedule->command('opsdeck:impact:prune-snapshots')->daily()->timezone(config('app.timezone'))->withoutOverlapping();
+        if (config('opsdeck.release_features.impact_report')) {
+            $schedule->command('opsdeck:impact:snapshots')->hourly()->timezone(config('app.timezone'));
+            $schedule->command('opsdeck:impact:prune-snapshots')->daily()->timezone(config('app.timezone'))->withoutOverlapping();
+        }
         $schedule->command('opsdeck:backup')
             ->dailyAt(config('opsdeck.backup.schedule_time'))
             ->timezone(config('app.timezone'))
@@ -52,6 +58,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'organization.member' => EnsureOrganizationMembership::class,
             'plan.feature' => EnsurePlanFeature::class,
             'platform.admin' => EnsurePlatformAdmin::class,
+            'release.feature' => EnsureReleaseFeature::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
@@ -60,10 +67,6 @@ return Application::configure(basePath: dirname(__DIR__))
         );
 
         $exceptions->report(function (Throwable $exception): ?bool {
-            if (! app()->environment('production')) {
-                return null;
-            }
-
             $status = $exception instanceof HttpExceptionInterface ? $exception->getStatusCode() : 500;
             if ($status < 500) {
                 return null;
@@ -90,7 +93,8 @@ return Application::configure(basePath: dirname(__DIR__))
         });
 
         $exceptions->respond(function (Response $response): Response {
-            if (! app()->environment('production') || $response->getStatusCode() < 500) {
+            $isProduction = app()->environment('production');
+            if ($response->getStatusCode() < 500 || (! $isProduction && config('app.debug'))) {
                 return $response;
             }
 
@@ -106,7 +110,9 @@ return Application::configure(basePath: dirname(__DIR__))
             }
 
             $status = $response->getStatusCode();
-            app(ServerErrorAlertDispatcher::class)->dispatch($errorReference, $status);
+            if ($isProduction) {
+                app(ServerErrorAlertDispatcher::class)->dispatch($errorReference, $status);
+            }
             $headers = $response->headers->all();
             unset($headers['content-type'], $headers['content-length']);
 

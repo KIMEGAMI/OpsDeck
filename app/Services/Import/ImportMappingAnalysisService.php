@@ -3,6 +3,7 @@
 namespace App\Services\Import;
 
 use App\Models\Asset;
+use App\Models\AssetAssignment;
 use App\Models\Contract;
 use App\Models\Department;
 use App\Models\Employee;
@@ -16,6 +17,7 @@ use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Services\ContractAmountValidator;
 use App\Services\ImportBatchExecutionService;
+use App\Services\PlanFeatureService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -49,6 +51,10 @@ class ImportMappingAnalysisService
             return;
         }
 
+        if ($importBatch->source_type === 'google_sheets') {
+            app(PlanFeatureService::class)->assertAvailable($importBatch->organization, 'google_sheets', 'Google Sheets連携は現在利用できません。');
+        }
+
         $columnMap = $mapping->column_map ?? [];
         $rowResultStream = tmpfile();
         if (! is_resource($rowResultStream)) {
@@ -65,18 +71,19 @@ class ImportMappingAnalysisService
         $sourceRows = [];
         $seenKeys = [];
         $firstRowsByKey = [];
-        $existingCandidateHashes = $this->existingDuplicateCandidateHashes($importBatch);
+        $duplicateRowsByHash = [];
+        $existingCandidateHashes = [];
         $timestamp = now()->toDateTimeString();
 
         try {
-            $processRows = function () use (&$sourceRows, &$counts, &$seenKeys, &$firstRowsByKey, &$existingCandidateHashes, $importBatch, $mapping, $columnMap, $rowResultStream, $candidateStream, $timestamp): void {
+            $processRows = function () use (&$sourceRows, &$counts, &$seenKeys, &$firstRowsByKey, &$duplicateRowsByHash, &$existingCandidateHashes, $importBatch, $mapping, $columnMap, $rowResultStream, $timestamp): void {
                 if ($sourceRows === []) {
                     return;
                 }
 
                 $sourceRowChunk = $sourceRows;
                 $sourceRows = [];
-                $mappedRows = $this->mapRows($sourceRowChunk, $columnMap, $mapping->target_type, $mapping->normalization_rules ?? []);
+                $mappedRows = $this->mapRows($sourceRowChunk, $columnMap, $mapping->target_type, $mapping->normalization_rules ?? [], $mapping->value_mappings ?? []);
                 $existingTargetHashes = $this->existingImportTargetHashes($importBatch, $mapping->target_type, $mappedRows);
                 $knownRelationshipReferences = $this->knownRelationshipReferencesForRows($importBatch, $mapping->target_type, $columnMap, $mappedRows);
                 $rowResultIds = $this->rowResultIdsForRows($importBatch, $mappedRows);
@@ -86,8 +93,7 @@ class ImportMappingAnalysisService
                 }
                 $this->stageRows($rowResultStream, $rowResultUpdates);
 
-                $candidateRecords = $this->duplicateCandidateRecords($importBatch, $mapping->target_type, $columnMap, $mapping->normalization_rules ?? [], $sourceRowChunk, $existingCandidateHashes, $firstRowsByKey, $timestamp);
-                $this->stageRows($candidateStream, $candidateRecords);
+                $this->duplicateCandidateRecords($mapping->target_type, $columnMap, $mapping->normalization_rules ?? [], $mapping->value_mappings ?? [], $sourceRowChunk, $existingCandidateHashes, $firstRowsByKey, $duplicateRowsByHash);
             };
 
             $this->forEachSourceRow($importBatch, $mapping->target_type, function (array $row, array $headers) use (&$sourceRows, $processRows, $chunkSize): void {
@@ -102,6 +108,7 @@ class ImportMappingAnalysisService
                 }
             });
             $processRows();
+            $this->stageRows($candidateStream, $this->duplicateCandidateRecordsForStorage($importBatch, $mapping->target_type, $duplicateRowsByHash, $timestamp));
 
             DB::transaction(function () use ($importBatch, $mapping, $counts, $rowResultStream, $candidateStream, $chunkSize): void {
                 $lockedBatch = ImportBatch::query()->whereKey($importBatch->id)->lockForUpdate()->first();
@@ -115,6 +122,7 @@ class ImportMappingAnalysisService
                     return;
                 }
 
+                $lockedBatch->reviewCandidates()->delete();
                 $candidateChunk = [];
                 foreach ($this->stagedRows($candidateStream) as $candidate) {
                     $candidateChunk[] = $candidate;
@@ -163,13 +171,17 @@ class ImportMappingAnalysisService
         $this->sourceIntegrityService->assertUnchanged($importBatch);
 
         if ($importBatch->source_type === 'xlsx' && $importBatch->source_file_path !== null && $importBatch->selected_sheet_name !== null) {
-            $this->xlsxImportSource->parseEach(
-                Storage::disk(config('opsdeck.import.disk'))->path($importBatch->source_file_path),
-                $importBatch->selected_sheet_name,
-                $onRow,
-                headerRowNumber: (int) $importBatch->header_row_number,
-                dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
-                headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+            app(ImportFileLocalStager::class)->withLocalCopy(
+                $importBatch->sourceStorageDiskName(),
+                $importBatch->source_file_path,
+                fn (string $localPath): array => $this->xlsxImportSource->parseEach(
+                    $localPath,
+                    $importBatch->selected_sheet_name,
+                    $onRow,
+                    headerRowNumber: (int) $importBatch->header_row_number,
+                    dataStartRowNumber: $importBatch->resolvedDataStartRowNumber(),
+                    headerEndRowNumber: $importBatch->resolvedHeaderEndRowNumber(),
+                ),
             );
 
             return;
@@ -196,7 +208,7 @@ class ImportMappingAnalysisService
         }
 
         if ($importBatch->source_type === 'csv' && $importBatch->source_file_path !== null) {
-            $disk = Storage::disk(config('opsdeck.import.disk'));
+            $disk = Storage::disk($importBatch->sourceStorageDiskName());
             if ($disk->exists($importBatch->source_file_path)) {
                 $sourceStream = $disk->readStream($importBatch->source_file_path);
                 if (! is_resource($sourceStream)) {
@@ -276,14 +288,15 @@ class ImportMappingAnalysisService
     /**
      * @param  array<string, string|null>  $columnMap
      * @param  list<array{source_row_number: int, values: array<string, string>, duplicate_key: ?string}>  $mappedRows
-     * @return array{department_names: array<string, true>, service_names: array<string, true>, employee_emails: array<string, true>}
+     * @return array{department_names: array<string, true>, service_names: array<string, true>, employee_emails: array<string, true>, active_employee_emails: array<string, true>, available_asset_numbers: array<string, true>}
      */
     private function knownRelationshipReferencesForRows(ImportBatch $importBatch, string $targetType, array $columnMap, array $mappedRows): array
     {
-        $references = ['department_names' => [], 'service_names' => [], 'employee_emails' => []];
+        $references = ['department_names' => [], 'service_names' => [], 'employee_emails' => [], 'active_employee_emails' => [], 'available_asset_numbers' => []];
         $referenceFields = match ($targetType) {
             'employees' => ['department_name' => 'department_names'],
             'contracts', 'saas_assignments' => ['service_name' => 'service_names', 'employee_email' => 'employee_emails'],
+            'asset_assignments' => ['asset_number' => 'available_asset_numbers', 'employee_email' => 'active_employee_emails'],
             'security_controls' => ['owner_email' => 'employee_emails'],
             default => [],
         };
@@ -316,14 +329,40 @@ class ImportMappingAnalysisService
                     ->pluck('name')
                     ->mapWithKeys(static fn (string $name): array => [mb_strtolower(trim($name)) => true])
                     ->all();
+            } elseif ($referenceType === 'available_asset_numbers') {
+                $assets = Asset::query()
+                    ->where('organization_id', $importBatch->organization_id)
+                    ->whereIn(DB::raw('LOWER(asset_number)'), $values)
+                    ->get(['id', 'asset_number', 'status']);
+                $activeAssetIds = $assets->isEmpty()
+                    ? []
+                    : AssetAssignment::query()
+                        ->where('organization_id', $importBatch->organization_id)
+                        ->whereIn('asset_id', $assets->pluck('id'))
+                        ->whereNull('returned_at')
+                        ->pluck('asset_id')
+                        ->mapWithKeys(static fn (mixed $assetId): array => [(int) $assetId => true])
+                        ->all();
+                foreach ($assets->groupBy(static fn (Asset $asset): string => mb_strtolower(trim($asset->asset_number))) as $assetNumber => $matches) {
+                    if ($matches->count() === 1
+                        && $matches->first()->status === config('opsdeck.asset_status.in_stock')
+                        && ! isset($activeAssetIds[(int) $matches->first()->id])) {
+                        $references[$referenceType][$assetNumber] = true;
+                    }
+                }
             } else {
                 $employeeEmailMatches = Employee::query()
                     ->where('organization_id', $importBatch->organization_id)
                     ->whereIn(DB::raw('LOWER(email)'), $values)
-                    ->get(['email']);
+                    ->get(['email', 'employment_status']);
                 foreach ($employeeEmailMatches->groupBy(static fn (Employee $employee): string => mb_strtolower(trim((string) $employee->email))) as $email => $matches) {
                     if ($matches->count() === 1) {
-                        $references[$referenceType][$email] = true;
+                        if ($referenceType === 'employee_emails') {
+                            $references[$referenceType][$email] = true;
+                        }
+                        if ($matches->first()->employment_status === config('opsdeck.employee_status.active')) {
+                            $references['active_employee_emails'][$email] = true;
+                        }
                     }
                 }
             }
@@ -337,7 +376,7 @@ class ImportMappingAnalysisService
      * @param  array<string, string|null>  $columnMap
      * @return list<array{source_row_number: int, values: array<string, string>, duplicate_key: ?string}>
      */
-    private function mapRows(array $rows, array $columnMap, string $targetType, array $normalizationRules): array
+    private function mapRows(array $rows, array $columnMap, string $targetType, array $normalizationRules, array $valueMappings): array
     {
         $mappedRows = [];
         foreach ($rows as $row) {
@@ -347,7 +386,7 @@ class ImportMappingAnalysisService
                     $values[$targetField] = trim((string) $row[$sourceHeader]);
                 }
             }
-            $values = $this->normalizationService->apply($targetType, $values, $normalizationRules);
+            $values = $this->normalizationService->apply($targetType, $values, $normalizationRules, $valueMappings);
             $values = $this->executionService->normalizeImportValues($targetType, $values);
             $mappedRows[] = [
                 'source_row_number' => (int) ($row['__source_row_number'] ?? 0),
@@ -359,30 +398,15 @@ class ImportMappingAnalysisService
         return $mappedRows;
     }
 
-    /** @return array<string, true> */
-    private function existingDuplicateCandidateHashes(ImportBatch $importBatch): array
-    {
-        $hashes = [];
-        foreach ($importBatch->reviewCandidates()->where('candidate_type', 'duplicate')->get(['details_json']) as $candidate) {
-            $keyHash = $candidate->details_json['key_hash'] ?? null;
-            if (is_string($keyHash) && $keyHash !== '') {
-                $hashes[$keyHash] = true;
-            }
-        }
-
-        return $hashes;
-    }
-
     /**
      * @param  array<string, string|null>  $columnMap
      * @param  list<array<string, string|int>>  $rows
      * @param  array<string, true>  $existingHashes
      * @param  array<string, int>  $firstRows
-     * @return list<array<string, mixed>>
+     * @param  array<string, list<int>>  $duplicateRowsByHash
      */
-    private function duplicateCandidateRecords(ImportBatch $importBatch, string $targetType, array $columnMap, array $normalizationRules, array $rows, array &$existingHashes, array &$firstRows, string $timestamp): array
+    private function duplicateCandidateRecords(string $targetType, array $columnMap, array $normalizationRules, array $valueMappings, array $rows, array &$existingHashes, array &$firstRows, array &$duplicateRowsByHash): void
     {
-        $candidateRecords = [];
         foreach ($rows as $row) {
             $values = [];
             foreach ($columnMap as $sourceHeader => $targetField) {
@@ -390,7 +414,7 @@ class ImportMappingAnalysisService
                     $values[$targetField] = trim((string) $row[$sourceHeader]);
                 }
             }
-            $values = $this->normalizationService->apply($targetType, $values, $normalizationRules);
+            $values = $this->normalizationService->apply($targetType, $values, $normalizationRules, $valueMappings);
             $key = $this->executionService->duplicateKey($targetType, $this->executionService->normalizeImportValues($targetType, $values));
             $sourceRow = (int) ($row['__source_row_number'] ?? 0);
             if ($key === null || $sourceRow < 1) {
@@ -403,19 +427,39 @@ class ImportMappingAnalysisService
             }
 
             $keyHash = hash('sha256', $key);
-            if (! isset($existingHashes[$keyHash])) {
-                $candidateRecords[] = [
-                    'import_batch_id' => $importBatch->id,
-                    'candidate_type' => 'duplicate',
-                    'source_row_numbers_json' => json_encode([$firstRows[$key], $sourceRow], JSON_THROW_ON_ERROR),
-                    'confidence' => 0.94,
-                    'details_json' => json_encode(['target_type' => $targetType, 'key_hash' => $keyHash], JSON_THROW_ON_ERROR),
-                    'status' => 'pending',
-                    'created_at' => $timestamp,
-                    'updated_at' => $timestamp,
-                ];
-                $existingHashes[$keyHash] = true;
+            if (isset($duplicateRowsByHash[$keyHash])) {
+                $duplicateRowsByHash[$keyHash][] = $sourceRow;
+
+                continue;
             }
+
+            if (isset($existingHashes[$keyHash])) {
+                continue;
+            }
+
+            $duplicateRowsByHash[$keyHash] = [$firstRows[$key], $sourceRow];
+            $existingHashes[$keyHash] = true;
+        }
+    }
+
+    /**
+     * @param  array<string, list<int>>  $duplicateRowsByHash
+     * @return list<array<string, mixed>>
+     */
+    private function duplicateCandidateRecordsForStorage(ImportBatch $importBatch, string $targetType, array $duplicateRowsByHash, string $timestamp): array
+    {
+        $candidateRecords = [];
+        foreach ($duplicateRowsByHash as $keyHash => $sourceRowNumbers) {
+            $candidateRecords[] = [
+                'import_batch_id' => $importBatch->id,
+                'candidate_type' => 'duplicate',
+                'source_row_numbers_json' => json_encode($sourceRowNumbers, JSON_THROW_ON_ERROR),
+                'confidence' => 0.94,
+                'details_json' => json_encode(['target_type' => $targetType, 'key_hash' => $keyHash], JSON_THROW_ON_ERROR),
+                'status' => 'pending',
+                'created_at' => $timestamp,
+                'updated_at' => $timestamp,
+            ];
         }
 
         return $candidateRecords;
@@ -680,6 +724,11 @@ class ImportMappingAnalysisService
                 || (($values['department_name'] ?? '') !== '' && ! isset($knownRelationshipReferences['department_names'][mb_strtolower(trim($values['department_name']))])),
             'departments' => ($values['name'] ?? '') === '',
             'assets' => ($values['asset_number'] ?? '') === '' || ! in_array($values['asset_type'] ?? '', config('opsdeck.asset_types'), true),
+            'asset_assignments' => ($values['asset_number'] ?? '') === ''
+                || ! isset($knownRelationshipReferences['available_asset_numbers'][mb_strtolower(trim($values['asset_number']))])
+                || ! isset($knownRelationshipReferences['active_employee_emails'][mb_strtolower(trim($values['employee_email'] ?? ''))])
+                || ! filter_var($values['employee_email'] ?? '', FILTER_VALIDATE_EMAIL)
+                || ($values['assigned_at'] ?? '') === '',
             'saas_services' => ($values['name'] ?? '') === '' || ! in_array($values['status'] ?? '', config('opsdeck.saas_service_statuses'), true),
             'contracts' => $this->contractPreviewHasError($values)
                 || (($values['service_name'] ?? '') !== '' && ! isset($knownRelationshipReferences['service_names'][mb_strtolower(trim($values['service_name']))]))

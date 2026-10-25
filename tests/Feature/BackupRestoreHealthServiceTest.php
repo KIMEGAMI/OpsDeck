@@ -17,6 +17,7 @@ class BackupRestoreHealthServiceTest extends TestCase
         parent::setUp();
 
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        DB::table('backup_restore_checks')->delete();
         config(['opsdeck.backup.restore_test_max_age_days' => 10]);
     }
 

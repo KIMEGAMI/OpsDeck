@@ -71,6 +71,11 @@ class QuestionnaireAnswerPolicy
 
     public function approve(User $user, QuestionnaireAnswer $questionnaireAnswer): bool
     {
+        if ($questionnaireAnswer->approved_at !== null
+            || $questionnaireAnswer->answer_status !== QuestionnaireAnswer::DRAFT_STATUS) {
+            return false;
+        }
+
         return $this->membershipFor($user, $questionnaireAnswer)?->role->canApproveQuestionnaires() ?? false;
     }
 

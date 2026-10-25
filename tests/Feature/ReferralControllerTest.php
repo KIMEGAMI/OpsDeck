@@ -10,6 +10,7 @@ use App\Models\ProductEvent;
 use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
 use App\Models\User;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -18,6 +19,10 @@ class ReferralControllerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config([
+            'opsdeck.plans.free.capabilities.referrals' => true,
+            'opsdeck.plans.premium.capabilities.referrals' => true,
+        ]);
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
     }
 
@@ -36,6 +41,57 @@ class ReferralControllerTest extends TestCase
             ->where('organization_id', $organization->id)
             ->where('event_key', 'referral_clicked')
             ->count());
+    }
+
+    public function test_referral_routes_are_disabled_outside_the_release_scope(): void
+    {
+        [$admin, $organization] = $this->member(MembershipRole::Admin);
+        $referral = ReferralCode::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'release-disabled-'.Str::lower(Str::random(8)),
+            'active' => true,
+        ]);
+        config(['opsdeck.release_features.referrals' => false]);
+
+        $this->actingAs($admin)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('referrals.show'))
+            ->assertNotFound();
+        $this->get(route('referrals.redirect', $referral->code))->assertNotFound();
+
+        $this->assertDatabaseHas('referral_codes', ['id' => $referral->id, 'click_count' => 0]);
+    }
+
+    public function test_registration_ignores_a_stale_referral_session_outside_the_release_scope(): void
+    {
+        Notification::fake();
+        [, $organization] = $this->member(MembershipRole::Owner);
+        $referral = ReferralCode::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'stale-'.Str::lower(Str::random(8)),
+            'active' => true,
+        ]);
+        config(['opsdeck.release_features.referrals' => false]);
+
+        $this->withSession(['referral_code' => $referral->code])
+            ->post(route('register.store'), [
+                'name' => '紹介停止後の登録',
+                'email' => 'release-disabled-'.Str::uuid().'@example.test',
+                'password' => 'secure-password-123',
+                'password_confirmation' => 'secure-password-123',
+                'organization_name' => '紹介停止後の組織',
+            ])
+            ->assertRedirect(route('onboarding.index'));
+
+        $registeredOrganization = Organization::query()->where('name', '紹介停止後の組織')->firstOrFail();
+        $this->assertDatabaseMissing('referral_conversions', [
+            'referral_code_id' => $referral->id,
+            'organization_id' => $registeredOrganization->id,
+        ]);
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $registeredOrganization->id,
+            'event_key' => 'referral_registered',
+        ]);
     }
 
     public function test_inactive_referral_code_is_not_available(): void

@@ -9,6 +9,7 @@ use App\Models\AnnouncementDelivery;
 use App\Models\User;
 use App\Services\AnnouncementRecipientQuery;
 use App\Services\ResendIdempotencyWindow;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -17,7 +18,7 @@ use Illuminate\Support\Facades\Mail;
 use RuntimeException;
 use Throwable;
 
-class SendAnnouncementEmail implements ShouldBeUnique, ShouldQueue
+class SendAnnouncementEmail implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 {
     use Queueable, SerializesModels;
 
@@ -39,7 +40,7 @@ class SendAnnouncementEmail implements ShouldBeUnique, ShouldQueue
 
     public function uniqueId(): string
     {
-        return $this->announcement->getKey().':'.$this->recipientUserId;
+        return hash_hmac('sha256', $this->announcement->getKey().':'.$this->recipientUserId, (string) config('app.key'));
     }
 
     /**
@@ -51,20 +52,14 @@ class SendAnnouncementEmail implements ShouldBeUnique, ShouldQueue
         if ($recipient === null) {
             return;
         }
-        $organizationIds = $this->announcement->organizations()->pluck('organizations.id')->map(fn (int|string $id): int => (int) $id)->all();
-        if (! app(AnnouncementRecipientQuery::class)->eligibleFor($organizationIds)->whereKey($recipient->id)->exists()) {
-            AnnouncementDelivery::query()
-                ->where('announcement_id', $this->announcement->id)
-                ->where('user_id', $recipient->id)
-                ->whereNotNull('failed_at')
-                ->whereNull('sent_at')
-                ->whereNull('suppressed_at')
-                ->update(['suppressed_at' => now()]);
-
-            return;
-        }
         $delivery = AnnouncementDelivery::query()->firstOrCreate(['announcement_id' => $this->announcement->id, 'user_id' => $recipient->id]);
         if ($delivery->sent_at !== null || $delivery->suppressed_at !== null) {
+            return;
+        }
+        $organizationIds = $this->announcement->organizations()->pluck('organizations.id')->map(fn (int|string $id): int => (int) $id)->all();
+        if (! app(AnnouncementRecipientQuery::class)->eligibleFor($organizationIds)->whereKey($recipient->id)->exists()) {
+            $delivery->update(['suppressed_at' => now()]);
+
             return;
         }
         $useResend = (bool) config('mail.mailers.resend_idempotent.enabled');

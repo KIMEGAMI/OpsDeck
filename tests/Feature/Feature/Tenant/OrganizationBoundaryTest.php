@@ -7,13 +7,13 @@ use App\Enums\MembershipStatus;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
-use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OrganizationBoundaryTest extends TestCase
 {
-    use DatabaseTransactions;
+    use RefreshDatabase;
 
     public function test_user_cannot_select_an_organization_without_active_membership(): void
     {

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">組織のメンバーと設定</title>
+  <desc id="description">担当者がメンバーを招待し、権限や組織の設定、プランを管理する図</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <text x="48" y="62" fill="#102a43" font-family="sans-serif" font-size="22" font-weight="700">組織の担当者が設定を管理</text>
+  <g font-family="sans-serif" fill="#102a43">
+    <rect x="48" y="104" width="204" height="154" rx="12" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="70" y="144" font-size="20" font-weight="700">メンバー</text>
+    <text x="70" y="184" font-size="16">招待を送る</text><text x="70" y="218" font-size="16" fill="#486581">役割を確認</text>
+    <path d="M264 180h32m-10-10 10 10-10 10" fill="none" stroke="#005f73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="310" y="104" width="204" height="154" rx="12" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <text x="332" y="144" font-size="20" font-weight="700">組織設定</text>
+    <text x="332" y="184" font-size="16">会社情報・条件</text><text x="332" y="218" font-size="16" fill="#334e68">設定権限が必要</text>
+    <path d="M526 180h32m-10-10 10 10-10 10" fill="none" stroke="#005f73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="572" y="104" width="180" height="154" rx="12" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <text x="594" y="144" font-size="20" font-weight="700">プラン</text>
+    <text x="594" y="184" font-size="16">機能・料金を確認</text><text x="594" y="218" font-size="16" fill="#486581">契約権限が必要</text>
+  </g>
+  <text x="48" y="300" fill="#334e68" font-family="sans-serif" font-size="15">必要なメニューが見えない場合は、組織Ownerに相談してください。</text>
+</svg>

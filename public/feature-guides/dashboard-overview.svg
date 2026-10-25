@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">ダッシュボードの見方</title>
+  <desc id="description">概要カードから台帳を開き、確認が必要な項目を探す画面イメージ</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <rect x="24" y="24" width="752" height="48" rx="14" fill="#102a43"/>
+  <path d="M24 58h752v14H24z" fill="#102a43"/>
+  <text x="48" y="56" fill="#ffffff" font-family="sans-serif" font-size="21" font-weight="700">OpsDeck　/　ダッシュボード</text>
+  <g font-family="sans-serif" font-size="17" fill="#102a43">
+    <rect x="48" y="94" width="162" height="86" rx="10" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="66" y="126" font-weight="700">社員</text><text x="66" y="154" fill="#486581">一覧を開く</text>
+    <rect x="230" y="94" width="162" height="86" rx="10" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="248" y="126" font-weight="700">端末・資産</text><text x="248" y="154" fill="#486581">割当を確認</text>
+    <rect x="412" y="94" width="162" height="86" rx="10" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="430" y="126" font-weight="700">サービス</text><text x="430" y="154" fill="#486581">利用者を確認</text>
+    <rect x="594" y="94" width="158" height="86" rx="10" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <text x="612" y="126" font-weight="700">契約・費用</text><text x="612" y="154" fill="#334e68">期限を確認</text>
+    <rect x="48" y="202" width="704" height="106" rx="10" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <text x="68" y="234" font-weight="700">確認が必要な項目</text>
+    <text x="68" y="270">更新期限　　未割当　　取込エラー　　未確認の管理項目</text>
+    <path d="M68 284h650" stroke="#d9e2ec" stroke-width="2"/>
+    <text x="68" y="300" fill="#486581" font-size="14">項目名を選ぶと、該当する一覧へ移動します</text>
+  </g>
+</svg>

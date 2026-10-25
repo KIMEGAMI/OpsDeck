@@ -2,27 +2,42 @@
 
 namespace App\Services;
 
-use App\Models\Evidence;
 use App\Models\Organization;
 use App\Models\QuestionnaireAnswer;
 use App\Models\QuestionnaireQuestion;
 use App\Models\SecurityControl;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class QuestionnaireDraftService
 {
     public function generate(Organization $organization, QuestionnaireQuestion $question): QuestionnaireAnswer
     {
-        $answer = $question->answers()->latest()->first();
-        abort_if($answer?->approved_at !== null, 422, '承認済み回答はAIで上書きできません。');
-        $fact = $this->factFor($organization, $question->question_text);
-        $attributes = ['answer_text' => $fact['answer_text'], 'answer_choice' => null, 'answer_status' => QuestionnaireAnswer::DRAFT_STATUS, 'source_type' => $fact['source_type'], 'approved_by' => null, 'approved_at' => null];
-        if ($answer === null) {
-            return $question->answers()->create($attributes);
-        }
-        $answer->update($attributes);
+        return DB::transaction(function () use ($organization, $question): QuestionnaireAnswer {
+            $lockedQuestion = QuestionnaireQuestion::query()
+                ->whereKey($question->getKey())
+                ->whereHas('questionnaire', fn ($query) => $query->where('organization_id', $organization->id))
+                ->lockForUpdate()
+                ->firstOrFail();
+            $answer = $lockedQuestion->answers()->latest()->lockForUpdate()->first();
+            $answer?->refresh();
+            if ($answer?->approved_at !== null) {
+                throw ValidationException::withMessages([
+                    'question_id' => '承認済み回答は回答案で上書きできません。',
+                ]);
+            }
 
-        return $answer;
+            $fact = $this->factFor($organization, $question->question_text);
+            $attributes = ['answer_text' => $fact['answer_text'], 'answer_choice' => null, 'answer_status' => QuestionnaireAnswer::DRAFT_STATUS, 'source_type' => $fact['source_type'], 'approved_by' => null, 'approved_at' => null];
+            if ($answer === null) {
+                return $lockedQuestion->answers()->create($attributes);
+            }
+
+            $answer->update($attributes);
+
+            return $answer;
+        });
     }
 
     /** @return array{answer_text: string, source_type: string} */
@@ -38,13 +53,11 @@ class QuestionnaireDraftService
                     $query->orWhere('title', 'like', '%'.$term.'%')->orWhere('description', 'like', '%'.$term.'%');
                 }
             })->first();
-            $evidence = $control === null ? null : Evidence::query()->where('organization_id', $organization->id)->where(function ($query) use ($terms): void {
-                foreach ($terms as $term) {
-                    $query->orWhere('title', 'like', '%'.$term.'%')->orWhere('description', 'like', '%'.$term.'%');
-                }
-            })->first();
-            if ($control !== null && $evidence !== null) {
-                return ['answer_text' => 'OpsDeck登録情報では'.$title.'の管理策が実装済みです。証跡「'.$evidence->title.'」を確認してください。', 'source_type' => 'FACT'];
+            if ($control !== null) {
+                return [
+                    'answer_text' => 'OpsDeckの登録情報では「'.$control->title.'」が対応済みとして記録されています。実際の運用状況と証跡を確認してください。',
+                    'source_type' => 'INFERENCE',
+                ];
             }
         }
 

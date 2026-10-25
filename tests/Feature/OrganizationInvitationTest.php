@@ -7,8 +7,11 @@ use App\Enums\MembershipStatus;
 use App\Jobs\SendOrganizationInvitationEmail;
 use App\Mail\OrganizationInvitationMail;
 use App\Mail\ResendIdempotentTransport;
+use App\Models\Asset;
 use App\Models\AuditLog;
+use App\Models\Employee;
 use App\Models\ImportBatch;
+use App\Models\ImportRowResult;
 use App\Models\OnboardingStep;
 use App\Models\Organization;
 use App\Models\OrganizationInvitation;
@@ -74,6 +77,54 @@ class OrganizationInvitationTest extends TestCase
         $this->assertSame(0, OrganizationInvitation::query()->where('organization_id', $organization->id)->count());
     }
 
+    public function test_invalid_invitation_email_is_shown_next_to_field_and_operator_is_the_default_role(): void
+    {
+        Queue::fake();
+        [$owner, $organization] = $this->owner();
+        $invalidEmail = 'not-an-email-address';
+
+        $this->actingAs($owner)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('settings.members'))
+            ->assertOk()
+            ->assertSee('<option value="operator" selected>担当者</option>', false);
+
+        $this->from(route('settings.members'))
+            ->followingRedirects()
+            ->actingAs($owner)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('settings.members.invitations.store'), [
+                'email' => $invalidEmail,
+                'role' => MembershipRole::Operator->value,
+            ])
+            ->assertOk()
+            ->assertSee('id="email-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="email-error"', false)
+            ->assertSee('value="'.$invalidEmail.'"', false)
+            ->assertSee('<option value="operator" selected>担当者</option>', false);
+
+        $ownerRoleEmail = 'not-inviteable-'.Str::uuid().'@example.test';
+        $this->from(route('settings.members'))
+            ->followingRedirects()
+            ->actingAs($owner)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('settings.members.invitations.store'), [
+                'email' => $ownerRoleEmail,
+                'role' => MembershipRole::Owner->value,
+            ])
+            ->assertOk()
+            ->assertSee('id="role-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="role-error"', false)
+            ->assertSee('value="'.$ownerRoleEmail.'"', false)
+            ->assertSee('<option value="operator" selected>担当者</option>', false)
+            ->assertDontSee('<option value="admin" selected>', false);
+
+        $this->assertSame(0, OrganizationInvitation::query()->where('organization_id', $organization->id)->count());
+        Queue::assertNotPushed(SendOrganizationInvitationEmail::class);
+    }
+
     public function test_owner_can_create_hashed_invitation_and_queue_email(): void
     {
         Queue::fake();
@@ -84,17 +135,61 @@ class OrganizationInvitationTest extends TestCase
         $invitation = OrganizationInvitation::query()->where('email', $email)->firstOrFail();
         $this->assertNotSame($email, $invitation->token_hash);
         $this->assertTrue($invitation->expires_at->isFuture());
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $invitation->id)->where('action', AuditLog::OrganizationInvitationCreated)->sole();
+        $this->assertSame($owner->id, $auditLog->actor_user_id);
+        $this->assertSame(['role' => MembershipRole::Operator->value, 'status' => 'pending'], $auditLog->after_json);
+        $this->assertStringNotContainsString($email, json_encode($auditLog->toArray()));
         $this->assertDatabaseHas('product_events', ['event_key' => 'member_invited', 'organization_id' => $organization->id]);
         Queue::assertPushed(SendOrganizationInvitationEmail::class, fn (SendOrganizationInvitationEmail $job): bool => $job->invitation->id === $invitation->id && strlen($job->token) === 64);
         Mail::assertNothingSent();
 
         $job = Queue::pushed(SendOrganizationInvitationEmail::class)->sole();
         $this->assertInstanceOf(ShouldBeEncrypted::class, $job);
+        $this->assertNotSame((string) $invitation->getKey(), $job->uniqueId());
         $job->handle();
         Mail::assertSent(OrganizationInvitationMail::class, fn (OrganizationInvitationMail $mail): bool => $mail->hasTo($email)
+            && str_contains($mail->render(), '担当者')
             && $mail->headers()->text[ResendIdempotentTransport::IDEMPOTENCY_HEADER]
                 === app(ResendIdempotencyKeyFactory::class)->forOrganizationInvitation($invitation->getKey(), $job->token));
         $this->assertNotNull($invitation->fresh()->invitation_email_sent_at);
+    }
+
+    public function test_queue_dispatch_failure_revokes_invitation_and_same_email_can_be_reinvited(): void
+    {
+        Mail::fake();
+        [$owner, $organization] = $this->owner();
+        $email = 'invite-dispatch-failure-'.Str::uuid().'@example.test';
+        Queue::shouldReceive('connection')
+            ->twice()
+            ->andThrow(new \RuntimeException('queue backend unavailable'));
+
+        foreach (range(1, 2) as $attempt) {
+            $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+                ->post(route('settings.members.invitations.store'), ['email' => $email, 'role' => 'operator'])
+                ->assertRedirect(route('settings.members'))
+                ->assertSessionHasErrors('invitation');
+        }
+
+        $invitations = OrganizationInvitation::query()->where('email', $email)->orderBy('id')->get();
+        $this->assertCount(2, $invitations);
+        foreach ($invitations as $invitation) {
+            $this->assertNotNull($invitation->revoked_at);
+            $this->assertNotNull($invitation->invitation_email_failed_at);
+            $this->assertSame('revoked', $invitation->lifecycleStatus());
+        }
+        $this->assertSame(0, ProductEvent::query()
+            ->where('organization_id', $organization->id)
+            ->where('event_key', 'member_invited')
+            ->count());
+        foreach ($invitations as $invitation) {
+            $this->assertDatabaseHas('audit_logs', [
+                'organization_id' => $organization->id,
+                'entity_type' => OrganizationInvitation::class,
+                'entity_id' => $invitation->id,
+                'action' => AuditLog::OrganizationInvitationDispatchFailed,
+            ]);
+        }
+        Mail::assertNothingSent();
     }
 
     public function test_invitation_email_retry_after_resend_window_expires_requires_manual_review_without_another_request(): void
@@ -223,11 +318,25 @@ class OrganizationInvitationTest extends TestCase
             'status' => 'active',
         ]);
         foreach (['employees', 'assets'] as $targetType) {
+            $record = $targetType === 'employees'
+                ? Employee::query()->create([
+                    'organization_id' => $organization->id,
+                    'employee_number' => 'EMP-'.Str::upper(Str::random(8)),
+                    'name' => '導入済み社員',
+                    'email' => 'onboarding-'.Str::uuid().'@example.test',
+                    'employment_status' => 'active',
+                ])
+                : Asset::query()->create([
+                    'organization_id' => $organization->id,
+                    'asset_number' => 'ASSET-'.Str::upper(Str::random(8)),
+                    'asset_type' => 'laptop',
+                    'status' => 'in_stock',
+                ]);
             $batch = ImportBatch::query()->create([
                 'organization_id' => $organization->id,
                 'source_type' => 'csv',
                 'source_name' => $targetType.'.csv',
-                'status' => 'ready',
+                'status' => 'completed',
             ]);
             $mapping = $batch->mappings()->create([
                 'target_type' => $targetType,
@@ -236,6 +345,13 @@ class OrganizationInvitationTest extends TestCase
                 'status' => 'ready',
             ]);
             $batch->update(['mapping_id' => (string) $mapping->id]);
+            ImportRowResult::query()->create([
+                'import_batch_id' => $batch->id,
+                'source_row_number' => 2,
+                'target_type' => $targetType,
+                'target_id' => $record->id,
+                'action' => 'inserted',
+            ]);
         }
 
         $this->actingAs($owner)
@@ -501,7 +617,17 @@ class OrganizationInvitationTest extends TestCase
         [$owner, $organization] = $this->owner();
         $token = Str::random(64);
         $invitation = OrganizationInvitation::query()->create(['organization_id' => $organization->id, 'invited_by' => $owner->id, 'email' => 'new-member-'.Str::uuid().'@example.test', 'role' => MembershipRole::Viewer, 'token_hash' => hash('sha256', $token), 'expires_at' => now()->addDay()]);
-        $this->get(route('invitations.show', $token))->assertOk()->assertSee($invitation->email);
+        $this->get(route('invitations.show', $token))
+            ->assertOk()
+            ->assertSee('class="card auth-card"', false)
+            ->assertSee($invitation->email)
+            ->assertSee('閲覧のみ')
+            ->assertSee('情報の確認のみできます。')
+            ->assertSee('aria-controls="password"', false)
+            ->assertSee('aria-controls="password_confirmation"', false)
+            ->assertSee('aria-label="確認用パスワードを表示"', false)
+            ->assertSee('minlength="12"', false)
+            ->assertDontSee('viewer');
         $this->post(route('invitations.accept', $token), ['name' => '招待メンバー', 'password' => 'secure-password-123', 'password_confirmation' => 'secure-password-123'])->assertRedirect(route('dashboard'));
         $memberId = User::query()->where('email', $invitation->email)->value('id');
         $this->assertNotNull(User::query()->findOrFail($memberId)->email_verified_at);

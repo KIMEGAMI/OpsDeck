@@ -4,11 +4,11 @@
         @if (session('status'))<p role="status">{{ session('status') }}</p>@endif
         @foreach (['overdue' => '期限超過', 'within_30_days' => \App\Services\ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内', 'within_90_days' => (\App\Services\ContractRenewalWindow::ALERT_WINDOW_DAYS + 1).'〜'.\App\Services\ContractRenewalWindow::SAVINGS_WINDOW_DAYS.'日以内'] as $key => $label)
             <h2>{{ $label }}</h2>
-            <table><thead><tr><th>契約</th><th>ベンダー</th><th>予定日</th></tr></thead><tbody>
+            <table><thead><tr><th>契約</th><th>ベンダー</th><th>期限の種類</th><th>期限日</th></tr></thead><tbody>
             @forelse ($reminders[$key] as $contract)
-                <tr><td>{{ $contract->contract_name }}</td><td>{{ $contract->vendor_name }}</td><td>{{ $contract->reminder_date->format('Y-m-d') }}</td></tr>
+                <tr><td><a href="{{ route('contracts.show', $contract) }}">{{ $contract->contract_name }}</a></td><td>{{ $contract->vendor_name }}</td><td>{{ $contract->reminder_date_label }}</td><td>{{ $contract->reminder_date->format('Y-m-d') }}</td></tr>
             @empty
-                <tr><td colspan="3">対象契約はありません。</td></tr>
+                <tr><td colspan="4">対象契約はありません。</td></tr>
             @endforelse
             </tbody></table>
         @endforeach

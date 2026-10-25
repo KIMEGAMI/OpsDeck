@@ -22,6 +22,7 @@ class WeeklySummaryBuilder
         $periodEndExclusiveUtc = $periodEndExclusive->utc()->format('Y-m-d H:i:s');
         $today = CarbonImmutable::today($organization->timezone);
         $renewalEnd = $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS);
+        $renewalEndExclusive = $renewalEnd->addDay();
         $planFeatureService = app(PlanFeatureService::class);
         $renewalAlertsEnabled = $planFeatureService->isAvailable($organization, 'renewal_alerts');
         $securityAlertsEnabled = $planFeatureService->isAvailable($organization, 'security_controls');
@@ -33,12 +34,18 @@ class WeeklySummaryBuilder
             'import_errors' => (int) ImportBatch::query()->where('organization_id', $organizationId)->where('created_at', '>=', $periodStartUtc)->where('created_at', '<', $periodEndExclusiveUtc)->sum('error_rows'),
             'failed_import_batches' => (int) ImportBatch::query()->where('organization_id', $organizationId)->where('status', 'failed')->where('created_at', '>=', $periodStartUtc)->where('created_at', '<', $periodEndExclusiveUtc)->count(),
             'renewal_alerts_enabled' => $renewalAlertsEnabled,
-            'renewals' => $renewalAlertsEnabled ? Contract::query()->where('organization_id', $organizationId)->whereIn('status', ['active', 'pending_cancel'])->where(function ($query) use ($today, $renewalEnd): void {
-                $query->whereBetween('renewal_date', [$today->toDateString(), $renewalEnd->toDateString()])->orWhereBetween('ends_at', [$today->toDateString(), $renewalEnd->toDateString()]);
+            'renewals' => $renewalAlertsEnabled ? Contract::query()->where('organization_id', $organizationId)->whereIn('status', ['active', 'pending_cancel'])->where(function ($query) use ($today, $renewalEndExclusive): void {
+                $query->where(function ($query) use ($today, $renewalEndExclusive): void {
+                    $query->where('renewal_date', '>=', $today->toDateString())->where('renewal_date', '<', $renewalEndExclusive->toDateString());
+                })->orWhere(function ($query) use ($today, $renewalEndExclusive): void {
+                    $query->where('ends_at', '>=', $today->toDateString())->where('ends_at', '<', $renewalEndExclusive->toDateString());
+                })->orWhere(function ($query) use ($today, $renewalEndExclusive): void {
+                    $query->where('cancellation_deadline', '>=', $today->toDateString())->where('cancellation_deadline', '<', $renewalEndExclusive->toDateString());
+                });
             })->count() : 0,
             'security_alerts_enabled' => $securityAlertsEnabled,
             'security_open' => $securityAlertsEnabled ? SecurityControl::query()->where('organization_id', $organizationId)->whereIn('status', ['partial', 'not_implemented', 'unknown'])->count() : 0,
-            'mfa_unknown' => $securityAlertsEnabled ? SaasAssignment::query()->where('organization_id', $organizationId)->whereNull('ended_at')->where('mfa_status', 'unknown')->count() : 0,
+            'mfa_unknown' => $securityAlertsEnabled ? SaasAssignment::query()->where('organization_id', $organizationId)->whereNull('ended_at')->where('mfa_status', 'unknown')->whereHas('service', fn ($query) => $query->where('status', config('opsdeck.saas_service_active_status')))->count() : 0,
         ];
     }
 }

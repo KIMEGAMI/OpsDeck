@@ -19,8 +19,10 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
+use Throwable;
 
 class OrganizationInvitationController extends Controller
 {
@@ -38,9 +40,56 @@ class OrganizationInvitationController extends Controller
             abort_if(OrganizationMembership::query()->where('organization_id', $lockedOrganization->id)->whereHas('user', fn ($query) => $query->whereRaw('LOWER(email) = ?', [$email]))->exists(), 422, '既にメンバー登録されています。');
             abort_if(OrganizationInvitation::query()->where('organization_id', $lockedOrganization->id)->whereRaw('LOWER(email) = ?', [$email])->whereNull('accepted_at')->whereNull('revoked_at')->where('expires_at', '>', now())->exists(), 422, '有効な招待が既に存在します。');
 
-            return OrganizationInvitation::query()->create(['organization_id' => $lockedOrganization->id, 'invited_by' => $request->user()->id, 'email' => $email, 'role' => $role, 'token_hash' => hash('sha256', $token), 'expires_at' => now()->addDays(config('opsdeck.invitation_expiry_days'))]);
+            $invitation = OrganizationInvitation::query()->create(['organization_id' => $lockedOrganization->id, 'invited_by' => $request->user()->id, 'email' => $email, 'role' => $role, 'token_hash' => hash('sha256', $token), 'expires_at' => now()->addDays(config('opsdeck.invitation_expiry_days'))]);
+            AuditLog::query()->create([
+                'organization_id' => $lockedOrganization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => OrganizationInvitation::class,
+                'entity_id' => $invitation->id,
+                'action' => AuditLog::OrganizationInvitationCreated,
+                'after_json' => ['role' => $role->value, 'status' => 'pending'],
+            ]);
+
+            return $invitation;
         });
-        SendOrganizationInvitationEmail::dispatch($invitation, $token);
+        try {
+            SendOrganizationInvitationEmail::dispatch($invitation, $token);
+        } catch (Throwable $exception) {
+            DB::transaction(function () use ($request, $organization, $invitation): void {
+                $lockedInvitation = OrganizationInvitation::query()
+                    ->where('organization_id', $organization->id)
+                    ->whereKey($invitation->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (! $lockedInvitation->isUsable()) {
+                    return;
+                }
+
+                $lockedInvitation->update([
+                    'revoked_at' => now(),
+                    'invitation_email_failed_at' => now(),
+                ]);
+                AuditLog::query()->create([
+                    'organization_id' => $organization->id,
+                    'actor_user_id' => $request->user()->id,
+                    'entity_type' => OrganizationInvitation::class,
+                    'entity_id' => $lockedInvitation->id,
+                    'action' => AuditLog::OrganizationInvitationDispatchFailed,
+                    'before_json' => ['status' => 'pending'],
+                    'after_json' => ['status' => 'revoked', 'reason' => 'queue_dispatch_failed'],
+                ]);
+            });
+            Log::warning('Organization invitation queue dispatch failed.', [
+                'organization_id' => $organization->id,
+                'invitation_id' => $invitation->id,
+                'exception_class' => $exception::class,
+            ]);
+
+            return to_route('settings.members')->withErrors([
+                'invitation' => '送信キューに登録できなかったため、この招待を無効にしました。同じメールアドレスへ再度招待してください。',
+            ]);
+        }
         app(ProductEventRecorder::class)->record('member_invited', $organization);
         app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
 

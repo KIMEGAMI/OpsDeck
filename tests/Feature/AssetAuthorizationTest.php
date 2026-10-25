@@ -16,6 +16,30 @@ use Tests\TestCase;
 
 class AssetAuthorizationTest extends TestCase
 {
+    public function test_asset_screens_show_human_readable_japanese_labels(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $asset = $this->asset($organization);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('assets.index'))
+            ->assertOk()
+            ->assertSee('パソコン')
+            ->assertSee('在庫（貸出可能）');
+
+        $this->get(route('assets.show', $asset))
+            ->assertOk()
+            ->assertSee('パソコン')
+            ->assertSee('在庫（貸出可能）');
+
+        $this->get(route('assets.create'))
+            ->assertOk()
+            ->assertSee('スマートフォン')
+            ->assertSee('貸出中');
+    }
+
     public function test_viewer_cannot_create_an_asset(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -46,10 +70,60 @@ class AssetAuthorizationTest extends TestCase
             ->assertRedirect();
 
         $this->assertDatabaseHas('assets', ['organization_id' => $organization->id, 'asset_number' => $assetNumber]);
+        $asset = Asset::query()->where('organization_id', $organization->id)->where('asset_number', $assetNumber)->sole();
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $asset->id)->where('action', AuditLog::AssetCreated)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(['created_fields' => ['asset_number', 'asset_type', 'status']], $auditLog->after_json);
+        $this->assertStringNotContainsString($assetNumber, json_encode($auditLog->toArray()));
         $this->assertDatabaseHas('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_dashboard_action_completed',
         ]);
+    }
+
+    public function test_invalid_asset_purchase_cost_is_shown_next_to_its_field_and_preserved_for_correction(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $assetNumber = 'ASSET-'.Str::upper(Str::random(8));
+
+        $this->from(route('assets.create'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('assets.store'), $this->validAssetInput($assetNumber) + ['purchase_cost' => '-1'])
+            ->assertOk()
+            ->assertSee('id="purchase_cost-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="purchase_cost-error"', false)
+            ->assertSee('value="-1"', false);
+
+        $this->assertDatabaseMissing('assets', ['organization_id' => $organization->id, 'asset_number' => $assetNumber]);
+    }
+
+    public function test_invalid_asset_type_and_status_values_do_not_select_an_unintended_option(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $assetNumber = 'ASSET-'.Str::upper(Str::random(8));
+        $defaultAssetType = config('opsdeck.asset_types')[0];
+        $defaultAssetStatus = config('opsdeck.asset_statuses')[0];
+
+        $this->from(route('assets.create'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('assets.store'), array_merge($this->validAssetInput($assetNumber), [
+                'asset_type' => 'not-a-configured-type',
+                'status' => 'not-a-configured-status',
+            ]))
+            ->assertOk()
+            ->assertSee('id="asset_type-error" class="errors field-error"', false)
+            ->assertSee('id="status-error" class="errors field-error"', false)
+            ->assertSee('<option value="'.$defaultAssetType.'" selected>'.config('opsdeck.asset_type_labels.'.$defaultAssetType).'</option>', false)
+            ->assertSee('<option value="'.$defaultAssetStatus.'" selected>'.config('opsdeck.asset_status_labels.'.$defaultAssetStatus).'</option>', false);
+
+        $this->assertDatabaseMissing('assets', ['organization_id' => $organization->id, 'asset_number' => $assetNumber]);
     }
 
     public function test_asset_list_filters_remain_scoped_to_the_current_organization(): void
@@ -170,6 +244,7 @@ class AssetAuthorizationTest extends TestCase
         $this->assertSame($asset->id, $auditLog->entity_id);
         $this->assertSame(['changed_fields' => ['asset_number']], $auditLog->after_json);
         $this->assertStringNotContainsString($changedAssetNumber, json_encode($auditLog->toArray()));
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
     }
 
     public function test_operator_cannot_update_an_asset_in_another_organization(): void

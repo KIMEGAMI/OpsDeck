@@ -39,6 +39,64 @@ class QuestionnaireQuestionControllerTest extends TestCase
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $question->id)->where('action', AuditLog::QuestionnaireQuestionCreated)->sole();
         $this->assertSame(['changed_fields' => ['questionnaire_id', 'question_text', 'answer_type', 'sort_order']], $auditLog->after_json);
         $this->assertStringNotContainsString('追加する質問', json_encode($auditLog->toArray()));
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
+    }
+
+    public function test_question_section_and_reference_number_can_be_saved_and_viewed(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $questionnaire = $this->questionnaire($organization, $user);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaire-questions.store'), [
+                'questionnaire_id' => $questionnaire->id,
+                'section' => '基本情報',
+                'question_number' => '1-2',
+                'question_text' => '担当者の連絡先を教えてください',
+                'answer_type' => 'text',
+                'sort_order' => 1,
+            ])
+            ->assertRedirect(route('questionnaires.show', $questionnaire));
+
+        $question = QuestionnaireQuestion::query()->where('questionnaire_id', $questionnaire->id)->sole();
+        $this->assertSame('基本情報', $question->section);
+        $this->assertSame('1-2', $question->question_number);
+
+        $this->get(route('questionnaires.show', $questionnaire))
+            ->assertOk()
+            ->assertSee('基本情報・1-2：')
+            ->assertSee('担当者の連絡先を教えてください');
+    }
+
+    public function test_invalid_question_order_is_shown_next_to_field_and_preserves_question_text(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        $questionnaire = $this->questionnaire($organization, $user);
+
+        $this->from(route('questionnaires.show', $questionnaire))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('questionnaire-questions.store'), [
+                'questionnaire_id' => $questionnaire->id,
+                'question_text' => '順番を直して追加する質問',
+                'answer_type' => 'text',
+                'sort_order' => 0,
+            ])
+            ->assertOk()
+            ->assertSee('id="sort_order-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="sort_order-error"', false)
+            ->assertSee('>順番を直して追加する質問</textarea>', false)
+            ->assertSee('value="0"', false);
+
+        $this->assertDatabaseMissing('questionnaire_questions', [
+            'questionnaire_id' => $questionnaire->id,
+            'question_text' => '順番を直して追加する質問',
+        ]);
     }
 
     public function test_viewer_cannot_create_a_question(): void
@@ -83,6 +141,7 @@ class QuestionnaireQuestionControllerTest extends TestCase
         $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('entity_id', $question->id)->where('action', AuditLog::QuestionnaireQuestionUpdated)->sole();
         $this->assertSame(['changed_fields' => ['question_text', 'sort_order']], $auditLog->after_json);
         $this->assertStringNotContainsString('更新された質問', json_encode($auditLog->toArray()));
+        $this->assertDatabaseHas('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
     }
 
     public function test_viewer_cannot_update_a_question(): void

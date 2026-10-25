@@ -30,6 +30,30 @@ class ExportControllerTest extends TestCase
         $this->assertStringNotContainsString('別組織', $content);
     }
 
+    public function test_export_request_is_audited_without_exported_values(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Admin);
+        Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'Exported private name',
+            'email' => 'exported-private-'.Str::uuid().'@example.test',
+            'employment_status' => 'active',
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('exports.download', 'employees'))
+            ->assertOk();
+
+        $auditLog = AuditLog::query()->where('organization_id', $organization->id)->where('action', AuditLog::DataExportStarted)->sole();
+        $this->assertSame($user->id, $auditLog->actor_user_id);
+        $this->assertSame(Organization::class, $auditLog->entity_type);
+        $this->assertSame($organization->id, $auditLog->entity_id);
+        $this->assertSame(['resource' => 'employees'], $auditLog->after_json);
+        $this->assertStringNotContainsString('Exported private name', json_encode($auditLog->toArray()));
+        $this->assertStringNotContainsString('exported-private-', json_encode($auditLog->toArray()));
+    }
+
     public function test_viewer_cannot_export(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Viewer);
@@ -60,6 +84,7 @@ class ExportControllerTest extends TestCase
 
         $response->assertOk();
         $this->assertStringContainsString('current_organization.audit_action', $response->streamedContent());
+        $this->assertStringContainsString(AuditLog::DataExportStarted, $response->streamedContent());
         $this->assertStringNotContainsString('other_organization.audit_action', $response->streamedContent());
     }
 

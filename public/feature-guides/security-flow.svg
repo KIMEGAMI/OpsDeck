@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">セキュリティ、証跡、質問票の管理</title>
+  <desc id="description">管理項目の状態、資料の有効期限、質問票の回答と承認を確認する画面イメージ</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <text x="48" y="62" fill="#102a43" font-family="sans-serif" font-size="22" font-weight="700">期限と承認状況を確認</text>
+  <g font-family="sans-serif" fill="#102a43">
+    <rect x="48" y="96" width="218" height="190" rx="12" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="68" y="132" font-size="19" font-weight="700">セキュリティ管理</text>
+    <text x="68" y="178" font-size="16">対応状況</text><rect x="68" y="190" width="166" height="12" rx="6" fill="#d9e2ec"/>
+    <text x="68" y="238" font-size="16">次回確認日</text><rect x="68" y="250" width="166" height="12" rx="6" fill="#d9e2ec"/>
+    <rect x="291" y="96" width="218" height="190" rx="12" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <text x="311" y="132" font-size="19" font-weight="700">証跡・資料</text>
+    <text x="311" y="178" font-size="16">資料の種類</text><rect x="311" y="190" width="166" height="12" rx="6" fill="#d9e2ec"/>
+    <text x="311" y="238" font-size="16">有効期限</text><rect x="311" y="250" width="166" height="12" rx="6" fill="#d9e2ec"/>
+    <rect x="534" y="96" width="218" height="190" rx="12" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <text x="554" y="132" font-size="19" font-weight="700">取引先質問票</text>
+    <text x="554" y="178" font-size="16">回答案を確認</text><rect x="554" y="190" width="166" height="12" rx="6" fill="#d9e2ec"/>
+    <text x="554" y="238" font-size="16">担当者が承認</text><rect x="554" y="250" width="166" height="12" rx="6" fill="#d9e2ec"/>
+  </g>
+</svg>

@@ -22,8 +22,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('import_batches', function (Blueprint $table): void {
-            // Intentionally non-destructive for production safety.
-        });
+        throw new LogicException('This migration is forward-only; apply a new migration to change the schema.');
     }
 };

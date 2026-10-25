@@ -25,11 +25,13 @@ class RenewalReminderController extends Controller
         $reminders = ['overdue' => collect(), 'within_30_days' => collect(), 'within_90_days' => collect()];
         $renewalWindow = app(ContractRenewalWindow::class);
         foreach ($contracts as $contract) {
-            $date = $renewalWindow->dateOnOrBefore($contract, $today->addDays(ContractRenewalWindow::SAVINGS_WINDOW_DAYS));
+            $date = $renewalWindow->reminderDateWithin($contract, $today, $today->addDays(ContractRenewalWindow::SAVINGS_WINDOW_DAYS))
+                ?? $renewalWindow->reminderDateOnOrBefore($contract, $today->subDay());
             if ($date === null) {
                 continue;
             }
             $contract->setAttribute('reminder_date', $date);
+            $contract->setAttribute('reminder_date_label', $renewalWindow->reminderDateLabel($contract, $date));
             if ($date->isBefore($today)) {
                 $reminders['overdue']->push($contract);
             } elseif (! $date->isAfter($today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS))) {

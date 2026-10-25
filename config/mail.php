@@ -1,5 +1,13 @@
 <?php
 
+$resendMailPassword = env('MAIL_PASSWORD');
+$resendIdempotentMailEnabled = filter_var(env('RESEND_IDEMPOTENT_MAIL_ENABLED', false), FILTER_VALIDATE_BOOLEAN)
+    || (strtolower(trim((string) env('MAIL_MAILER', 'log'))) === 'smtp'
+        && strtolower(trim((string) env('MAIL_HOST', ''))) === 'smtp.resend.com'
+        && strtolower(trim((string) env('MAIL_USERNAME', ''))) === 'resend'
+        && is_string($resendMailPassword)
+        && trim($resendMailPassword) !== '');
+
 return [
 
     /*
@@ -14,7 +22,9 @@ return [
     |
     */
 
-    'default' => env('MAIL_MAILER', 'log'),
+    'default' => $resendIdempotentMailEnabled
+        ? 'resend_idempotent'
+        : env('MAIL_MAILER', 'log'),
 
     /*
     |--------------------------------------------------------------------------
@@ -67,8 +77,8 @@ return [
 
         'resend_idempotent' => [
             'transport' => 'resend_idempotent',
-            'key' => env('RESEND_API_KEY'),
-            'enabled' => env('RESEND_IDEMPOTENT_MAIL_ENABLED', false),
+            'key' => $resendMailPassword,
+            'enabled' => $resendIdempotentMailEnabled,
             'timeout' => env('RESEND_API_TIMEOUT', 10),
         ],
 

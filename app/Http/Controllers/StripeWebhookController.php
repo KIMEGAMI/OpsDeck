@@ -114,6 +114,12 @@ class StripeWebhookController extends Controller
                 $safeObject[$key] = $object[$key];
             }
         }
+        if (is_bool($object['cancel_at_period_end'] ?? null)) {
+            $safeObject['cancel_at_period_end'] = $object['cancel_at_period_end'];
+        }
+        if (is_int($object['cancel_at'] ?? null) && $object['cancel_at'] > 0) {
+            $safeObject['cancel_at'] = $object['cancel_at'];
+        }
         $organizationId = data_get($object, 'metadata.organization_id');
         if (is_string($organizationId) || is_int($organizationId)) {
             $safeObject['metadata'] = ['organization_id' => (string) $organizationId];
@@ -122,9 +128,36 @@ class StripeWebhookController extends Controller
         if (is_string($parentSubscription)) {
             $safeObject['parent'] = ['subscription_details' => ['subscription' => $parentSubscription]];
         }
-        $subscriptionPriceId = data_get($object, 'items.data.0.price.id');
-        if (is_string($subscriptionPriceId)) {
-            $safeObject['items'] = ['data' => [['price' => ['id' => $subscriptionPriceId]]]];
+        $subscriptionItems = data_get($object, 'items.data', []);
+        if (is_array($subscriptionItems)) {
+            $safeSubscriptionItems = [];
+            foreach ($subscriptionItems as $subscriptionItem) {
+                if (! is_array($subscriptionItem)) {
+                    continue;
+                }
+
+                $safeItem = [];
+                $itemId = data_get($subscriptionItem, 'id');
+                $priceId = data_get($subscriptionItem, 'price.id') ?? data_get($subscriptionItem, 'price');
+                $quantity = data_get($subscriptionItem, 'quantity');
+                if (is_string($itemId)) {
+                    $safeItem['id'] = $itemId;
+                }
+                if (is_string($priceId)) {
+                    $safeItem['price'] = ['id' => $priceId];
+                }
+                if (is_int($quantity) && $quantity >= 0) {
+                    $safeItem['quantity'] = $quantity;
+                }
+                $currentPeriodEnd = data_get($subscriptionItem, 'current_period_end');
+                if (is_int($currentPeriodEnd) && $currentPeriodEnd > 0) {
+                    $safeItem['current_period_end'] = $currentPeriodEnd;
+                }
+                if ($safeItem !== []) {
+                    $safeSubscriptionItems[] = $safeItem;
+                }
+            }
+            $safeObject['items'] = ['data' => $safeSubscriptionItems];
         }
         $lineItems = data_get($object, 'lines.data', []);
         if (is_array($lineItems)) {
@@ -233,23 +266,41 @@ class StripeWebhookController extends Controller
             }
             if (in_array($event['type'], ['customer.subscription.created', 'customer.subscription.updated'], true) && is_string($subscriptionId)) {
                 $attributes['stripe_subscription_id'] = $subscriptionId;
-                $stripeStatus = $latestSubscription['status'] ?? data_get($event, 'data.object.status');
-                $priceId = $latestSubscription !== null
-                    ? data_get($latestSubscription, 'items.data.0.price.id')
-                    : data_get($event, 'data.object.items.data.0.price.id');
+                $subscription = $latestSubscription ?? data_get($event, 'data.object', []);
+                $stripeStatus = $subscription['status'] ?? data_get($event, 'data.object.status');
+                $planCode = $this->planCodeForSubscription($subscription);
                 if (in_array($stripeStatus, ['active', 'trialing'], true)) {
-                    $attributes['plan_code'] = is_string($priceId) && $priceId !== ''
-                        ? $this->planCodeForPrice($priceId) ?? config('opsdeck.default_plan_code')
-                        : config('opsdeck.default_plan_code');
+                    $attributes['plan_code'] = $planCode ?? config('opsdeck.default_plan_code');
+                }
+                $cancellationAttributes = $this->scheduledCancellationAttributes($subscription);
+                if ($cancellationAttributes !== null) {
+                    $attributes = array_merge($attributes, $cancellationAttributes);
                 }
             }
             if ($event['type'] === 'invoice.paid') {
-                $currentPriceId = $latestSubscription === null ? null : data_get($latestSubscription, 'items.data.0.price.id');
-                $planCode = $latestSubscription === null ? $this->planCodeForInvoice($event) : $this->planCodeForPrice($currentPriceId);
+                $planCode = $latestSubscription === null
+                    ? $this->planCodeForInvoice($event)
+                    : $this->planCodeForSubscription($latestSubscription);
                 $invoicePriceIds = $this->invoicePriceIds($event);
+                $storageAddonQuantity = $latestSubscription === null
+                    ? null
+                    : $this->storageAddonQuantityForSubscription($latestSubscription);
                 if (($latestSubscription !== null || $invoicePriceIds !== []) && is_string($subscriptionId)) {
                     $attributes['plan_code'] = $planCode ?? config('opsdeck.default_plan_code');
                     $attributes['stripe_subscription_id'] ??= $subscriptionId;
+                }
+                $pendingStorageAddonQuantity = $organization->storage_addon_pending_gib;
+                $currentStorageAddonQuantity = max(0, (int) $organization->storage_addon_gib);
+                $storageAddonPriceId = config('services.stripe.prices.storage_addon_gib');
+                $increasedStorageAddonWasIncludedOnPaidInvoice = $storageAddonQuantity === null
+                    || $storageAddonQuantity <= $currentStorageAddonQuantity
+                    || (is_string($storageAddonPriceId) && in_array($storageAddonPriceId, $invoicePriceIds, true));
+                if ($storageAddonQuantity !== null
+                    && $increasedStorageAddonWasIncludedOnPaidInvoice
+                    && ($pendingStorageAddonQuantity === null || $storageAddonQuantity === (int) $pendingStorageAddonQuantity)) {
+                    $attributes['storage_addon_gib'] = $storageAddonQuantity;
+                    $attributes['storage_addon_pending_gib'] = null;
+                    $attributes['storage_addon_effective_at'] = null;
                 }
             }
             if ($event['type'] === 'customer.subscription.deleted') {
@@ -259,6 +310,11 @@ class StripeWebhookController extends Controller
                     return;
                 }
                 $attributes['plan_code'] = config('opsdeck.default_plan_code');
+                $attributes['billing_cancel_at_period_end'] = false;
+                $attributes['billing_cancel_at'] = null;
+                $attributes['storage_addon_gib'] = 0;
+                $attributes['storage_addon_pending_gib'] = null;
+                $attributes['storage_addon_effective_at'] = null;
             }
             $organization->update($attributes);
             if ($status === 'active' && $organization->plan_code !== config('opsdeck.default_plan_code')) {
@@ -268,6 +324,47 @@ class StripeWebhookController extends Controller
                 app(ProductEventRecorder::class)->recordOnce('billing_cancelled', $organization);
             }
         }
+    }
+
+    /** @param array<string, mixed> $subscription
+     * @return array{billing_cancel_at_period_end: bool, billing_cancel_at: CarbonImmutable|null}|null
+     */
+    private function scheduledCancellationAttributes(array $subscription): ?array
+    {
+        if (! is_bool($subscription['cancel_at_period_end'] ?? null)
+            && ! is_int($subscription['cancel_at'] ?? null)) {
+            return null;
+        }
+
+        $cancelAtPeriodEnd = ($subscription['cancel_at_period_end'] ?? false) === true;
+        $cancelAt = $subscription['cancel_at'] ?? null;
+        if ($cancelAtPeriodEnd && (! is_int($cancelAt) || $cancelAt < 1)) {
+            $premiumPriceId = config('services.stripe.prices.premium');
+            $items = data_get($subscription, 'items.data', []);
+            if (is_string($premiumPriceId) && $premiumPriceId !== '' && is_array($items)) {
+                foreach ($items as $item) {
+                    if (! is_array($item)) {
+                        continue;
+                    }
+
+                    $priceId = data_get($item, 'price.id') ?? data_get($item, 'price');
+                    $currentPeriodEnd = $item['current_period_end'] ?? null;
+                    if (is_string($priceId) && hash_equals($premiumPriceId, $priceId)
+                        && is_int($currentPeriodEnd) && $currentPeriodEnd > 0) {
+                        $cancelAt = $currentPeriodEnd;
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        return [
+            'billing_cancel_at_period_end' => $cancelAtPeriodEnd,
+            'billing_cancel_at' => is_int($cancelAt) && $cancelAt > 0
+                ? CarbonImmutable::createFromTimestamp($cancelAt)
+                : null,
+        ];
     }
 
     private function organizationForEvent(array $event, bool $lockForUpdate = false): ?Organization
@@ -361,12 +458,73 @@ class StripeWebhookController extends Controller
         }
 
         foreach (config('services.stripe.prices', []) as $planCode => $configuredPriceId) {
-            if (is_string($configuredPriceId) && $configuredPriceId !== '' && hash_equals($configuredPriceId, $priceId)) {
+            if (array_key_exists($planCode, config('opsdeck.plans', []))
+                && is_string($configuredPriceId)
+                && $configuredPriceId !== ''
+                && hash_equals($configuredPriceId, $priceId)) {
                 return $planCode;
             }
         }
 
         return null;
+    }
+
+    /** @param array<string, mixed> $subscription */
+    private function planCodeForSubscription(array $subscription): ?string
+    {
+        $items = data_get($subscription, 'items.data', []);
+        if (! is_array($items)) {
+            return null;
+        }
+
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $priceId = data_get($item, 'price.id') ?? data_get($item, 'price');
+            $planCode = $this->planCodeForPrice($priceId);
+            if ($planCode !== null) {
+                return $planCode;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $subscription */
+    private function storageAddonQuantityForSubscription(array $subscription): ?int
+    {
+        $storageAddonPriceId = config('services.stripe.prices.storage_addon_gib');
+        if (! is_string($storageAddonPriceId) || $storageAddonPriceId === '') {
+            return null;
+        }
+
+        $items = data_get($subscription, 'items.data', []);
+        if (! is_array($items)) {
+            return null;
+        }
+
+        $quantity = 0;
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $priceId = data_get($item, 'price.id') ?? data_get($item, 'price');
+            if (! is_string($priceId) || ! hash_equals($storageAddonPriceId, $priceId)) {
+                continue;
+            }
+
+            $itemQuantity = data_get($item, 'quantity');
+            if (! is_int($itemQuantity) || $itemQuantity < 0 || $quantity > PHP_INT_MAX - $itemQuantity) {
+                return null;
+            }
+
+            $quantity += $itemQuantity;
+        }
+
+        return $quantity;
     }
 
     private function planCodeForInvoice(array $event): ?string

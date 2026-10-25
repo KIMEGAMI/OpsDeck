@@ -7,6 +7,13 @@
     <section class="card" aria-labelledby="demo-dashboard-title">
         <h1 id="demo-dashboard-title">{{ $demo['organization_name'] }}のIT運用ダッシュボード</h1>
         <p class="muted">社員・端末・SaaS・契約をまとめ、確認が必要な項目と月次コストを把握する画面の例です。</p>
+        <section aria-labelledby="demo-next-title">
+            <h2 id="demo-next-title">デモを見たら次はこちら</h2>
+            <nav class="dashboard-links" aria-label="デモを見た後の案内">
+                <a href="{{ route('register') }}">Freeプランで自社の台帳を始める</a>
+                <a href="{{ route('help.index') }}">サービスのFAQを見る</a>
+            </nav>
+        </section>
 
         <div class="dashboard-metrics" aria-label="デモの主要指標">
             @foreach ($demo['metrics'] as $metric)
@@ -43,18 +50,21 @@
             <p>元のExcelを作り直す必要はありません。CSVまたはXLSXをプレビューし、列の対応や新規・更新・確認待ちを見てから反映します。</p>
             <p>このデモ自体はサンプルの登録やImportを行いません。</p>
             <h3>社員CSVの取込前プレビュー（架空データ）</h3>
-            <table>
-                <thead><tr><th>CSVの列</th><th>OpsDeck項目</th><th>サンプル値</th></tr></thead>
-                <tbody>
-                    @foreach ($sampleColumns as $column)
-                        <tr>
-                            <td>{{ $column['header'] }}</td>
-                            <td>{{ $column['field'] }}</td>
-                            <td>{{ $column['value'] }}</td>
-                        </tr>
-                    @endforeach
-                </tbody>
-            </table>
+            <p class="muted">表を左右に動かすと、画面に隠れた列も確認できます。</p>
+            <div class="table-scroll" role="region" aria-label="社員CSVの取込前プレビュー（横にスクロールできます）" tabindex="0">
+                <table>
+                    <thead><tr><th>CSVの列</th><th>OpsDeck項目</th><th>サンプル値</th></tr></thead>
+                    <tbody>
+                        @foreach ($sampleColumns as $column)
+                            <tr>
+                                <td>{{ $column['header'] }}</td>
+                                <td>{{ $column['field'] }}</td>
+                                <td>{{ $column['value'] }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
             <h3>Import Preview結果の例（架空データ）</h3>
             <p class="muted">以下は分類の見本です。実際のCSVは処理しておらず、登録・更新・メール送信は行いません。</p>
             <div class="dashboard-metrics" aria-label="プレビュー分類ごとのサンプル件数">
@@ -65,28 +75,28 @@
                     </article>
                 @endforeach
             </div>
-            <table>
-                <thead><tr><th>判定</th><th>社員番号</th><th>氏名</th><th>メールアドレス</th><th>確認理由</th></tr></thead>
-                @foreach ($previewCategories as $category)
-                    <tbody>
-                        <tr><th colspan="5">{{ $category['label'] }}（{{ count($category['rows']) }}件）</th></tr>
-                        @foreach ($category['rows'] as $row)
-                            <tr>
-                                <td>{{ $category['label'] }}</td>
-                                <td>{{ $row['employee_number'] }}</td>
-                                <td>{{ $row['name'] }}</td>
-                                <td>{{ $row['email'] }}</td>
-                                <td>{{ $row['reason'] }}</td>
-                            </tr>
+            <details class="dashboard-panel">
+                <summary>取り込み結果の判定理由を見る</summary>
+                <div class="table-scroll" role="region" aria-label="取込結果の判定例（横にスクロールできます）" tabindex="0">
+                    <table>
+                        <thead><tr><th>判定</th><th>社員番号</th><th>氏名</th><th>メールアドレス</th><th>確認理由</th></tr></thead>
+                        @foreach ($previewCategories as $category)
+                            <tbody>
+                                <tr><th colspan="5">{{ $category['label'] }}（{{ count($category['rows']) }}件）</th></tr>
+                                @foreach ($category['rows'] as $row)
+                                    <tr>
+                                        <td>{{ $category['label'] }}</td>
+                                        <td>{{ $row['employee_number'] }}</td>
+                                        <td>{{ $row['name'] }}</td>
+                                        <td>{{ $row['email'] }}</td>
+                                        <td>{{ $row['reason'] }}</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
                         @endforeach
-                    </tbody>
-                @endforeach
-            </table>
+                    </table>
+                </div>
+            </details>
         </section>
-
-        <div class="dashboard-panel" aria-label="デモの次のステップ">
-            <p><a href="{{ route('register') }}">Freeプランで自社の台帳を始める</a></p>
-            <p><a href="{{ route('help.index') }}">サービスのFAQを見る</a></p>
-        </div>
     </section>
 </x-layouts.app>

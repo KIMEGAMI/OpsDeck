@@ -18,6 +18,12 @@ class CaptureImpactMetricSnapshots extends Command
 {
     public function handle(ImpactReportMetricsService $metricsService): int
     {
+        if (! config('opsdeck.release_features.impact_report')) {
+            $this->info('Impact report snapshots are disabled for this release.');
+
+            return self::SUCCESS;
+        }
+
         $capturedSnapshots = 0;
         $chunkSize = max(1, (int) config('opsdeck.pagination.per_page'));
 

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">管理表を安全に取り込む流れ</title>
+  <desc id="description">ファイルを選び、プレビュー、内容確認を行ってから取り込む流れ</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <text x="48" y="62" fill="#102a43" font-family="sans-serif" font-size="22" font-weight="700">Excel・CSVの取込手順</text>
+  <g font-family="sans-serif" fill="#102a43" text-anchor="middle">
+    <rect x="48" y="112" width="154" height="150" rx="12" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <circle cx="125" cy="147" r="22" fill="#005f73"/><text x="125" y="154" fill="#ffffff" font-size="18" font-weight="700">1</text>
+    <text x="125" y="197" font-size="18" font-weight="700">ファイルを選ぶ</text><text x="125" y="228" font-size="15" fill="#486581">取込名・種類も入力</text>
+    <rect x="242" y="112" width="154" height="150" rx="12" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <circle cx="319" cy="147" r="22" fill="#005f73"/><text x="319" y="154" fill="#ffffff" font-size="18" font-weight="700">2</text>
+    <text x="319" y="197" font-size="18" font-weight="700">プレビュー</text><text x="319" y="228" font-size="15" fill="#486581">この時点では未登録</text>
+    <rect x="436" y="112" width="154" height="150" rx="12" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <circle cx="513" cy="147" r="22" fill="#c05621"/><text x="513" y="154" fill="#ffffff" font-size="18" font-weight="700">3</text>
+    <text x="513" y="197" font-size="18" font-weight="700">内容を確認</text><text x="513" y="228" font-size="15" fill="#486581">列・重複・エラー</text>
+    <rect x="630" y="112" width="122" height="150" rx="12" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <circle cx="691" cy="147" r="22" fill="#005f73"/><text x="691" y="154" fill="#ffffff" font-size="18" font-weight="700">4</text>
+    <text x="691" y="197" font-size="18" font-weight="700">取込実行</text><text x="691" y="228" font-size="15" fill="#486581">履歴で結果確認</text>
+  </g>
+  <path d="M207 184h25m-8-8 8 8-8 8M401 184h25m-8-8 8 8-8 8M595 184h25m-8-8 8 8-8 8" fill="none" stroke="#005f73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="48" y="304" fill="#334e68" font-family="sans-serif" font-size="16">元の表を残し、確認できた行だけを登録します。</text>
+</svg>

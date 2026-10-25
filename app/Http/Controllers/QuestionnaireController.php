@@ -7,6 +7,7 @@ use App\Http\Requests\Questionnaire\UpdateQuestionnaireRequest;
 use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\Questionnaire;
+use App\Services\ProductEventRecorder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,9 +22,17 @@ class QuestionnaireController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('view', $organization);
-        $questionnaires = Questionnaire::query()->where('organization_id', $organization->id)->orderBy('due_at')->orderBy('id')->paginate(config('opsdeck.pagination.per_page'));
+        $filters = $request->validate(['pending' => ['sometimes', 'boolean']]);
+        $questionnaires = Questionnaire::query()
+            ->where('organization_id', $organization->id)
+            ->withCount('pendingAnswers')
+            ->when(($filters['pending'] ?? false), fn ($query) => $query->has('pendingAnswers'))
+            ->orderBy('due_at')
+            ->orderBy('id')
+            ->paginate(config('opsdeck.pagination.per_page'))
+            ->withQueryString();
 
-        return view('questionnaires.index', compact('questionnaires', 'organization'));
+        return view('questionnaires.index', compact('questionnaires', 'organization', 'filters'));
     }
 
     /**
@@ -56,6 +65,7 @@ class QuestionnaireController extends Controller
                 'action' => AuditLog::QuestionnaireCreated,
                 'after_json' => ['changed_fields' => array_keys($attributes)],
             ]);
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
 
             return $questionnaire;
         });
@@ -110,6 +120,7 @@ class QuestionnaireController extends Controller
                     'action' => AuditLog::QuestionnaireUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 

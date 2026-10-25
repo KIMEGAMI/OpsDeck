@@ -20,7 +20,7 @@ class RecoveryGuideControllerTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('help.recovery', 'import'));
 
-        $response->assertOk()->assertSee('Importに失敗したとき')->assertSee('元ファイルを変更せず')->assertSee(route('imports.index'))->assertSee('Import履歴で失敗内容を確認し、再試行する')->assertSee(route('support.create'))->assertDontSee('問い合わせ用エラーID：REC-')->assertSee(config('opsdeck.support_email'))->assertDontSee('stack trace');
+        $response->assertOk()->assertSee('Excelなどの取込で困ったとき')->assertSee('元のファイルはそのまま残し')->assertSee(route('imports.index'))->assertSee('取込履歴で内容を確認する')->assertSee(route('support.create'))->assertDontSee('問い合わせ用エラーID：REC-')->assertSee(config('opsdeck.support_email'))->assertDontSee('stack trace');
     }
 
     public function test_unknown_recovery_guide_is_not_available(): void
@@ -40,9 +40,9 @@ class RecoveryGuideControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('help.recovery', 'email'))
             ->assertOk()
-            ->assertSee('メールを受信できないとき')
+            ->assertSee('メールが届かないとき')
             ->assertSee(route('weekly-summary.show'))
-            ->assertSee('週次サマリー・お知らせメールの受信設定を確認')
+            ->assertSee('直近7日間のまとめ・メールの受信設定を見る')
             ->assertSee('迷惑メールフォルダー')
             ->assertSee(route('support.create'))
             ->assertSee('メールの種類と発生日時')
@@ -51,6 +51,8 @@ class RecoveryGuideControllerTest extends TestCase
 
     public function test_google_oauth_recovery_guide_links_to_connection_settings(): void
     {
+        config(['opsdeck.release_features.google_sheets' => true]);
+
         $user = User::factory()->create(['email' => 'recovery-google-'.Str::uuid().'@example.test']);
         $organization = Organization::query()->create(['name' => 'Recovery Google Org', 'slug' => 'recovery-google-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
@@ -58,8 +60,21 @@ class RecoveryGuideControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('help.recovery', 'google_oauth'))
             ->assertOk()
-            ->assertSee('Google Sheets連携の状態を確認する')
+            ->assertSee('Googleスプレッドシートの接続状態を見る')
             ->assertSee(route('google-sheets.connection'));
+    }
+
+    public function test_google_oauth_recovery_guide_is_unavailable_when_google_sheets_is_out_of_release_scope(): void
+    {
+        config(['opsdeck.release_features.google_sheets' => false]);
+
+        $user = User::factory()->create(['email' => 'recovery-google-disabled-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Recovery Google Disabled Org', 'slug' => 'recovery-google-disabled-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('help.recovery', 'google_oauth'))
+            ->assertNotFound();
     }
 
     public function test_stripe_recovery_guide_respects_billing_permissions(): void
@@ -71,7 +86,7 @@ class RecoveryGuideControllerTest extends TestCase
         $this->actingAs($owner)->withSession(['current_organization_id' => $ownerOrganization->id])
             ->get(route('help.recovery', 'stripe'))
             ->assertOk()
-            ->assertSee('Billing画面で契約状態を確認する')
+            ->assertSee('プラン・お支払い画面で契約状態を見る')
             ->assertSee(route('billing.index'));
 
         $viewer = User::factory()->create(['email' => 'recovery-stripe-viewer-'.Str::uuid().'@example.test']);
@@ -81,7 +96,7 @@ class RecoveryGuideControllerTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])
             ->get(route('help.recovery', 'stripe'))
             ->assertOk()
-            ->assertSee('Billing画面はOwner/Adminに確認してもらってください。')
+            ->assertSee('契約状態は、組織の契約担当者に確認してください。')
             ->assertDontSee(route('billing.index'));
     }
 
@@ -94,11 +109,28 @@ class RecoveryGuideControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('help.recovery', 'ai'))
             ->assertOk()
-            ->assertSee('AI候補・下書きを利用できないとき')
-            ->assertSee('手動で作成できます')
-            ->assertSee('Owner/Admin')
+            ->assertSee('AIの候補や回答案が使えないとき')
+            ->assertSee('手入力で作成できます')
+            ->assertSee('会社の設定を管理する担当者（Owner）に確認してください。')
             ->assertSee(route('support.create'))
+            ->assertDontSee(route('settings.organization'))
+            ->assertDontSee(route('billing.index'))
             ->assertDontSee('api_key')
             ->assertDontSee('stack trace');
+    }
+
+    public function test_owner_can_open_ai_and_billing_settings_from_ai_recovery_guide(): void
+    {
+        $owner = User::factory()->create(['email' => 'recovery-ai-owner-'.Str::uuid().'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Recovery AI Owner Org', 'slug' => 'recovery-ai-owner-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $owner->id, 'role' => 'owner', 'status' => 'active', 'joined_at' => now()]);
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('help.recovery', 'ai'))
+            ->assertOk()
+            ->assertSee('組織設定でAI補助の状態を見る')
+            ->assertSee(route('settings.organization'))
+            ->assertSee('プラン・お支払い画面で契約状態を見る')
+            ->assertSee(route('billing.index'));
     }
 }

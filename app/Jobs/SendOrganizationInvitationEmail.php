@@ -29,7 +29,7 @@ class SendOrganizationInvitationEmail implements ShouldBeEncrypted, ShouldBeUniq
 
     public function uniqueId(): string
     {
-        return (string) $this->invitation->getKey();
+        return hash_hmac('sha256', (string) $this->invitation->getKey(), (string) config('app.key'));
     }
 
     /**

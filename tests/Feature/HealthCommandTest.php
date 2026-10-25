@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Models\ImportBatch;
 use App\Models\Organization;
+use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
@@ -16,7 +18,7 @@ class HealthCommandTest extends TestCase
     {
         parent::setUp();
 
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $this->artisan('migrate:fresh', ['--force' => true])->assertExitCode(0);
     }
 
     public function test_health_command_passes_when_database_and_backup_destination_are_available(): void
@@ -28,6 +30,10 @@ class HealthCommandTest extends TestCase
 
         $this->artisan('opsdeck:health')
             ->expectsOutput('OpsDeck health check passed.')
+            ->expectsOutputToContain('Backup archives: 1 (0 size-verified, 1 legacy/unmeasured)')
+            ->expectsOutputToContain('Backup payload size: 0.0 MB')
+            ->expectsOutputToContain('Backup destination disk:')
+            ->expectsOutputToContain('OpsDeck customer files (import sources + evidence):')
             ->assertExitCode(0);
 
         DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
@@ -47,6 +53,165 @@ class HealthCommandTest extends TestCase
 
         DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
         File::deleteDirectory($healthPath);
+    }
+
+    public function test_strict_health_check_fails_when_storage_addon_reconciliation_finds_mismatches(): void
+    {
+        $healthPath = $this->healthPath('storage-addon-reconciliation-mismatch');
+        config(['opsdeck.backup.path' => $healthPath, 'opsdeck.release_features.storage_addon' => true]);
+        $this->createFreshBackup($healthPath);
+        $this->recordFreshSchedulerHeartbeat();
+        DB::table('storage_addon_reconciliation_runs')->insert([
+            'status' => 'mismatch',
+            'organizations_checked' => 3,
+            'mismatch_count' => 1,
+            'unavailable_count' => 0,
+            'mismatch_organization_ids' => json_encode([42], JSON_THROW_ON_ERROR),
+            'unavailable_organization_ids' => json_encode([], JSON_THROW_ON_ERROR),
+            'checked_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        try {
+            $this->withoutMockingConsoleOutput();
+            $exitCode = $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true]);
+            $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(1, $exitCode);
+            $this->assertSame('warning', $healthReport['status']);
+            $this->assertSame('mismatch', $healthReport['storage_addon_reconciliation']['status']);
+            $this->assertSame(3, $healthReport['storage_addon_reconciliation']['organizations_checked']);
+            $this->assertSame(1, $healthReport['storage_addon_reconciliation']['mismatch_count']);
+        } finally {
+            DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
+            File::deleteDirectory($healthPath);
+        }
+    }
+
+    public function test_strict_health_check_fails_when_storage_addon_reconciliation_is_unavailable(): void
+    {
+        $healthPath = $this->healthPath('storage-addon-reconciliation-unavailable');
+        config(['opsdeck.backup.path' => $healthPath, 'opsdeck.release_features.storage_addon' => true]);
+        $this->createFreshBackup($healthPath);
+        $this->recordFreshSchedulerHeartbeat();
+        DB::table('storage_addon_reconciliation_runs')->insert([
+            'status' => 'unavailable',
+            'organizations_checked' => 2,
+            'mismatch_count' => 0,
+            'unavailable_count' => 2,
+            'mismatch_organization_ids' => json_encode([], JSON_THROW_ON_ERROR),
+            'unavailable_organization_ids' => json_encode([41, 42], JSON_THROW_ON_ERROR),
+            'checked_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        try {
+            $this->withoutMockingConsoleOutput();
+            $exitCode = $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true]);
+            $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(1, $exitCode);
+            $this->assertSame('warning', $healthReport['status']);
+            $this->assertSame('unavailable', $healthReport['storage_addon_reconciliation']['status']);
+            $this->assertSame(2, $healthReport['storage_addon_reconciliation']['unavailable_count']);
+        } finally {
+            DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
+            File::deleteDirectory($healthPath);
+        }
+    }
+
+    public function test_strict_health_check_ignores_storage_addon_reconciliation_when_feature_is_disabled(): void
+    {
+        $healthPath = $this->healthPath('storage-addon-reconciliation-disabled');
+        config([
+            'opsdeck.backup.path' => $healthPath,
+            'opsdeck.release_features.storage_addon' => false,
+        ]);
+        $this->createFreshBackup($healthPath);
+        $this->recordFreshSchedulerHeartbeat();
+        DB::table('storage_addon_reconciliation_runs')->insert([
+            'status' => 'mismatch',
+            'organizations_checked' => 3,
+            'mismatch_count' => 1,
+            'unavailable_count' => 0,
+            'mismatch_organization_ids' => json_encode([42], JSON_THROW_ON_ERROR),
+            'unavailable_organization_ids' => json_encode([], JSON_THROW_ON_ERROR),
+            'checked_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        try {
+            $this->withoutMockingConsoleOutput();
+            $exitCode = $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true]);
+            $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(0, $exitCode);
+            $this->assertSame('ok', $healthReport['status']);
+            $this->assertArrayNotHasKey('storage_addon_reconciliation', $healthReport);
+        } finally {
+            DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
+            File::deleteDirectory($healthPath);
+        }
+    }
+
+    public function test_strict_json_health_check_warns_when_platform_storage_reaches_its_warning_threshold(): void
+    {
+        $healthPath = $this->healthPath('platform-storage-warning');
+        $bytesPerMebibyte = 1024 * 1024;
+        config([
+            'opsdeck.backup.path' => $healthPath,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 100,
+            'opsdeck.storage_quotas.warning_percentage' => 80,
+        ]);
+        $this->createFreshBackup($healthPath);
+        $this->recordFreshSchedulerHeartbeat();
+        $organization = Organization::factory()->create();
+        $importBatch = ImportBatch::factory()->for($organization)->create([
+            'source_file_path' => 'health/platform-storage.csv',
+            'source_storage_disk' => config('opsdeck.import.disk'),
+            'source_file_size_bytes' => 80 * $bytesPerMebibyte,
+        ]);
+        try {
+            $this->withoutMockingConsoleOutput();
+            $exitCode = $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true]);
+            $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(1, $exitCode);
+            $this->assertSame('warning', $healthReport['status']);
+            $this->assertSame(true, $healthReport['platform_storage_needs_attention']);
+            $this->assertSame(80, $healthReport['platform_storage']['used_percentage']);
+        } finally {
+            $importBatch->delete();
+            $organization->delete();
+            DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
+            File::deleteDirectory($healthPath);
+        }
+    }
+
+    public function test_production_json_health_check_explains_when_platform_storage_limit_is_missing(): void
+    {
+        $healthPath = $this->healthPath('platform-storage-limit-missing');
+        config(['opsdeck.backup.path' => $healthPath, 'opsdeck.storage_quotas.platform_limit_megabytes' => null]);
+        $this->app['env'] = 'production';
+        $this->createFreshBackup($healthPath);
+        $this->recordFreshSchedulerHeartbeat();
+
+        try {
+            $this->withoutMockingConsoleOutput();
+            $exitCode = $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true]);
+            $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(1, $exitCode);
+            $this->assertSame('warning', $healthReport['status']);
+            $this->assertSame(true, $healthReport['platform_storage_needs_attention']);
+            $this->assertSame(null, $healthReport['platform_storage']['limit_bytes']);
+        } finally {
+            DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
+            File::deleteDirectory($healthPath);
+        }
     }
 
     public function test_health_command_reports_an_unavailable_failed_jobs_count(): void
@@ -189,9 +354,13 @@ class HealthCommandTest extends TestCase
         $this->recordFreshSchedulerHeartbeat();
 
         try {
-            $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
-                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":null,"queue_backlog_status":"invalid","queue_timeout_status":"invalid","queue_worker_status":"invalid","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":0,"backup_restore_test":"missing"}')
-                ->assertExitCode(1);
+            $this->withoutMockingConsoleOutput();
+            $exitCode = $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true]);
+            $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(1, $exitCode);
+            $this->assertSame(true, $healthReport['platform_storage_needs_attention']);
+            $this->assertArrayHasKey('platform_storage', $healthReport);
         } finally {
             DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
             File::deleteDirectory($healthPath);
@@ -290,11 +459,29 @@ class HealthCommandTest extends TestCase
                 'created_at' => now()->subMinutes(30),
                 'updated_at' => now()->subMinutes(20),
             ],
+            [
+                'organization_id' => $organization->id,
+                'source_type' => 'csv',
+                'source_name' => 'health-test-retrying',
+                'status' => 'retrying',
+                'started_at' => now()->subMinutes(20),
+                'created_at' => now()->subMinutes(30),
+                'updated_at' => now()->subMinutes(20),
+            ],
+            [
+                'organization_id' => $organization->id,
+                'source_type' => 'csv',
+                'source_name' => 'health-test-rolling-back',
+                'status' => 'rolling_back',
+                'started_at' => now()->subMinutes(20),
+                'created_at' => now()->subMinutes(30),
+                'updated_at' => now()->subMinutes(20),
+            ],
         ]);
 
         try {
             $this->artisan('opsdeck:health', ['--json' => true, '--strict' => true])
-                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"not_applicable","queue_worker_status":"not_applicable","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":4,"backup_restore_test":"not_applicable"}')
+                ->expectsOutput('{"status":"warning","database":"ok","backup":"ok","scheduler_heartbeat":"ok","queue_failed_jobs":0,"stale_queue_jobs":0,"queue_timeout_status":"not_applicable","queue_worker_status":"not_applicable","webhook_errors":0,"stale_webhooks":0,"stale_import_batches":6,"backup_restore_test":"not_applicable"}')
                 ->assertExitCode(1);
         } finally {
             DB::table('import_batches')->where('organization_id', $organization->id)->delete();

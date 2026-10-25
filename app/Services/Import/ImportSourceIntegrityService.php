@@ -35,7 +35,7 @@ class ImportSourceIntegrityService
         }
 
         try {
-            $sourceStream = Storage::disk(config('opsdeck.import.disk'))->readStream($importBatch->source_file_path);
+            $sourceStream = Storage::disk($importBatch->sourceStorageDiskName())->readStream($importBatch->source_file_path);
         } catch (Throwable) {
             throw ValidationException::withMessages([
                 'file' => '取込元ファイルを検証できません。再アップロードしてください。',

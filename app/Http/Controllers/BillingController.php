@@ -2,10 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\StoreStorageAddonRequest;
 use App\Models\Organization;
 use App\Models\StripeWebhookEvent;
+use App\Services\CommercialInformationReadiness;
+use App\Services\OrganizationStorageQuotaService;
 use App\Services\PlanAccessService;
 use App\Services\ProductEventRecorder;
+use App\Services\StorageAddonScheduleService;
+use App\Services\StripeTaxRegistrationReadiness;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\RedirectResponse;
@@ -31,7 +36,18 @@ class BillingController extends Controller
         }
         $failedStripeEvent = $failedStripeEventQuery->orderByDesc('stripe_created_at')->first();
         $effectivePlanCode = app(PlanAccessService::class)->effectivePlanCode($organization);
+        $checkoutAvailable = ! app()->environment('production')
+            || app(CommercialInformationReadiness::class)->isConfigured();
+        $checkoutReturn = match ($request->query('checkout')) {
+            'success' => 'success',
+            'cancelled' => 'cancelled',
+            default => null,
+        };
         $canSubmitCancellationFeedback = in_array($organization->billing_status, ['active', 'trialing', 'past_due', 'cancelled'], true);
+        $storageQuota = app(OrganizationStorageQuotaService::class)->summary($organization);
+        $storageAddonService = app(StorageAddonScheduleService::class);
+        $storageAddonAvailable = $storageAddonService->isAvailableFor($organization);
+        $storageAddonMaximumQuantity = $storageAddonService->maximumQuantity();
         $billingGraceDeadline = null;
         if ($organization->billing_status === 'past_due') {
             $pastDueSince = $organization->billing_past_due_since;
@@ -48,13 +64,45 @@ class BillingController extends Controller
             }
         }
 
-        return view('billing.index', compact('organization', 'effectivePlanCode', 'billingGraceDeadline', 'failedStripeEvent', 'canSubmitCancellationFeedback'));
+        return view('billing.index', compact('organization', 'effectivePlanCode', 'checkoutReturn', 'billingGraceDeadline', 'failedStripeEvent', 'canSubmitCancellationFeedback', 'checkoutAvailable', 'storageQuota', 'storageAddonAvailable', 'storageAddonMaximumQuantity'));
     }
 
-    public function checkout(Request $request): RedirectResponse|Response
+    public function updateStorageAddon(StoreStorageAddonRequest $request, StorageAddonScheduleService $storageAddonScheduleService): RedirectResponse|Response
     {
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
+        abort_unless(config('opsdeck.release_features.storage_addon'), Response::HTTP_NOT_FOUND);
+        $quantity = (int) $request->validated('quantity');
+
+        if (! $storageAddonScheduleService->isAvailableFor($organization)) {
+            return $this->stripeUnavailableResponse('storage_addon_not_configured');
+        }
+
+        if (! $storageAddonScheduleService->maximumQuantity()) {
+            return $this->stripeUnavailableResponse('storage_addon_not_configured');
+        }
+
+        try {
+            $effectiveAt = $storageAddonScheduleService->schedule($organization, $quantity);
+        } catch (Throwable) {
+            return $this->stripeUnavailableResponse('storage_addon_schedule');
+        }
+
+        return to_route('billing.index')->with('status', [
+            'storage_addon_scheduled' => true,
+            'effective_at' => $effectiveAt->setTimezone($organization->timezone)->format('Y/m/d'),
+            'quantity' => $quantity,
+        ]);
+    }
+
+    public function checkout(Request $request, StripeTaxRegistrationReadiness $taxRegistrationReadiness): RedirectResponse|Response
+    {
+        $organization = $this->organization($request);
+        $this->authorize('manageBilling', $organization);
+        if (app()->environment('production') && ! app(CommercialInformationReadiness::class)->isConfigured()) {
+            return to_route('billing.index');
+        }
+
         $effectivePlanCode = app(PlanAccessService::class)->effectivePlanCode($organization);
         abort_unless(
             $effectivePlanCode !== config('opsdeck.premium_plan_code')
@@ -97,6 +145,9 @@ class BillingController extends Controller
         $hasTaxCode = (is_string($productTaxCode) && trim($productTaxCode) !== '')
             || (is_string($defaultTaxCode) && trim($defaultTaxCode) !== '');
         if (! $stripeTaxSettings->successful() || $stripeTaxSettings->json('status') !== 'active' || ! $hasTaxCode) {
+            return $this->stripeUnavailableResponse('tax_validation');
+        }
+        if (! $taxRegistrationReadiness->hasActiveRegistration((string) config('services.stripe.secret'), 'JP')) {
             return $this->stripeUnavailableResponse('tax_validation');
         }
 

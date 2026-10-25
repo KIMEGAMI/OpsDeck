@@ -132,7 +132,7 @@ class CsvImportSource
         $maximumImportRows = max(1, (int) config('opsdeck.import.max_rows'));
         while (($row = fgetcsv($stream, null, ',', '"', '')) !== false) {
             if ($sourceRowNumber < $headerRowNumber) {
-                $sourceRowNumber++;
+                $sourceRowNumber = $this->nextSourceRowNumber($sourceRowNumber, $row);
 
                 continue;
             }
@@ -144,17 +144,17 @@ class CsvImportSource
                     $validator->assertUnique($headers);
                     $headerEndReached = true;
                 }
-                $sourceRowNumber++;
+                $sourceRowNumber = $this->nextSourceRowNumber($sourceRowNumber, $row);
 
                 continue;
             }
             if ($sourceRowNumber < ($dataStartRowNumber ?? $headerEndRowNumber + 1)) {
-                $sourceRowNumber++;
+                $sourceRowNumber = $this->nextSourceRowNumber($sourceRowNumber, $row);
 
                 continue;
             }
             if ($row === [null] || count(array_filter($row, static fn (?string $value): bool => $value !== null && trim($value) !== '')) === 0) {
-                $sourceRowNumber++;
+                $sourceRowNumber = $this->nextSourceRowNumber($sourceRowNumber, $row);
 
                 continue;
             }
@@ -172,7 +172,7 @@ class CsvImportSource
             if ($maximumDataRows !== null && $totalRows >= max(1, $maximumDataRows)) {
                 break;
             }
-            $sourceRowNumber++;
+            $sourceRowNumber = $this->nextSourceRowNumber($sourceRowNumber, $row);
         }
 
         if (! $headerEndReached) {
@@ -189,6 +189,24 @@ class CsvImportSource
             'header_end_row_number' => $headerEndRowNumber,
             'data_start_row_number' => $dataStartRowNumber ?? $headerEndRowNumber + 1,
         ];
+    }
+
+    /**
+     * @param  list<?string>  $row
+     */
+    private function nextSourceRowNumber(int $sourceRowNumber, array $row): int
+    {
+        $physicalLineCount = 1;
+        foreach ($row as $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $lineBreakCount = preg_match_all('/\r\n|\r|\n/', $value);
+            $physicalLineCount += $lineBreakCount === false ? 0 : $lineBreakCount;
+        }
+
+        return $sourceRowNumber + $physicalLineCount;
     }
 
     /**

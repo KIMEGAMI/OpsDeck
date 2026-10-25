@@ -18,6 +18,7 @@ use App\Models\User;
 use App\Services\ImpactReportMetricsService;
 use App\Services\ImportBatchExecutionService;
 use App\Services\PrepareImportRetryService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -36,9 +37,11 @@ class ImportRetryTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Operator, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
         $sourcePath = 'imports/'.$organization->id.'/failed-import.csv';
         $email = 'alice-'.$suffix.'@example.test';
-        Storage::disk(config('opsdeck.import.disk'))->put($sourcePath, "name,email\nAlice,$email\nAlice duplicate,$email\nExcluded,excluded-$suffix@example.test\n");
-        $batch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => 'failed-import', 'source_file_path' => $sourcePath, 'headers_json' => ['name', 'email'], 'status' => 'failed', 'total_rows' => 3, 'preview_new_rows' => 2, 'preview_confirmation_rows' => 1, 'error_rows' => 2]);
+        $sourceContents = "name,email\nAlice,$email\nAlice duplicate,$email\nExcluded,excluded-$suffix@example.test\n";
+        Storage::disk(config('opsdeck.import.disk'))->put($sourcePath, $sourceContents);
+        $batch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => 'failed-import', 'source_file_path' => $sourcePath, 'source_storage_disk' => config('opsdeck.import.disk'), 'source_file_size_bytes' => strlen($sourceContents), 'headers_json' => ['name', 'email'], 'status' => 'failed', 'total_rows' => 3, 'preview_new_rows' => 2, 'preview_confirmation_rows' => 1, 'error_rows' => 2]);
         $batch->mappings()->create(['target_type' => 'employees', 'column_map' => ['name' => 'name', 'email' => 'email'], 'normalization_rules' => [], 'status' => 'ready', 'created_by' => $user->id]);
+        ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'source_row_number' => 2, 'target_type' => 'employees', 'action' => 'error', 'errors_json' => ['row' => 'previous preview result'], 'is_selected' => false]);
         ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'source_row_number' => 2, 'target_type' => 'employees', 'action' => 'new_candidate', 'after_json' => ['name' => 'Alice', 'email' => $email], 'is_selected' => true]);
         ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'source_row_number' => 3, 'target_type' => 'employees', 'action' => 'confirmation_required', 'after_json' => ['name' => 'Alice duplicate', 'email' => $email], 'is_selected' => true]);
         ImportRowResult::query()->create(['import_batch_id' => $batch->id, 'source_row_number' => 4, 'target_type' => 'employees', 'action' => 'new_candidate', 'after_json' => ['name' => 'Excluded', 'email' => 'excluded-'.$suffix.'@example.test'], 'is_selected' => false]);
@@ -59,6 +62,8 @@ class ImportRetryTest extends TestCase
         $retryBatch = ImportBatch::query()->where('id', '>', $batch->id)->latest('id')->firstOrFail();
         $this->assertSame('retrying', $batch->refresh()->status);
         $this->assertSame('retrying', $retryBatch->status);
+        $this->assertSame($batch->source_storage_disk, $retryBatch->source_storage_disk);
+        $this->assertSame($batch->source_file_size_bytes, $retryBatch->source_file_size_bytes);
         Queue::assertPushedTimes(PrepareImportRetryBatch::class, 1);
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.retry', $batch), ['confirm' => '1'])
@@ -70,6 +75,7 @@ class ImportRetryTest extends TestCase
         $this->assertSame('failed', $batch->refresh()->status);
         $this->assertSame('ready', $retryBatch->refresh()->status);
         $this->assertSame(3, $retryBatch->total_rows);
+        $this->assertSame(3, $retryBatch->rowResults()->count());
         $this->assertSame('employees', $retryBatch->mappings()->firstOrFail()->target_type);
         $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $retryBatch->id, 'source_row_number' => 2, 'is_selected' => true]);
         $this->assertDatabaseHas('import_row_results', ['import_batch_id' => $retryBatch->id, 'source_row_number' => 3, 'is_selected' => true]);
@@ -106,9 +112,96 @@ class ImportRetryTest extends TestCase
         $this->assertNotNull($retryBatch->completed_at);
     }
 
+    public function test_retry_job_rechecks_actor_membership_before_copying_import_history(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'revoked-retry-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Revoked Retry '.$suffix, 'slug' => 'revoked-retry-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $membership = OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Operator,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $sourceBatch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => 'revoked-source', 'status' => 'retrying']);
+        $retryBatch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'csv', 'source_name' => 'revoked-retry', 'status' => 'retrying']);
+        $sourceBatch->mappings()->create(['target_type' => 'employees', 'column_map' => ['name' => 'name'], 'normalization_rules' => [], 'status' => 'ready', 'created_by' => $user->id]);
+        ImportRowResult::query()->create(['import_batch_id' => $sourceBatch->id, 'source_row_number' => 2, 'target_type' => 'employees', 'action' => 'new_candidate', 'after_json' => ['name' => 'Private employee'], 'is_selected' => true]);
+        $membership->update(['status' => MembershipStatus::Suspended]);
+
+        try {
+            (new PrepareImportRetryBatch($sourceBatch->id, $retryBatch->id, $user->id))->handle(app(PrepareImportRetryService::class));
+            $this->fail('A queued retry must be rejected after the actor loses organization access.');
+        } catch (AuthorizationException) {
+            $this->assertSame('retrying', $sourceBatch->refresh()->status);
+            $this->assertSame('retrying', $retryBatch->refresh()->status);
+            $this->assertSame(0, $retryBatch->mappings()->count());
+            $this->assertSame(0, $retryBatch->rowResults()->count());
+        }
+    }
+
+    public function test_duplicate_queued_import_job_does_not_repeat_a_completed_import(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        Storage::fake(config('opsdeck.import.disk'));
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'duplicate-job-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create([
+            'name' => 'Duplicate job '.$suffix,
+            'slug' => 'duplicate-job-'.$suffix,
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.premium_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Operator,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
+        $csv = "name,email\nQueued Employee,queued-".$suffix."@example.test\n";
+        $path = 'imports/'.$organization->id.'/duplicate-job.csv';
+        Storage::disk(config('opsdeck.import.disk'))->put($path, $csv);
+        $batch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => 'duplicate-job.csv',
+            'source_file_path' => $path,
+            'source_storage_disk' => config('opsdeck.import.disk'),
+            'source_file_size_bytes' => strlen($csv),
+            'source_file_sha256' => hash('sha256', $csv),
+            'headers_json' => ['name', 'email'],
+            'status' => 'queued',
+            'total_rows' => 1,
+            'executed_by' => $user->id,
+        ]);
+        $batch->mappings()->create([
+            'target_type' => 'employees',
+            'column_map' => ['name' => 'name', 'email' => 'email'],
+            'normalization_rules' => [],
+            'status' => 'ready',
+            'created_by' => $user->id,
+        ]);
+        $job = new ExecuteImportBatch((int) $batch->id, (int) $user->id);
+        $executionService = app(ImportBatchExecutionService::class);
+
+        $job->handle($executionService);
+        $job->handle($executionService);
+
+        $this->assertSame('completed', $batch->refresh()->status);
+        $this->assertSame(1, $batch->inserted_rows);
+        $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
+        $this->assertSame(1, $batch->rowResults()->count());
+        $this->assertSame(1, AuditLog::query()->where('entity_type', ImportBatch::class)->where('entity_id', $batch->id)->where('action', AuditLog::ImportBatchExecuted)->count());
+    }
+
     public function test_queued_job_failure_rolls_back_imported_rows_and_marks_batch_failed(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        config(['opsdeck.release_features.impact_report' => true]);
         Storage::fake(config('opsdeck.import.disk'));
         $suffix = Str::lower(Str::random(8));
         $user = User::factory()->create(['email' => 'failed-job-'.$suffix.'@example.test']);

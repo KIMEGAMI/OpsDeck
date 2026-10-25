@@ -29,6 +29,7 @@ class AssetController extends Controller
             'statuses.*' => ['string', Rule::in(config('opsdeck.asset_statuses', []))],
             'unassigned' => ['sometimes', 'boolean'],
             'needs_attention' => ['sometimes', 'boolean'],
+            'employee_id' => ['sometimes', 'integer'],
         ]);
         $assets = Asset::query()->where('organization_id', $organization->id)
             ->when($filters['search'] ?? null, function ($query, string $search): void {
@@ -38,8 +39,13 @@ class AssetController extends Controller
             ->when($request->boolean('unassigned'), fn ($query) => $query->whereDoesntHave('assignments', fn ($assignmentQuery) => $assignmentQuery->whereNull('returned_at')))
             ->when($request->boolean('needs_attention'), fn ($query) => $query->needsAttention())
             ->orderBy('asset_number')->paginate(config('opsdeck.pagination.per_page'))->withQueryString();
+        $selectedEmployeeId = Employee::query()
+            ->where('organization_id', $organization->id)
+            ->where('employment_status', config('opsdeck.employee_status.active'))
+            ->whereKey($filters['employee_id'] ?? null)
+            ->value('id');
 
-        return view('assets.index', compact('assets', 'filters', 'organization'));
+        return view('assets.index', compact('assets', 'filters', 'organization', 'selectedEmployeeId'));
     }
 
     public function create(Request $request): View
@@ -57,11 +63,21 @@ class AssetController extends Controller
         $asset = DB::transaction(function () use ($request, $organization): Asset {
             Organization::query()->whereKey($organization->id)->lockForUpdate()->firstOrFail();
             app(PlanLimitService::class)->assertCanAdd($organization, 'assets');
+            $attributes = $this->validatedForOrganization($request->validated(), $organization);
+            $asset = Asset::query()->create($attributes + ['organization_id' => $organization->id]);
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => Asset::class,
+                'entity_id' => $asset->id,
+                'action' => AuditLog::AssetCreated,
+                'after_json' => ['created_fields' => array_keys($attributes)],
+            ]);
 
-            return Asset::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
+            return $asset;
         });
         app(ProductEventRecorder::class)->recordOnce('first_asset_registered', $organization);
-        app(ProductEventRecorder::class)->recordFirstDashboardAction($organization);
+        app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
 
         return to_route('assets.show', $asset)->with('status', '端末を登録しました。');
     }
@@ -78,9 +94,14 @@ class AssetController extends Controller
                 ->orderBy('name')
                 ->get()
             : collect();
+        $selectedEmployeeId = null;
+
+        if ($employees->isNotEmpty() && ctype_digit((string) $request->query('employee_id'))) {
+            $selectedEmployeeId = $employees->firstWhere('id', (int) $request->query('employee_id'))?->id;
+        }
         $activeAssignment = $asset->assignments->firstWhere('returned_at', null);
 
-        return view('assets.show', compact('asset', 'employees', 'activeAssignment'));
+        return view('assets.show', compact('asset', 'employees', 'activeAssignment', 'selectedEmployeeId'));
     }
 
     public function edit(Request $request, Asset $asset): View
@@ -113,6 +134,7 @@ class AssetController extends Controller
                     'action' => AuditLog::AssetUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 

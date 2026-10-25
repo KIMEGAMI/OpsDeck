@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">会社の台帳をまとめて管理</title>
+  <desc id="description">社員、端末、クラウドサービス、契約の情報を整理し、割当と期限を確認する図</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <text x="48" y="62" fill="#102a43" font-family="sans-serif" font-size="22" font-weight="700">会社の情報をひとつの場所に整理</text>
+  <g font-family="sans-serif" fill="#102a43">
+    <rect x="48" y="96" width="318" height="88" rx="10" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="70" y="132" font-size="20" font-weight="700">社員・部署</text><text x="70" y="160" font-size="15" fill="#486581">在籍状況と所属を確認</text>
+    <rect x="434" y="96" width="318" height="88" rx="10" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="456" y="132" font-size="20" font-weight="700">端末・資産</text><text x="456" y="160" font-size="15" fill="#486581">利用者・返却状況を確認</text>
+    <rect x="48" y="206" width="318" height="88" rx="10" fill="#e6f6f8" stroke="#005f73" stroke-width="2"/>
+    <text x="70" y="242" font-size="20" font-weight="700">クラウドサービス</text><text x="70" y="270" font-size="15" fill="#334e68">利用者・契約情報を確認</text>
+    <rect x="434" y="206" width="318" height="88" rx="10" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <text x="456" y="242" font-size="20" font-weight="700">契約</text><text x="456" y="270" font-size="15" fill="#334e68">取引先・費用・更新時期を確認</text>
+    <path d="M366 140h68M366 250h68" stroke="#005f73" stroke-width="3" stroke-dasharray="7 7"/>
+    <text x="379" y="132" font-size="14" fill="#486581">割当</text><text x="379" y="242" font-size="14" fill="#486581">費用</text>
+  </g>
+</svg>

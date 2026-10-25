@@ -16,7 +16,7 @@
                     <tr>
                         <td><a href="{{ route('employees.show', $employee) }}">{{ $employee->name }}</a></td>
                         <td>{{ $employee->department?->name ?? '未設定' }}</td>
-                        <td>{{ $employee->employment_status }}</td>
+                        <td>{{ config('opsdeck.employee_status_labels.'.$employee->employment_status, $employee->employment_status) }}</td>
                     </tr>
                 @empty
                     <tr><td colspan="3">該当する社員はいません。</td></tr>

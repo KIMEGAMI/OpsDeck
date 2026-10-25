@@ -1,0 +1,108 @@
+- generic [active] [ref=f3e1]:
+  - link "本文へスキップ" [ref=f3e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - banner [ref=f3e3]:
+    - generic [ref=f3e4]:
+      - strong [ref=f3e5]: OpsDeck
+      - group [ref=f3e6]:
+        - generic "ページメニューを開く" [ref=f3e7] [cursor=pointer]
+  - main [ref=f3e8]:
+    - generic [ref=f3e9]:
+      - region [ref=f3e10]:
+        - generic [ref=f3e11]:
+          - paragraph [ref=f3e12]: Excel台帳から、社内ITの運用とコストを見える化
+          - heading "誰が何を使い、いつ更新するかをひと目で。" [level=1] [ref=f3e13]
+          - paragraph [ref=f3e14]: 社員・端末・クラウドサービス・契約をまとめて管理。更新漏れや利用者のいないサービスを見つけ、登録した情報と会社ごとの条件から年間の見直し候補額を確認できます。
+          - generic [ref=f3e15]:
+            - link "無料で始める" [ref=f3e16] [cursor=pointer]:
+              - /url: http://127.0.0.1:8007/register
+            - link "ログイン" [ref=f3e17] [cursor=pointer]:
+              - /url: http://127.0.0.1:8007/login
+            - link "デモ画面を見る（登録不要）" [ref=f3e18] [cursor=pointer]:
+              - /url: http://127.0.0.1:8007/demo
+        - complementary "OpsDeckでできること" [ref=f3e19]:
+          - heading "OpsDeckでできること" [level=2] [ref=f3e20]
+          - list [ref=f3e21]:
+            - listitem [ref=f3e22]: ExcelやCSVの内容を確認してから台帳へ登録
+            - listitem [ref=f3e23]: 契約更新・未割当・要確認の項目を一覧で把握
+            - listitem [ref=f3e24]: 削減候補額と、確認済みの削減実績を分けて記録
+      - region [ref=f3e25]:
+        - heading "今の管理表から、確認・見直しまで" [level=2] [ref=f3e26]
+        - generic [ref=f3e27]:
+          - article [ref=f3e28]:
+            - heading "1. 今の管理表を活用" [level=3] [ref=f3e29]
+            - paragraph [ref=f3e30]: 社員、端末、クラウドサービス、契約などの表から始められます。FreeはCSV/TXT、PremiumはXLSXとGoogle Sheetsに対応します。古いExcel形式（.xls）は使えません。
+          - article [ref=f3e31]:
+            - heading "2. 確認してから登録" [level=3] [ref=f3e32]
+            - paragraph [ref=f3e33]: 取込前にプレビューし、列の対応と新規・更新・確認待ち・エラーを確認できます。AIの列候補も自動確定せず、担当者が確認して反映します。プレビューだけではデータは変わりません。
+          - article [ref=f3e34]:
+            - heading "3. 次の対応と費用を把握" [level=3] [ref=f3e35]
+            - paragraph [ref=f3e36]: 契約更新、書類の期限、未割当の端末やサービスを確認。見直し候補額を確かめ、実際に削減できた金額は根拠とともに記録できます。
+      - region [ref=f3e37]:
+        - heading "IT運用の情報をまとめ、次の対応につなげる" [level=2] [ref=f3e38]
+        - generic [ref=f3e39]:
+          - article [ref=f3e40]:
+            - heading "会社の台帳を一元管理" [level=3] [ref=f3e41]
+            - paragraph [ref=f3e42]: 社員・部署、端末、クラウドサービス、契約と利用者の割当状況をまとめて確認できます。
+          - article [ref=f3e43]:
+            - heading "期限と確認漏れを見つける" [level=3] [ref=f3e44]
+            - paragraph [ref=f3e45]: 契約の更新、書類の有効期限、セキュリティ確認、取引先の質問票など、対応が必要な項目を追えます。
+          - article [ref=f3e46]:
+            - heading "対応の根拠と結果を残す" [level=3] [ref=f3e47]
+            - paragraph [ref=f3e48]: 取込履歴、確認済みの削減実績、週次サマリーや導入効果レポートで、状況を振り返れます。
+        - paragraph [ref=f3e49]: 一部の取込形式・更新通知・セキュリティ機能・レポート・書き出し機能はPremiumで利用できます。
+      - region [ref=f3e50]:
+        - heading "自社のデータから、見直し候補額を試算" [level=2] [ref=f3e51]
+        - paragraph [ref=f3e52]: 削減額は会社ごとに異なります。OpsDeckは登録された契約・クラウドサービス・端末の情報と設定条件をもとに、年間の見直し候補額を表示します。
+        - generic [ref=f3e53]:
+          - article [ref=f3e54]:
+            - heading "更新が近い契約" [level=3] [ref=f3e55]
+            - paragraph [ref=f3e56]: 対象となる契約の年額と会社ごとの見直し条件から、更新前に検討する金額の目安を表示します。
+          - article [ref=f3e57]:
+            - heading "利用者が割り当てられていないサービス" [level=3] [ref=f3e58]
+            - paragraph [ref=f3e59]: 利用者の登録状況と継続契約の費用から、利用実態や契約条件を確認したいサービスを見つけます。
+          - article [ref=f3e60]:
+            - heading "使われていない可能性のある端末" [level=3] [ref=f3e61]
+            - paragraph [ref=f3e62]: 割当状況や端末の状態から確認候補を表示し、会社で設定した月額目安をもとに費用を試算します。
+        - paragraph [ref=f3e63]: 表示額は見直し候補の試算で、削減実績や削減保証ではありません。実際に見直せるかは利用状況や契約条件を担当者が確認してください。契約交渉・解約・サービス停止は自動で行わず、確認済みの削減実績は別に記録します。
+      - region [ref=f3e64]:
+        - heading "プラン" [level=2] [ref=f3e65]
+        - generic [ref=f3e66]:
+          - article [ref=f3e67]:
+            - heading "Free" [level=3] [ref=f3e68]
+            - paragraph [ref=f3e69]: 0円
+            - list [ref=f3e70]:
+              - listitem [ref=f3e71]: 社員20名・端末50台・SaaS10件まで
+              - listitem [ref=f3e72]: CSV/TXTの実データ取込（登録上限まで）
+              - listitem [ref=f3e73]: 基本ダッシュボード
+              - listitem [ref=f3e74]: コスト集計
+              - listitem [ref=f3e75]: 管理者1名
+            - link "Freeで始める" [ref=f3e76] [cursor=pointer]:
+              - /url: http://127.0.0.1:8007/register
+          - article [ref=f3e77]:
+            - heading "Premium" [level=3] [ref=f3e78]
+            - paragraph [ref=f3e79]: 月額9,800円（税別）
+            - list [ref=f3e80]:
+              - listitem [ref=f3e81]: 社員200名・端末500台・SaaS100件まで
+              - listitem [ref=f3e82]: CSV / XLSX / Google Sheets Import
+              - listitem [ref=f3e83]: AI列マッピング候補（月500円相当まで）
+              - listitem [ref=f3e84]: 削減可能額の概算・削減実績の記録・作業時間短縮の参考値
+              - listitem [ref=f3e85]: 更新・セキュリティアラート
+              - listitem [ref=f3e86]: 証跡・質問票・Export
+              - listitem [ref=f3e87]: 導入効果レポート
+              - listitem [ref=f3e88]: 管理者5名まで
+            - link "登録後にPremiumを申し込む" [ref=f3e89] [cursor=pointer]:
+              - /url: http://127.0.0.1:8007/register
+        - paragraph [ref=f3e90]: 適用税額を加算し、申込前にStripe Checkoutでお支払い総額を表示します。削減候補額は入力情報と設定条件に基づく試算であり、実際の削減を保証するものではありません。
+      - region [ref=f3e91]:
+        - heading "OpsDeckがすること・しないこと" [level=2] [ref=f3e92]
+        - paragraph [ref=f3e93]: OpsDeckはIT資産や契約を整理し、期限と対応状況を追うための運用台帳です。MDM／EDR、端末の遠隔操作、社内システムそのものの置き換えは提供しません。既存のExcel形式が分からない場合は、サンプルとプレビューから確認できます。
+        - paragraph [ref=f3e94]:
+          - link "サービスのFAQを見る" [ref=f3e95] [cursor=pointer]:
+            - /url: http://127.0.0.1:8007/help
+          - link "特定商取引法に基づく表記" [ref=f3e96] [cursor=pointer]:
+            - /url: http://127.0.0.1:8007/commercial-transactions
+        - paragraph [ref=f3e97]:
+          - text: お問い合わせ：
+          - link "support@kimegami.jp" [ref=f3e98] [cursor=pointer]:
+            - /url: mailto:support@kimegami.jp

@@ -29,7 +29,7 @@ class OnboardingController extends Controller
             'completed' => $completed,
             'total' => count($steps),
             'percent' => count($steps) > 0 ? (int) round(($completed / count($steps)) * 100) : 0,
-            'premiumFeaturesUnavailable' => ! app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'),
+            'premiumFeaturesUnavailable' => ! app(PlanFeatureService::class)->isAvailable($organization, 'renewal_alerts'),
         ]);
     }
 

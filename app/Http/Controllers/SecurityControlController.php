@@ -9,6 +9,8 @@ use App\Models\Employee;
 use App\Models\Organization;
 use App\Models\SecurityControl;
 use App\Services\OnboardingProgressService;
+use App\Services\ProductEventRecorder;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -50,6 +52,7 @@ class SecurityControlController extends Controller
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
         $control = SecurityControl::query()->create($this->validatedForOrganization($request->validated(), $organization) + ['organization_id' => $organization->id]);
+        app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
         app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
 
         return to_route('security-controls.show', $control)->with('status', 'セキュリティ管理項目を登録しました。');
@@ -103,10 +106,49 @@ class SecurityControlController extends Controller
                     'action' => AuditLog::SecurityControlUpdated,
                     'after_json' => ['changed_fields' => $changedFields],
                 ]);
+                app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
             }
         });
 
         return to_route('security-controls.show', $securityControl)->with('status', 'セキュリティ管理項目を更新しました。');
+    }
+
+    public function markReviewed(Request $request, SecurityControl $securityControl): RedirectResponse
+    {
+        $organization = $this->organization($request);
+        $securityControl = $this->scopedControl($organization, $securityControl);
+        $this->authorize('update', $securityControl);
+        $reviewDate = CarbonImmutable::today($organization->timezone);
+
+        DB::transaction(function () use ($request, $organization, $securityControl, $reviewDate): void {
+            $lockedControl = SecurityControl::query()
+                ->where('organization_id', $organization->id)
+                ->whereKey($securityControl->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedControl->last_reviewed_at?->toDateString() === $reviewDate->toDateString()) {
+                return;
+            }
+
+            $lockedControl->last_reviewed_at = $reviewDate->toDateString();
+            $lockedControl->save();
+
+            AuditLog::query()->create([
+                'organization_id' => $organization->id,
+                'actor_user_id' => $request->user()->id,
+                'entity_type' => SecurityControl::class,
+                'entity_id' => $lockedControl->id,
+                'action' => AuditLog::SecurityControlUpdated,
+                'after_json' => ['changed_fields' => ['last_reviewed_at']],
+            ]);
+
+            app(ProductEventRecorder::class)->recordFirstBusinessChange($organization);
+        });
+
+        app(OnboardingProgressService::class)->recordCompletionIfReady($organization);
+
+        return to_route('security-controls.show', $securityControl)->with('status', '確認日を記録しました。');
     }
 
     /**

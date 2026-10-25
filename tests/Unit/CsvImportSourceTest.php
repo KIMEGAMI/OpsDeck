@@ -69,7 +69,7 @@ class CsvImportSourceTest extends TestCase
         fclose($stream);
 
         $this->assertSame(['name', 'email'], $parsed['headers']);
-        $this->assertSame([2, 3], array_column($rows, 'source_row_number'));
+        $this->assertSame([2, 4], array_column($rows, 'source_row_number'));
         $this->assertSame("Tokyo,\r\nHQ", $rows[0]['values'][0]);
     }
 
@@ -94,6 +94,17 @@ class CsvImportSourceTest extends TestCase
         $this->assertSame(5, $rows[0]['source_row_number']);
         $this->assertSame(5, $parsed['data_start_row_number']);
         $this->assertSame(['Alice', 'alice@example.test'], $rows[0]['values']);
+    }
+
+    public function test_it_keeps_physical_source_row_numbers_after_multiline_csv_fields(): void
+    {
+        $contents = "name,notes\r\nAlice,\"first line\r\nsecond line\"\r\nBob,ready\r\n";
+
+        $parsed = (new CsvImportSource)->parse($contents);
+
+        $this->assertSame([2, 4], array_column($parsed['rows'], 'source_row_number'));
+        $this->assertSame("first line\r\nsecond line", $parsed['rows'][0]['values'][1]);
+        $this->assertSame(['Bob', 'ready'], $parsed['rows'][1]['values']);
     }
 
     public function test_it_combines_multiple_header_rows_without_changing_data_values(): void

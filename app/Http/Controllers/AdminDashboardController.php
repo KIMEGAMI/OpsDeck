@@ -14,9 +14,13 @@ use App\Services\BackupHealthService;
 use App\Services\BackupRestoreHealthService;
 use App\Services\ContractMonthlyCostCalculator;
 use App\Services\DatabaseMigrationHealthService;
+use App\Services\DatabaseStorageUsageService;
 use App\Services\ImportFailureMetrics;
+use App\Services\OrganizationStorageQuotaService;
 use App\Services\QueueHealthService;
+use App\Services\SchedulerHealthService;
 use App\Services\StripeWebhookHealthService;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Support\Facades\DB;
@@ -58,15 +62,35 @@ class AdminDashboardController extends Controller
 
     public function aiCost(): View
     {
+        $monthStart = now(config('app.timezone'))->startOfMonth();
+        $monthlyUsage = AiUsageLog::query()
+            ->where('created_at', '>=', $monthStart)
+            ->selectRaw('COUNT(*) as request_count, COALESCE(SUM(input_tokens), 0) as input_tokens, COALESCE(SUM(output_tokens), 0) as output_tokens, COALESCE(SUM(estimated_cost_usd), 0) as cost_usd, COALESCE(SUM(estimated_cost_jpy), 0) as cost_jpy, SUM(CASE WHEN error_code = ? THEN 1 ELSE 0 END) as unpriced_request_count', ['pricing_unavailable'])
+            ->first();
+
+        $monthlyOrganizationUsage = DB::table('ai_usage_logs')
+            ->join('organizations', 'organizations.id', '=', 'ai_usage_logs.organization_id')
+            ->where('ai_usage_logs.created_at', '>=', $monthStart)
+            ->select('organizations.id as organization_id', 'organizations.name as organization_name')
+            ->selectRaw('COUNT(ai_usage_logs.id) as request_count, SUM(ai_usage_logs.input_tokens) as input_tokens, SUM(ai_usage_logs.output_tokens) as output_tokens, SUM(ai_usage_logs.estimated_cost_usd) as cost_usd, SUM(ai_usage_logs.estimated_cost_jpy) as cost_jpy, SUM(CASE WHEN ai_usage_logs.error_code = ? THEN 1 ELSE 0 END) as unpriced_request_count', ['pricing_unavailable'])
+            ->groupBy('organizations.id', 'organizations.name')
+            ->orderByDesc('cost_usd')
+            ->orderBy('organizations.id')
+            ->paginate((int) config('opsdeck.pagination.per_page'));
+
         $usage = AiUsageLog::query()
             ->selectRaw('provider, model, COUNT(*) as request_count, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, SUM(estimated_cost_usd) as cost_usd, SUM(estimated_cost_jpy) as cost_jpy, SUM(CASE WHEN error_code = ? THEN 1 ELSE 0 END) as unpriced_request_count', ['pricing_unavailable'])
             ->groupBy('provider', 'model')
             ->orderByDesc('cost_usd')
             ->get();
 
-        $usdToJpyRateConfigured = is_numeric(config('opsdeck.ai.usd_to_jpy_rate')) && (float) config('opsdeck.ai.usd_to_jpy_rate') > 0;
+        $configuredRate = config('opsdeck.ai.usd_to_jpy_rate');
+        $usdToJpyRate = is_numeric($configuredRate) && (float) $configuredRate > 0 ? (float) $configuredRate : null;
+        $usdToJpyRateConfigured = $usdToJpyRate !== null;
+        $premiumAiMonthlyBudgetJpy = (int) config('opsdeck.ai.monthly_budget_jpy.premium');
+        $premiumAiMonthlyBudgetUsd = $usdToJpyRate === null ? null : $premiumAiMonthlyBudgetJpy / $usdToJpyRate;
 
-        return view('admin.ai-cost', compact('usage', 'usdToJpyRateConfigured'));
+        return view('admin.ai-cost', compact('usage', 'monthlyUsage', 'monthlyOrganizationUsage', 'monthStart', 'usdToJpyRate', 'usdToJpyRateConfigured', 'premiumAiMonthlyBudgetJpy', 'premiumAiMonthlyBudgetUsd'));
     }
 
     public function queueErrors(): View
@@ -92,19 +116,7 @@ class AdminDashboardController extends Controller
 
         $staleCutoff = now()->subMinutes(max(1, (int) config('opsdeck.import.stale_after_minutes')));
         $staleImports = ImportBatch::query()
-            ->where(function (EloquentBuilder $query) use ($staleCutoff): void {
-                $query->where(function (EloquentBuilder $queuedQuery) use ($staleCutoff): void {
-                    $queuedQuery->whereIn('status', ['queued', 'previewing', 'analyzing'])
-                        ->where(function (EloquentBuilder $queuedTimeQuery) use ($staleCutoff): void {
-                            $queuedTimeQuery->whereNull('updated_at')->orWhere('updated_at', '<=', $staleCutoff);
-                        });
-                })->orWhere(function (EloquentBuilder $executingQuery) use ($staleCutoff): void {
-                    $executingQuery->where('status', 'executing')
-                        ->where(function (EloquentBuilder $startedQuery) use ($staleCutoff): void {
-                            $startedQuery->whereNull('started_at')->orWhere('started_at', '<=', $staleCutoff);
-                        });
-                });
-            })
+            ->stale($staleCutoff)
             ->orderBy('updated_at')
             ->limit((int) config('opsdeck.pagination.per_page'))
             ->get(['id', 'source_type', 'status', 'updated_at', 'started_at']);
@@ -125,9 +137,13 @@ class AdminDashboardController extends Controller
         return view('admin.queue-errors', compact('failedJobs', 'failedImports', 'staleImports', 'importReference', 'stripeReference', 'stripeReferenceEvent', 'webhookErrors', 'staleWebhooks'));
     }
 
-    public function health(BackupHealthService $backupHealth, BackupRestoreHealthService $backupRestoreHealth, QueueHealthService $queueHealth, StripeWebhookHealthService $webhookHealth, DatabaseMigrationHealthService $migrationHealth): View
+    public function health(BackupHealthService $backupHealth, BackupRestoreHealthService $backupRestoreHealth, QueueHealthService $queueHealth, SchedulerHealthService $schedulerHealth, StripeWebhookHealthService $webhookHealth, DatabaseMigrationHealthService $migrationHealth, OrganizationStorageQuotaService $storageQuotaService, DatabaseStorageUsageService $databaseStorageUsage): View
     {
         $backupReport = $backupHealth->report();
+        $platformStorage = $storageQuotaService->platformUsageSummary();
+        $platformStorageNeedsAttention = $storageQuotaService->platformCapacityNeedsAttention($platformStorage);
+        $databaseStorage = $databaseStorageUsage->summary();
+        $databaseStorageNeedsAttention = app()->environment('production') && $databaseStorage['status'] !== 'measured';
         $backupRestoreReport = $backupRestoreHealth->report();
         $backupRestoreStatus = match ($backupRestoreReport['status']) {
             'ok' => '正常',
@@ -146,14 +162,7 @@ class AdminDashboardController extends Controller
         $latestBackupAt = $backupReport['latest_backup_at'];
         $pendingMigrationCount = $migrationHealth->pendingCount();
         $migrationStatus = $pendingMigrationCount === null ? 'unknown' : ($pendingMigrationCount === 0 ? 'ok' : 'pending');
-        $schedulerHeartbeatStatus = 'unknown';
-        if (Schema::hasTable('scheduler_heartbeats')) {
-            $schedulerHeartbeat = DB::table('scheduler_heartbeats')->where('name', 'scheduler');
-            if ($schedulerHeartbeat->exists()) {
-                $heartbeatCutoff = now()->subMinutes((int) config('opsdeck.scheduler.heartbeat_max_age_minutes'));
-                $schedulerHeartbeatStatus = $schedulerHeartbeat->where('last_seen_at', '>', $heartbeatCutoff)->exists() ? 'ok' : 'stale';
-            }
-        }
+        $schedulerHeartbeatStatus = $schedulerHealth->status();
         $failedJobs = Schema::hasTable('failed_jobs') ? (int) Schema::getConnection()->table('failed_jobs')->count() : null;
         $staleQueuedJobs = $queueHealth->staleQueuedJobs();
         $queueBacklogStatus = $queueHealth->backlogStatus($staleQueuedJobs);
@@ -161,22 +170,34 @@ class AdminDashboardController extends Controller
         $queueWorkerStatus = $queueHealth->workerStatus();
         $webhookErrors = $webhookHealth->processingErrorCount();
         $staleWebhooks = $webhookHealth->staleUnprocessedCount();
+        $storageAddonReconciliation = Schema::hasTable('storage_addon_reconciliation_runs')
+            ? DB::table('storage_addon_reconciliation_runs')->latest('checked_at')->first()
+            : null;
+        $storageAddonReconciliationStatus = match ($storageAddonReconciliation->status ?? null) {
+            'verified' => '正常',
+            'mismatch' => '要確認（契約と容量に差異）',
+            'unavailable' => '未確認（Stripeまたは設定を確認）',
+            'not_configured' => '未設定（追加容量販売は無効）',
+            default => '未実施',
+        };
+        $storageAddonReconciliationCheckedAt = is_string($storageAddonReconciliation->checked_at ?? null)
+            ? CarbonImmutable::parse($storageAddonReconciliation->checked_at)->setTimezone(config('app.timezone'))->format('Y/m/d H:i')
+            : '未実施';
+        $storageAddonMismatchOrganizationIds = json_decode((string) ($storageAddonReconciliation->mismatch_organization_ids ?? '[]'), true);
+        if (! is_array($storageAddonMismatchOrganizationIds)) {
+            $storageAddonMismatchOrganizationIds = [];
+        }
+        $storageAddonUnavailableOrganizationIds = json_decode((string) ($storageAddonReconciliation->unavailable_organization_ids ?? '[]'), true);
+        if (! is_array($storageAddonUnavailableOrganizationIds)) {
+            $storageAddonUnavailableOrganizationIds = [];
+        }
         $staleCutoff = now()->subMinutes(max(1, (int) config('opsdeck.import.stale_after_minutes')));
         $staleImportBatches = ImportBatch::query()
-            ->where(function (EloquentBuilder $query) use ($staleCutoff): void {
-                $query->where(function (EloquentBuilder $queuedQuery) use ($staleCutoff): void {
-                    $queuedQuery->whereIn('status', ['queued', 'previewing', 'analyzing'])->where(function (EloquentBuilder $queuedTimeQuery) use ($staleCutoff): void {
-                        $queuedTimeQuery->whereNull('updated_at')->orWhere('updated_at', '<=', $staleCutoff);
-                    });
-                })->orWhere(function (EloquentBuilder $executingQuery) use ($staleCutoff): void {
-                    $executingQuery->where('status', 'executing')->where(function (EloquentBuilder $startedQuery) use ($staleCutoff): void {
-                        $startedQuery->whereNull('started_at')->orWhere('started_at', '<=', $staleCutoff);
-                    });
-                });
-            })
+            ->stale($staleCutoff)
             ->count();
-        $healthStatus = $migrationStatus !== 'ok' || $schedulerHeartbeatStatus !== 'ok' || $failedJobs === null || $failedJobs > 0 || in_array($queueBacklogStatus, ['stale', 'unknown', 'invalid'], true) || in_array($queueTimeoutStatus, ['invalid', 'unknown'], true) || in_array($queueWorkerStatus, ['stale', 'unknown', 'invalid'], true) || $webhookErrors > 0 || $staleWebhooks > 0 || $staleImportBatches > 0 || $backupReport['status'] !== 'ok' || ! in_array($backupRestoreReport['status'], ['ok', 'not_applicable'], true) ? '要確認' : '正常';
+        $storageAddonReconciliationNeedsAttention = in_array($storageAddonReconciliation->status ?? null, ['mismatch', 'unavailable'], true);
+        $healthStatus = $platformStorageNeedsAttention || $databaseStorageNeedsAttention || $migrationStatus !== 'ok' || $schedulerHeartbeatStatus !== 'ok' || $failedJobs === null || $failedJobs > 0 || in_array($queueBacklogStatus, ['stale', 'unknown', 'invalid'], true) || in_array($queueTimeoutStatus, ['invalid', 'unknown'], true) || in_array($queueWorkerStatus, ['stale', 'unknown', 'invalid'], true) || $webhookErrors > 0 || $staleWebhooks > 0 || $staleImportBatches > 0 || $storageAddonReconciliationNeedsAttention || $backupReport['status'] !== 'ok' || ! in_array($backupRestoreReport['status'], ['ok', 'not_applicable'], true) ? '要確認' : '正常';
 
-        return view('admin.health', compact('healthStatus', 'backupStatus', 'latestBackupAt', 'backupRestoreStatus', 'backupRestoreReport', 'migrationStatus', 'pendingMigrationCount', 'schedulerHeartbeatStatus', 'failedJobs', 'staleQueuedJobs', 'queueBacklogStatus', 'queueTimeoutStatus', 'queueWorkerStatus', 'webhookErrors', 'staleWebhooks', 'staleImportBatches'));
+        return view('admin.health', compact('healthStatus', 'backupReport', 'platformStorage', 'databaseStorage', 'backupStatus', 'latestBackupAt', 'backupRestoreStatus', 'backupRestoreReport', 'migrationStatus', 'pendingMigrationCount', 'schedulerHeartbeatStatus', 'failedJobs', 'staleQueuedJobs', 'queueBacklogStatus', 'queueTimeoutStatus', 'queueWorkerStatus', 'webhookErrors', 'staleWebhooks', 'staleImportBatches', 'storageAddonReconciliationStatus', 'storageAddonReconciliationCheckedAt', 'storageAddonReconciliation', 'storageAddonMismatchOrganizationIds', 'storageAddonUnavailableOrganizationIds'));
     }
 }

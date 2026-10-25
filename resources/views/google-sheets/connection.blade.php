@@ -13,7 +13,6 @@
         @endunless
         @if ($connection?->revoked_at === null && $connection?->refresh_token)
             <p>接続済み{{ $connection->google_account_email ? '（'.$connection->google_account_email.'）' : '' }}</p>
-            <p>許可スコープ: {{ implode(', ', $connection->scopes_json ?? []) }}</p>
             <form method="post" action="{{ route('google-sheets.disconnect') }}">
                 @csrf
                 <button type="submit">連携を解除</button>
@@ -21,7 +20,7 @@
         @else
             <p>Google Sheetsは未接続です。</p>
             @if ($featureAvailable)
-                <a href="{{ route('google-sheets.connect') }}">Google OAuthで接続</a>
+                <a href="{{ route('google-sheets.connect') }}">Googleアカウントで接続する</a>
             @endif
         @endif
         <p class="muted"><a href="{{ route('help.recovery', 'google_oauth') }}">Google Sheets連携の復旧ガイド</a></p>

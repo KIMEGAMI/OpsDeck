@@ -29,6 +29,7 @@ class ImpactReportMetricsService
         }
         ksort($monthlyCostsByCurrency);
         $renewalWindow = app(ContractRenewalWindow::class);
+        $workTimeSummary = app(WorkTimeMeasurementSummary::class)->forOrganization($organization);
 
         $metrics = [
             'employees' => Employee::query()->where('organization_id', $organization->id)->count(),
@@ -39,6 +40,9 @@ class ImpactReportMetricsService
             'renewals_30_days' => $contracts->filter(fn (Contract $contract): bool => $renewalWindow->dateWithin($contract, $today, $today->addDays(ContractRenewalWindow::ALERT_WINDOW_DAYS)) !== null)->count(),
             'monthly_costs_by_currency' => $monthlyCostsByCurrency,
             'monthly_jpy' => $monthlyCostsByCurrency['JPY'] ?? 0.0,
+            'work_time_monthly_minutes' => $workTimeSummary['monthly_minutes'],
+            'work_time_monthly_hours' => $workTimeSummary['monthly_hours'],
+            'work_time_labor_equivalent_by_currency' => $workTimeSummary['monthly_labor_equivalent_by_currency'],
             'import_errors' => (int) ImportBatch::query()->where('organization_id', $organization->id)->whereNull('errors_reviewed_at')->where('status', '!=', 'failed')->sum('error_rows'),
             'import_failed_batches' => (int) ImportBatch::query()->where('organization_id', $organization->id)->whereNull('errors_reviewed_at')->where('status', 'failed')->count(),
             'questionnaire_pending' => QuestionnaireAnswer::query()->whereNull('approved_at')->whereHas('question.questionnaire', fn ($query) => $query->where('organization_id', $organization->id))->count(),

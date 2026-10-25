@@ -2,33 +2,54 @@
 
 namespace App\Console\Commands;
 
+use App\Services\BackupEncryptionService;
 use App\Services\BackupHealthService;
+use App\Services\BackupRestoreCleanupService;
 use App\Services\BackupRestoreTargetConfiguration;
+use App\Services\BackupStorageIsolation;
+use App\Services\DatabaseClientVersionDetector;
 use App\Services\DatabaseDumpBinaryLocator;
+use App\Services\DatabaseDumpProcessFactory;
+use App\Services\DatabaseSchemaFingerprint;
+use App\Services\DatabaseTlsConfiguration;
+use App\Services\ResolvedDatabaseConfiguration;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Database\Schema\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-use Pdo\Mysql;
-use Symfony\Component\Process\Process;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use RuntimeException;
 use Throwable;
 
 #[Signature('opsdeck:backup:restore-test {path? : Backup directory to restore into the dedicated empty test database}')]
 #[Description('Restore a MySQL or MariaDB backup into a dedicated empty database, verify it, and remove restored tables')]
 class OpsDeckBackupRestoreTest extends Command
 {
+    private const PRIVATE_DIRECTORY_MODE = 0700;
+
     /** @var list<string> */
     private const REQUIRED_TABLES = ['migrations', 'users'];
 
-    public function handle(DatabaseDumpBinaryLocator $binaryLocator, BackupHealthService $backupHealthService, BackupRestoreTargetConfiguration $restoreTargetConfiguration): int
+    private ?string $stagedRemoteBackupRoot = null;
+
+    public function handle(DatabaseDumpBinaryLocator $binaryLocator, DatabaseDumpProcessFactory $processFactory, DatabaseClientVersionDetector $clientVersionDetector, DatabaseSchemaFingerprint $schemaFingerprint, BackupHealthService $backupHealthService, BackupRestoreTargetConfiguration $restoreTargetConfiguration, DatabaseTlsConfiguration $databaseTls, ResolvedDatabaseConfiguration $resolvedDatabaseConfiguration, BackupRestoreCleanupService $restoreCleanup, BackupEncryptionService $encryption, BackupStorageIsolation $backupStorageIsolation): int
     {
         try {
-            $exitCode = $this->runRestoreTest($binaryLocator, $backupHealthService, $restoreTargetConfiguration);
+            $exitCode = $this->runRestoreTest($binaryLocator, $processFactory, $clientVersionDetector, $schemaFingerprint, $backupHealthService, $restoreTargetConfiguration, $databaseTls, $resolvedDatabaseConfiguration, $restoreCleanup, $encryption, $backupStorageIsolation);
         } catch (Throwable) {
             $this->error('Backup restore verification failed unexpectedly.');
             $exitCode = self::FAILURE;
+        } finally {
+            if (is_string($this->stagedRemoteBackupRoot)) {
+                if (! File::deleteDirectory($this->stagedRemoteBackupRoot)) {
+                    $this->error('Temporary remote backup data could not be removed.');
+                    $exitCode = self::FAILURE;
+                }
+                $this->stagedRemoteBackupRoot = null;
+            }
         }
 
         try {
@@ -45,20 +66,38 @@ class OpsDeckBackupRestoreTest extends Command
         return $exitCode;
     }
 
-    private function runRestoreTest(DatabaseDumpBinaryLocator $binaryLocator, BackupHealthService $backupHealthService, BackupRestoreTargetConfiguration $restoreTargetConfiguration): int
+    private function runRestoreTest(DatabaseDumpBinaryLocator $binaryLocator, DatabaseDumpProcessFactory $processFactory, DatabaseClientVersionDetector $clientVersionDetector, DatabaseSchemaFingerprint $schemaFingerprint, BackupHealthService $backupHealthService, BackupRestoreTargetConfiguration $restoreTargetConfiguration, DatabaseTlsConfiguration $databaseTls, ResolvedDatabaseConfiguration $resolvedDatabaseConfiguration, BackupRestoreCleanupService $restoreCleanup, BackupEncryptionService $encryption, BackupStorageIsolation $backupStorageIsolation): int
     {
         $backupPath = $this->argument('path');
-        if (! is_string($backupPath) || trim($backupPath) === '') {
-            $backupPath = $backupHealthService->latestBackupPath();
+        $useRemoteBackup = false;
+        if (config('opsdeck.backup.remote_enabled') === true
+            && ! $backupStorageIsolation->allowsRemoteStorageInCurrentTest()) {
+            $this->error('Backups are configured for local-only storage. Set OPSDECK_BACKUP_REMOTE_ENABLED=false.');
+
+            return self::FAILURE;
         }
-        if (! is_string($backupPath) || $backupPath === '') {
-            $this->error('No backup is available for the restore test.');
+
+        if (! is_string($backupPath) || trim($backupPath) === '') {
+            if (config('opsdeck.backup.remote_enabled') === true) {
+                $useRemoteBackup = true;
+            } else {
+                $backupPath = $backupHealthService->latestBackupPath();
+            }
+        }
+        if (! $useRemoteBackup && (! is_string($backupPath) || $backupPath === '')) {
+            $this->error('No complete backup is available for the restore test.');
 
             return self::FAILURE;
         }
 
         $restoreConnectionName = (string) config('opsdeck.backup.restore_connection');
-        $restoreConfiguration = config('database.connections.'.$restoreConnectionName);
+        try {
+            $restoreConfiguration = $resolvedDatabaseConfiguration->for($restoreConnectionName);
+        } catch (Throwable) {
+            $this->error('復元先DB接続設定を読み取れません。');
+
+            return self::FAILURE;
+        }
         $defaultConnectionName = (string) config('database.default');
 
         if (! is_array($restoreConfiguration)
@@ -84,6 +123,15 @@ class OpsDeckBackupRestoreTest extends Command
             return self::FAILURE;
         }
 
+        if ($useRemoteBackup) {
+            $backupPath = $this->stageLatestRemoteBackup();
+            if (! is_string($backupPath) || $backupPath === '') {
+                $this->error('No complete remote backup is available for the restore test.');
+
+                return self::FAILURE;
+            }
+        }
+
         $backupPath = rtrim($backupPath, DIRECTORY_SEPARATOR);
         if ($this->call('opsdeck:backup:verify', ['path' => $backupPath]) !== self::SUCCESS) {
             return self::FAILURE;
@@ -106,6 +154,14 @@ class OpsDeckBackupRestoreTest extends Command
             return self::FAILURE;
         }
 
+        $isEncrypted = array_key_exists('encryption', $manifest);
+        $expectedDatabaseFile = $isEncrypted ? 'database.sql.enc' : 'database.sql';
+        if ($manifest['database']['file'] !== $expectedDatabaseFile || ! $encryption->hasValidManifestHmac($manifest)) {
+            $this->error('The backup manifest is not authenticated for a MySQL restore test. Create a new verified backup and retry.');
+
+            return self::FAILURE;
+        }
+
         $driver = (string) ($restoreConfiguration['driver'] ?? '');
         if (! in_array($driver, ['mysql', 'mariadb'], true) || ($manifest['database']['driver'] ?? null) !== $driver) {
             $this->error('The restore-test database must use the same MySQL-compatible driver as the backup.');
@@ -124,7 +180,7 @@ class OpsDeckBackupRestoreTest extends Command
             $connection = DB::connection($restoreConnectionName);
             $connection->getPdo();
             $schema = $connection->getSchemaBuilder();
-            if ($schema->getTableListing() !== [] || $schema->getViews() !== []) {
+            if (! $restoreTargetConfiguration->targetIsEmpty($connection)) {
                 $this->error('The dedicated restore-test database must be empty.');
 
                 return self::FAILURE;
@@ -135,24 +191,131 @@ class OpsDeckBackupRestoreTest extends Command
             return self::FAILURE;
         }
 
-        return $this->restoreAndClean($mysqlClient, $restoreConfiguration, $restoreConnectionName, $backupPath, $manifest, $schema);
+        $applicationSchema = DB::connection($defaultConnectionName)->getSchemaBuilder();
+
+        return $this->restoreAndClean($mysqlClient, $restoreConfiguration, $restoreConnectionName, $backupPath, $manifest, $schema, $applicationSchema, $processFactory, $clientVersionDetector, $schemaFingerprint, $databaseTls, $restoreCleanup, $encryption, $isEncrypted);
+    }
+
+    private function stageLatestRemoteBackup(): ?string
+    {
+        $diskName = trim((string) config('opsdeck.backup.remote_disk'));
+        $prefix = trim((string) config('opsdeck.backup.remote_prefix'), '/');
+        $diskConfiguration = config('filesystems.disks.'.$diskName);
+        $retentionDays = config('opsdeck.backup.remote_retention_days');
+        if (config('opsdeck.backup.remote_enabled') !== true
+            || $diskName === ''
+            || ! is_array($diskConfiguration)
+            || ($diskConfiguration['driver'] ?? null) !== 's3'
+            || ! is_string($diskConfiguration['key'] ?? null)
+            || trim($diskConfiguration['key']) === ''
+            || ! is_string($diskConfiguration['secret'] ?? null)
+            || trim($diskConfiguration['secret']) === ''
+            || ! is_string($diskConfiguration['bucket'] ?? null)
+            || trim($diskConfiguration['bucket']) === ''
+            || ! is_string($diskConfiguration['endpoint'] ?? null)
+            || filter_var($diskConfiguration['endpoint'], FILTER_VALIDATE_URL) === false
+            || parse_url($diskConfiguration['endpoint'], PHP_URL_SCHEME) !== 'https'
+            || ! app(BackupStorageIsolation::class)->isDedicated($diskConfiguration)
+            || ! is_int($retentionDays)
+            || $retentionDays < 1
+            || preg_match('/\A[a-zA-Z0-9][a-zA-Z0-9\/_-]*\z/', $prefix) !== 1
+            || str_contains($prefix, '//')
+            || preg_match('/(?:\A|\/)\.{1,2}(?:\/|\z)/', $prefix) === 1) {
+            throw new RuntimeException('外部バックアップ設定を確認できません。');
+        }
+
+        $remoteDisk = Storage::disk($diskName);
+        $remoteDirectories = array_values(array_filter(
+            $remoteDisk->directories($prefix),
+            static fn (string $directory): bool => str_starts_with($directory, $prefix.'/')
+                && preg_match('/\A\d{8}_\d{6}_[a-f0-9]{8}\z/', substr($directory, strlen($prefix) + 1)) === 1,
+        ));
+        rsort($remoteDirectories, SORT_STRING);
+        $remoteDirectory = null;
+        foreach ($remoteDirectories as $directory) {
+            if ($remoteDisk->exists($directory.'/manifest.json')) {
+                $remoteDirectory = $directory;
+
+                break;
+            }
+        }
+        if (! is_string($remoteDirectory)) {
+            return null;
+        }
+
+        $stagingRoot = storage_path('framework/restore-test-staging/'.Str::uuid());
+        File::ensureDirectoryExists($stagingRoot);
+        if (DIRECTORY_SEPARATOR !== '\\' && ! chmod($stagingRoot, self::PRIVATE_DIRECTORY_MODE)) {
+            File::deleteDirectory($stagingRoot);
+
+            throw new RuntimeException('復元テスト用一時領域のアクセス権を制限できません。');
+        }
+        $this->stagedRemoteBackupRoot = $stagingRoot;
+
+        $remoteFiles = $remoteDisk->allFiles($remoteDirectory);
+        if (! in_array($remoteDirectory.'/manifest.json', $remoteFiles, true)) {
+            throw new RuntimeException('外部バックアップのマニフェストが見つかりません。');
+        }
+
+        foreach ($remoteFiles as $remotePath) {
+            if (! str_starts_with($remotePath, $remoteDirectory.'/')) {
+                throw new RuntimeException('外部バックアップのキーが不正です。');
+            }
+            $relativePath = substr($remotePath, strlen($remoteDirectory) + 1);
+            if (! $this->isAllowedBackupRelativePath($relativePath)) {
+                throw new RuntimeException('外部バックアップのファイル名が不正です。');
+            }
+
+            $destinationPath = $stagingRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+            File::ensureDirectoryExists(dirname($destinationPath));
+            $sourceStream = $remoteDisk->readStream($remotePath);
+            if (! is_resource($sourceStream)) {
+                throw new RuntimeException('外部バックアップを読み取れません。');
+            }
+            $destinationStream = fopen($destinationPath, 'xb');
+            if (! is_resource($destinationStream)) {
+                fclose($sourceStream);
+
+                throw new RuntimeException('復元テスト用一時ファイルを作成できません。');
+            }
+
+            try {
+                if (stream_copy_to_stream($sourceStream, $destinationStream) === false) {
+                    throw new RuntimeException('外部バックアップを一時領域へコピーできません。');
+                }
+            } finally {
+                fclose($sourceStream);
+                fclose($destinationStream);
+            }
+        }
+
+        return $stagingRoot;
+    }
+
+    private function isAllowedBackupRelativePath(string $path): bool
+    {
+        return in_array($path, [
+            'database.sqlite.enc',
+            'database.sqlite',
+            'database.sql.enc',
+            'database.sql',
+            BackupEncryptionService::EVIDENCE_INDEX_FILE,
+            'evidence-index.json',
+            'import_sources_index.enc',
+            'import_sources_index.json',
+            'manifest.json',
+        ], true)
+            || preg_match('/\A(?:evidence|imports)\/[0-9]{8}(?:\.enc)?\z/', $path) === 1;
     }
 
     /**
      * @param  array<string, mixed>  $restoreConfiguration
-     * @param  array{database: array{driver: string, file: string}}  $manifest
+     * @param  array{database: array{driver: string, file: string, schema_sha256?: string}}  $manifest
      */
-    private function restoreAndClean(string $mysqlClient, array $restoreConfiguration, string $restoreConnectionName, string $backupPath, array $manifest, Builder $schema): int
+    private function restoreAndClean(string $mysqlClient, array $restoreConfiguration, string $restoreConnectionName, string $backupPath, array $manifest, Builder $schema, Builder $applicationSchema, DatabaseDumpProcessFactory $processFactory, DatabaseClientVersionDetector $clientVersionDetector, DatabaseSchemaFingerprint $schemaFingerprint, DatabaseTlsConfiguration $databaseTls, BackupRestoreCleanupService $restoreCleanup, BackupEncryptionService $encryption, bool $isEncrypted): int
     {
         $databaseName = (string) $restoreConfiguration['database'];
         $databasePath = $backupPath.DIRECTORY_SEPARATOR.$manifest['database']['file'];
-        $input = @fopen($databasePath, 'rb');
-        if (! is_resource($input)) {
-            $this->error('The verified backup dump could not be opened.');
-
-            return self::FAILURE;
-        }
-
         $command = [$mysqlClient, '--user='.(string) $restoreConfiguration['username'], '--database='.$databaseName, '--default-character-set='.(string) ($restoreConfiguration['charset'] ?? 'utf8mb4')];
         $socket = (string) ($restoreConfiguration['unix_socket'] ?? '');
         if ($socket !== '') {
@@ -162,54 +325,95 @@ class OpsDeckBackupRestoreTest extends Command
             $command[] = '--port='.(string) $restoreConfiguration['port'];
         }
 
-        $restoreOptions = is_array($restoreConfiguration['options'] ?? null) ? $restoreConfiguration['options'] : [];
-        $sslCa = $restoreOptions[Mysql::ATTR_SSL_CA] ?? null;
-        if (is_string($sslCa) && $sslCa !== '') {
-            $command[] = '--ssl-mode=VERIFY_IDENTITY';
-            $command[] = '--ssl-ca='.$sslCa;
+        $clientVendor = $clientVersionDetector->detect($mysqlClient);
+        $command = [...$command, ...$databaseTls->clientOptions($restoreConfiguration, $clientVendor)];
+
+        $snapshotPath = $encryption->createVerifiedSnapshot($databasePath, (string) ($manifest['database_sha256'] ?? ''));
+        if (! is_string($snapshotPath)) {
+            $this->error('The verified backup dump could not be snapshotted.');
+
+            return self::FAILURE;
         }
 
-        $process = new Process($command);
-        $process->setEnv(['MYSQL_PWD' => (string) ($restoreConfiguration['password'] ?? '')]);
-        $process->setInput($input);
-        $process->disableOutput();
-        $process->setTimeout(null);
+        $input = null;
+        $process = null;
         $restoreStarted = false;
         $restoreSucceeded = false;
         $cleanupSucceeded = true;
+        $failureCategory = null;
 
         try {
+            $input = $isEncrypted
+                ? $encryption->decryptedChunks($snapshotPath)
+                : $encryption->plaintextChunks($snapshotPath);
+            $process = $processFactory->create($command);
+            $process->setEnv(['MYSQL_PWD' => (string) ($restoreConfiguration['password'] ?? '')]);
+            $process->setInput($input);
+            $process->disableOutput();
             $restoreStarted = true;
             $process->run();
             if ($process->isSuccessful()) {
                 $restoreConnection = DB::connection($restoreConnectionName);
                 $hasRequiredTables = array_all(self::REQUIRED_TABLES, fn (string $table): bool => $schema->hasTable($table));
-                $restoreSucceeded = $hasRequiredTables && $restoreConnection->table('migrations')->count() > 0;
+                $hasMigrationRecords = $hasRequiredTables && $restoreConnection->table('migrations')->count() > 0;
+                $expectedSchemaFingerprint = $manifest['database']['schema_sha256'] ?? null;
+                $schemaFingerprintVersion = $manifest['database']['schema_fingerprint_version'] ?? DatabaseSchemaFingerprint::PREVIOUS_VERSION;
+                $hasMatchingSchema = true;
+                if (is_string($expectedSchemaFingerprint)) {
+                    if ($schemaFingerprintVersion === DatabaseSchemaFingerprint::VERSION) {
+                        $hasMatchingSchema = $schemaFingerprint->matches($schema, $expectedSchemaFingerprint);
+                        if (! $hasMatchingSchema) {
+                            $failureCategory = 'schema_fingerprint_mismatch';
+                        }
+                    } elseif ($schemaFingerprintVersion === DatabaseSchemaFingerprint::PREVIOUS_VERSION) {
+                        $backupMatchesApplicationSchema = $schemaFingerprint->matchesLegacy($applicationSchema, $expectedSchemaFingerprint);
+                        $restoreMatchesApplicationSchema = hash_equals($schemaFingerprint->fingerprint($applicationSchema), $schemaFingerprint->fingerprint($schema));
+                        $hasMatchingSchema = $backupMatchesApplicationSchema && $restoreMatchesApplicationSchema;
+                        if (! $backupMatchesApplicationSchema) {
+                            $failureCategory = 'legacy_backup_schema_differs_from_application';
+                        } elseif (! $restoreMatchesApplicationSchema) {
+                            $failureCategory = 'restored_schema_differs_from_application';
+                        }
+                    } else {
+                        $hasMatchingSchema = false;
+                        $failureCategory = 'unsupported_schema_fingerprint_version';
+                    }
+                }
+                $restoreSucceeded = $hasMigrationRecords && $hasMatchingSchema;
+                if (! $hasRequiredTables) {
+                    $failureCategory = 'required_tables_missing';
+                } elseif (! $hasMigrationRecords) {
+                    $failureCategory = 'migration_records_missing';
+                }
+            } else {
+                $exitCode = $process->getExitCode();
+                $failureCategory = 'database_client_failed_exit_'.($exitCode ?? 'unknown');
             }
         } catch (Throwable) {
             $restoreSucceeded = false;
+            $failureCategory = 'verification_query_failed';
         } finally {
-            fclose($input);
+            if (is_resource($input)) {
+                fclose($input);
+            }
+            $snapshotCleanupSucceeded = @unlink($snapshotPath);
             if ($restoreStarted) {
-                try {
-                    $schema->dropAllViews();
-                    $schema->dropAllTables();
-                } catch (Throwable) {
-                    $cleanupSucceeded = false;
-                }
+                $cleanupSucceeded = $restoreCleanup->clean($schema) && $snapshotCleanupSucceeded;
+            } else {
+                $cleanupSucceeded = $snapshotCleanupSucceeded;
             }
         }
 
         DB::disconnect($restoreConnectionName);
 
         if (! $cleanupSucceeded) {
-            $this->error('The restore test failed and cleanup of the dedicated database could not be confirmed.');
+            $this->error('The restore test failed and cleanup of temporary restore data or the dedicated database could not be confirmed.');
 
             return self::FAILURE;
         }
 
         if (! $restoreSucceeded) {
-            $this->error('The backup could not be restored and verified in the dedicated database.');
+            $this->error('Backup restore verification failed: '.($failureCategory ?? 'unknown').'. Raw database output is hidden to protect imported data.');
 
             return self::FAILURE;
         }

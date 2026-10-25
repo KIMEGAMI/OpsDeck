@@ -45,6 +45,21 @@ class CancellationFeedbackControllerTest extends TestCase
         $this->assertDatabaseMissing('cancellation_feedback', ['organization_id' => $organization->id]);
     }
 
+    public function test_feedback_reason_must_match_a_configured_reason(): void
+    {
+        $suffix = Str::lower(Str::random(8));
+        $user = User::factory()->create(['email' => 'cancel-invalid-'.$suffix.'@example.test']);
+        $organization = Organization::query()->create(['name' => 'Cancel Invalid '.$suffix, 'slug' => 'cancel-invalid-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active']);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+
+        $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.cancellation-feedback.store'), ['reason' => 'unrecognized_reason'])
+            ->assertSessionHasErrors('reason');
+
+        $this->assertDatabaseMissing('cancellation_feedback', ['organization_id' => $organization->id]);
+    }
+
     public function test_cancellation_feedback_is_shown_only_for_current_or_former_subscriptions(): void
     {
         $suffix = Str::lower(Str::random(8));
@@ -62,7 +77,10 @@ class CancellationFeedbackControllerTest extends TestCase
         $this->actingAs($user)->withSession($session)
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('解約理由（任意）');
+            ->assertSee('解約理由（任意）')
+            ->assertSee('value="price"', false)
+            ->assertSee('>価格</option>', false)
+            ->assertSee('>必要な機能がない</option>', false);
 
         $organization->update(['plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => 'cancelled']);
         $this->actingAs($user)->withSession($session)

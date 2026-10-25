@@ -46,6 +46,7 @@ use App\Http\Controllers\SecurityControlController;
 use App\Http\Controllers\StripeWebhookController;
 use App\Http\Controllers\SupportRequestController;
 use App\Http\Controllers\WeeklySummaryController;
+use App\Http\Controllers\WorkTimeMeasurementController;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Support\Facades\Route;
 
@@ -79,7 +80,7 @@ Route::middleware('guest')->group(function (): void {
 });
 
 Route::post('/billing/stripe/webhook', StripeWebhookController::class)->withoutMiddleware([ValidateCsrfToken::class])->name('billing.stripe.webhook');
-Route::get('/r/{code}', [ReferralController::class, 'redirect'])->middleware('throttle:referrals')->name('referrals.redirect');
+Route::get('/r/{code}', [ReferralController::class, 'redirect'])->middleware(['release.feature:referrals', 'throttle:referrals'])->name('referrals.redirect');
 
 Route::middleware('auth')->group(function (): void {
     Route::get('/email/verify', [EmailVerificationController::class, 'notice'])->name('verification.notice');
@@ -90,6 +91,7 @@ Route::middleware('auth')->group(function (): void {
 
 Route::middleware(['auth', 'verified', 'organization.member'])->group(function (): void {
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
+    Route::view('/feature-guide', 'feature-guide.index')->name('feature-guide.index');
     Route::get('/saved-views', [SavedViewController::class, 'index'])->name('saved-views.index');
     Route::get('/saved-views/create', [SavedViewController::class, 'create'])->name('saved-views.create');
     Route::post('/saved-views', [SavedViewController::class, 'store'])->name('saved-views.store');
@@ -98,11 +100,11 @@ Route::middleware(['auth', 'verified', 'organization.member'])->group(function (
     Route::get('/weekly-summary', [WeeklySummaryController::class, 'show'])->name('weekly-summary.show');
     Route::put('/weekly-summary/preference', [WeeklySummaryController::class, 'updatePreference'])->name('weekly-summary.preference');
     Route::get('/help/recovery/{type}', [RecoveryGuideController::class, 'show'])->name('help.recovery');
-    Route::middleware('plan.feature:impact_report')->group(function (): void {
+    Route::middleware(['release.feature:impact_report', 'plan.feature:impact_report'])->group(function (): void {
         Route::get('/impact-report', [ImpactReportController::class, 'show'])->name('impact-report.show');
         Route::get('/impact-report.csv', [ImpactReportController::class, 'download'])->name('impact-report.download');
     });
-    Route::get('/referrals', [ReferralController::class, 'show'])->name('referrals.show');
+    Route::get('/referrals', [ReferralController::class, 'show'])->middleware('release.feature:referrals')->name('referrals.show');
     Route::post('/announcements/{announcement}/read', [AnnouncementReadController::class, 'store'])->name('announcements.read');
     Route::resource('assets', AssetController::class)->except('destroy');
     Route::post('/asset-assignments', [AssetAssignmentController::class, 'store'])->name('asset-assignments.store');
@@ -112,30 +114,43 @@ Route::middleware(['auth', 'verified', 'organization.member'])->group(function (
     Route::get('/costs', CostDashboardController::class)->name('costs.dashboard');
     Route::post('/costs/realized-savings', [RealizedSavingController::class, 'store'])->name('realized-savings.store');
     Route::post('/costs/realized-savings/{realizedSaving}/void', [RealizedSavingController::class, 'void'])->name('realized-savings.void');
+    Route::middleware(['release.feature:work_time_tracking', 'plan.feature:work_time_tracking'])->group(function (): void {
+        Route::post('/costs/work-time-measurements', [WorkTimeMeasurementController::class, 'store'])->name('work-time-measurements.store');
+        Route::post('/costs/work-time-measurements/{workTimeMeasurement}/void', [WorkTimeMeasurementController::class, 'void'])->name('work-time-measurements.void');
+    });
     Route::middleware('plan.feature:renewal_alerts')->group(function (): void {
         Route::get('/reminders/renewals', RenewalReminderController::class)->name('reminders.renewals');
         Route::post('/reminders/renewals/onboarding-check', [OnboardingController::class, 'markRenewalsChecked'])->name('onboarding.steps.renewal-check');
     });
     Route::middleware('plan.feature:security_controls')->group(function (): void {
+        Route::post('security-controls/{securityControl}/review', [SecurityControlController::class, 'markReviewed'])->name('security-controls.review');
         Route::resource('security-controls', SecurityControlController::class)->except('destroy');
     });
     Route::middleware('plan.feature:evidence')->group(function (): void {
-        Route::resource('evidence', EvidenceController::class)->except('destroy');
+        Route::resource('evidence', EvidenceController::class)->except(['destroy', 'store']);
+        Route::post('/evidence', [EvidenceController::class, 'store'])->middleware('throttle:file-uploads')->name('evidence.store');
         Route::get('/evidence/{evidence}/download', [EvidenceController::class, 'download'])->name('evidence.download');
     });
     Route::get('/imports', [ImportBatchController::class, 'index'])->name('imports.index');
     Route::get('/imports/create', [ImportBatchController::class, 'create'])->name('imports.create');
     Route::get('/imports/samples/{targetType}/preview', [ImportBatchController::class, 'samplePreview'])->name('imports.samples.preview');
     Route::get('/imports/samples/{targetType}', [ImportBatchController::class, 'sample'])->name('imports.samples.download');
-    Route::post('/imports', [ImportBatchController::class, 'store'])->name('imports.store');
-    Route::get('/imports/google-sheets', [ImportBatchController::class, 'googleSheets'])->name('imports.google-sheets');
-    Route::post('/imports/google-sheets/spreadsheet', [ImportBatchController::class, 'selectGoogleSpreadsheet'])->name('imports.google-sheets.spreadsheet');
+    Route::post('/imports', [ImportBatchController::class, 'store'])->middleware('throttle:file-uploads')->name('imports.store');
+    Route::middleware('release.feature:google_sheets')->group(function (): void {
+        Route::get('/imports/google-sheets', [ImportBatchController::class, 'googleSheets'])->name('imports.google-sheets');
+        Route::post('/imports/google-sheets/spreadsheet', [ImportBatchController::class, 'selectGoogleSpreadsheet'])->name('imports.google-sheets.spreadsheet');
+        Route::post('/imports/{importBatch}/google-sheet', [ImportBatchController::class, 'selectGoogleSheet'])->name('imports.google-sheet.store');
+        Route::post('/imports/{importBatch}/google-sheet/sync', [ImportBatchController::class, 'syncGoogleSheet'])->name('imports.google-sheet.sync');
+        Route::get('/integrations/google-sheets', [GoogleSheetConnectionController::class, 'show'])->name('google-sheets.connection');
+        Route::get('/integrations/google-sheets/connect', [GoogleSheetConnectionController::class, 'connect'])->name('google-sheets.connect');
+        Route::get('/integrations/google-sheets/callback', [GoogleSheetConnectionController::class, 'callback'])->name('google-sheets.callback');
+    });
     Route::get('/imports/{importBatch}', [ImportBatchController::class, 'show'])->name('imports.show');
+    Route::get('/imports/{importBatch}/errors.csv', [ImportBatchController::class, 'downloadErrors'])->name('imports.errors.download');
     Route::post('/imports/{importBatch}/sheet', [ImportBatchController::class, 'selectSheet'])->name('imports.sheet.store');
     Route::post('/imports/{importBatch}/sheets', [ImportBatchController::class, 'storeAdditionalSheet'])->name('imports.sheet.additional');
-    Route::post('/imports/{importBatch}/google-sheet', [ImportBatchController::class, 'selectGoogleSheet'])->name('imports.google-sheet.store');
-    Route::post('/imports/{importBatch}/google-sheet/sync', [ImportBatchController::class, 'syncGoogleSheet'])->name('imports.google-sheet.sync');
     Route::get('/imports/{importBatch}/mapping', [ImportBatchController::class, 'mapping'])->name('imports.mapping');
+    Route::post('/imports/{importBatch}/mapping/ai-suggestions', [ImportBatchController::class, 'mapping'])->name('imports.mapping.ai');
     Route::post('/imports/{importBatch}/mapping', [ImportBatchController::class, 'saveMapping'])->name('imports.mapping.store');
     Route::post('/imports/{importBatch}/candidates/{candidate}/review', [ImportBatchController::class, 'reviewCandidate'])->name('imports.candidates.review');
     Route::post('/imports/{importBatch}/rows/selection', [ImportBatchController::class, 'updateRowSelection'])->name('imports.rows.selection');
@@ -143,10 +158,9 @@ Route::middleware(['auth', 'verified', 'organization.member'])->group(function (
     Route::post('/imports/{importBatch}/rollback', [ImportBatchController::class, 'rollback'])->name('imports.rollback');
     Route::post('/imports/{importBatch}/retry', [ImportBatchController::class, 'retry'])->name('imports.retry');
     Route::post('/imports/{importBatch}/review-errors', [ImportBatchController::class, 'reviewErrors'])->name('imports.review-errors');
-    Route::get('/integrations/google-sheets', [GoogleSheetConnectionController::class, 'show'])->name('google-sheets.connection');
-    Route::get('/integrations/google-sheets/connect', [GoogleSheetConnectionController::class, 'connect'])->name('google-sheets.connect');
-    Route::get('/integrations/google-sheets/callback', [GoogleSheetConnectionController::class, 'callback'])->name('google-sheets.callback');
-    Route::post('/integrations/google-sheets/disconnect', [GoogleSheetConnectionController::class, 'disconnect'])->name('google-sheets.disconnect');
+    Route::post('/integrations/google-sheets/disconnect', [GoogleSheetConnectionController::class, 'disconnect'])
+        ->middleware('release.feature:google_sheets')
+        ->name('google-sheets.disconnect');
     Route::middleware('plan.feature:questionnaires')->group(function (): void {
         Route::resource('questionnaires', QuestionnaireController::class)->except('destroy');
         Route::post('/questionnaire-questions', [QuestionnaireQuestionController::class, 'store'])->name('questionnaire-questions.store');
@@ -154,7 +168,9 @@ Route::middleware(['auth', 'verified', 'organization.member'])->group(function (
         Route::post('/questionnaire-answers', [QuestionnaireAnswerController::class, 'store'])->name('questionnaire-answers.store');
         Route::put('/questionnaire-answers/{questionnaireAnswer}', [QuestionnaireAnswerController::class, 'update'])->name('questionnaire-answers.update');
         Route::post('/questionnaire-answers/{questionnaireAnswer}/approve', [QuestionnaireAnswerController::class, 'approve'])->name('questionnaire-answers.approve');
-        Route::post('/questionnaires/{questionnaire}/ai-draft', [QuestionnaireAnswerController::class, 'draft'])->name('questionnaires.ai-draft');
+        Route::post('/questionnaires/{questionnaire}/ai-draft', [QuestionnaireAnswerController::class, 'draft'])
+            ->middleware('release.feature:questionnaire_ai_draft')
+            ->name('questionnaires.ai-draft');
     });
     Route::get('/audit-logs', AuditLogController::class)->name('audit-logs.index');
     Route::middleware('plan.feature:exports')->group(function (): void {
@@ -163,6 +179,7 @@ Route::middleware(['auth', 'verified', 'organization.member'])->group(function (
     });
     Route::get('/billing', [BillingController::class, 'index'])->name('billing.index');
     Route::post('/billing/checkout', [BillingController::class, 'checkout'])->middleware('throttle:billing-checkout')->name('billing.checkout');
+    Route::post('/billing/storage-addon', [BillingController::class, 'updateStorageAddon'])->middleware(['throttle:billing-checkout', 'release.feature:storage_addon'])->name('billing.storage-addon.update');
     Route::post('/billing/portal', [BillingController::class, 'portal'])->middleware('throttle:billing-portal')->name('billing.portal');
     Route::post('/billing/cancellation-feedback', [CancellationFeedbackController::class, 'store'])->name('billing.cancellation-feedback.store');
     Route::get('/settings/organization', [OrganizationSettingsController::class, 'edit'])->name('settings.organization');

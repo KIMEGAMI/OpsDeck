@@ -1,5 +1,5 @@
 <x-layouts.app>
-    <section class="card" aria-labelledby="verify-email-title">
+    <section class="card auth-card" aria-labelledby="verify-email-title">
         <h1 id="verify-email-title">メールアドレスを確認してください</h1>
         <p>登録を完了するには、登録したメールアドレスに届いた確認リンクを開いてください。</p>
         @if (session('status'))

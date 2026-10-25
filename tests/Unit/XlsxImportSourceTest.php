@@ -3,7 +3,6 @@
 namespace Tests\Unit;
 
 use App\Services\Import\XlsxImportSource;
-use Illuminate\Support\Facades\File;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 use ZipArchive;
@@ -54,8 +53,7 @@ class XlsxImportSourceTest extends TestCase
     public function test_sheet_discovery_does_not_expand_external_xml_entities(): void
     {
         $externalEntityContents = 'OPSDECK_EXTERNAL_ENTITY_SENTINEL';
-        $temporaryDirectory = storage_path('framework/testing-xlsx');
-        File::ensureDirectoryExists($temporaryDirectory);
+        $temporaryDirectory = sys_get_temp_dir();
         $externalEntityPath = tempnam($temporaryDirectory, 'opsdeck-xxe-');
         $this->assertIsString($externalEntityPath);
         $this->assertSame(strlen($externalEntityContents), file_put_contents($externalEntityPath, $externalEntityContents));
@@ -451,8 +449,7 @@ class XlsxImportSourceTest extends TestCase
     /** @param array<string, string> $files */
     private function createXlsxFile(array $files): string
     {
-        $temporaryDirectory = storage_path('framework/testing-xlsx');
-        File::ensureDirectoryExists($temporaryDirectory);
+        $temporaryDirectory = sys_get_temp_dir();
         $path = tempnam($temporaryDirectory, 'opsdeck-xlsx-');
         $archive = new ZipArchive;
         $this->assertSame(true, $archive->open($path) === true);

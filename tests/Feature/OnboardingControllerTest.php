@@ -33,14 +33,24 @@ class OnboardingControllerTest extends TestCase
             ->get(route('onboarding.index'))
             ->assertOk()
             ->assertSee('導入チェックリスト')
-            ->assertSee('社員表の取込プレビューを確認')
+            ->assertSee('画像付きの機能ガイドで操作手順を見る')
+            ->assertSee(route('feature-guide.index'), false)
+            ->assertSee('社員名簿を確認して取り込む')
+            ->assertSee('端末の管理表を確認して取り込む')
             ->assertSee(route('imports.create', ['target_type' => 'employees']), false)
             ->assertSee(route('imports.create', ['target_type' => 'assets']), false)
+            ->assertSee('契約またはクラウドサービスを登録する')
+            ->assertSee(route('contracts.create'), false)
+            ->assertSee('クラウドサービスを登録')
+            ->assertSee(route('saas-services.create'), false)
             ->assertSee('0/5 完了')
-            ->assertSee('業務データへのImport実行')
-            ->assertDontSee('Security Controlを確認')
-            ->assertDontSee('更新期限を1件確認')
-            ->assertSee('組織設定を確認')
+            ->assertSee('これから')
+            ->assertSee('FreeでもCSV/TXTから実データを登録できます。')
+            ->assertSee('更新のお知らせ、セキュリティ管理項目')
+            ->assertDontSee('セキュリティの確認項目を1つ確認する')
+            ->assertDontSee('契約の更新期限を1件確認する')
+            ->assertSee('会社の基本情報を確認する')
+            ->assertSee('一緒に使う人を招待する')
             ->assertDontSee('完了として記録');
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
@@ -82,7 +92,7 @@ class OnboardingControllerTest extends TestCase
             ->get(route('onboarding.index'))
             ->assertOk()
             ->assertSee('0/5 完了')
-            ->assertSee('組織設定を確認');
+            ->assertSee('会社の基本情報を確認する');
 
         $this->assertDatabaseMissing('onboarding_steps', ['organization_id' => $organization->id, 'step_key' => 'organization_settings']);
     }
@@ -119,11 +129,14 @@ class OnboardingControllerTest extends TestCase
         [$user, $organization] = $this->member(MembershipRole::Owner);
         OnboardingStep::query()->create(['organization_id' => $organization->id, 'step_key' => 'employees_import', 'completed_at' => now()]);
 
-        $this->actingAs($user)
+        $response = $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
-            ->assertOk()
-            ->assertSee('0/5 完了');
+            ->assertOk();
+
+        $employeeStep = collect($response->viewData('steps'))->firstWhere('key', 'employees_import');
+        $this->assertFalse($employeeStep['completed']);
+        $response->assertSee('0/5 完了');
     }
 
     public function test_employee_data_without_a_completed_employee_import_does_not_complete_the_step(): void
@@ -136,7 +149,7 @@ class OnboardingControllerTest extends TestCase
             ->get(route('onboarding.index'))
             ->assertOk()
             ->assertSee('0/5 完了')
-            ->assertSee('社員表の取込プレビューを確認');
+            ->assertSee('社員名簿を確認して取り込む');
     }
 
     public function test_completed_import_for_a_different_target_does_not_complete_employee_import_step(): void
@@ -149,11 +162,14 @@ class OnboardingControllerTest extends TestCase
         $importBatch->update(['mapping_id' => (string) $mapping->id]);
         $importBatch->rowResults()->create(['source_row_number' => 1, 'target_type' => 'assets', 'target_id' => $asset->id, 'action' => 'inserted']);
 
-        $this->actingAs($user)
+        $response = $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
-            ->assertOk()
-            ->assertSee('1/5 完了');
+            ->assertOk();
+
+        $employeeStep = collect($response->viewData('steps'))->firstWhere('key', 'employees_import');
+        $this->assertFalse($employeeStep['completed']);
+        $response->assertSee('1/5 完了');
     }
 
     public function test_only_the_mapping_used_by_the_completed_batch_counts_toward_import_step(): void
@@ -171,7 +187,7 @@ class OnboardingControllerTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
-            ->assertSee('1/5 完了');
+            ->assertSee('0/5 完了');
     }
 
     public function test_completed_asset_import_with_asset_data_completes_only_the_asset_step(): void
@@ -199,10 +215,13 @@ class OnboardingControllerTest extends TestCase
         $mapping = $importBatch->mappings()->create(['target_type' => 'employees', 'column_map' => [], 'status' => 'ready']);
         $importBatch->update(['mapping_id' => (string) $mapping->id]);
         $importBatch->rowResults()->create(['source_row_number' => 1, 'target_type' => 'employees', 'target_id' => $employee->id, 'action' => 'inserted']);
-        $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('onboarding.index'))->assertOk()->assertSee('✅');
+        $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('onboarding.index'))->assertOk()->assertSee('✅')->assertSee('onboarding-step-status--complete', false);
 
-        SecurityControl::query()->create(['organization_id' => $organization->id, 'control_code' => 'AC-1', 'title' => 'アクセス制御', 'category' => 'access', 'description' => '導入確認', 'status' => 'unknown']);
-        $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('onboarding.index'))->assertOk()->assertSee('2/7 完了')->assertSee('Security Controlを確認');
+        $control = SecurityControl::query()->create(['organization_id' => $organization->id, 'control_code' => 'AC-1', 'title' => 'アクセス制御', 'category' => 'access', 'description' => '導入確認', 'status' => 'unknown']);
+        $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('onboarding.index'))->assertOk()->assertSee('1/7 完了')->assertSee('セキュリティの確認項目を1つ確認する');
+
+        $control->update(['last_reviewed_at' => now()->toDateString()]);
+        $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])->get(route('onboarding.index'))->assertOk()->assertSee('2/7 完了');
 
         [$viewer, $viewerOrganization] = $this->member(MembershipRole::Viewer);
         $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])->get(route('onboarding.index'))->assertForbidden();
@@ -253,25 +272,37 @@ class OnboardingControllerTest extends TestCase
         $this->assertFalse($memberStep['completed']);
     }
 
-    public function test_free_plan_can_complete_import_onboarding_steps_with_a_saved_csv_preview(): void
+    public function test_free_plan_completes_import_onboarding_only_after_csv_data_is_registered(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
+        $employee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'employee_number' => 'FREE-'.Str::upper(Str::random(6)),
+            'name' => 'Free import employee',
+            'email' => 'free-import-'.Str::uuid().'@example.test',
+            'employment_status' => 'active',
+        ]);
         $batch = ImportBatch::query()->create([
             'organization_id' => $organization->id,
             'source_type' => 'csv',
             'source_name' => 'employees.csv',
-            'status' => 'ready',
+            'status' => 'completed',
         ]);
         $mapping = $batch->mappings()->create(['target_type' => 'employees', 'column_map' => [], 'status' => 'ready']);
         $batch->update(['mapping_id' => (string) $mapping->id]);
+        $batch->rowResults()->create([
+            'source_row_number' => 2,
+            'target_type' => 'employees',
+            'target_id' => $employee->id,
+            'action' => 'inserted',
+        ]);
 
         $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
             ->assertSee('1/5 完了')
-            ->assertSee('社員表の取込プレビューを確認')
-            ->assertDontSee('社員表をImport');
+            ->assertSee('社員名簿を確認して取り込む');
 
         $this->assertDatabaseMissing('product_events', [
             'organization_id' => $organization->id,
@@ -279,7 +310,7 @@ class OnboardingControllerTest extends TestCase
         ]);
     }
 
-    public function test_free_plan_recognizes_the_actual_preview_status_for_import_onboarding(): void
+    public function test_free_plan_preview_does_not_complete_import_onboarding_before_registration(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
         $batch = ImportBatch::query()->create([
@@ -297,7 +328,7 @@ class OnboardingControllerTest extends TestCase
             ->assertOk();
 
         $employeeStep = collect($response->viewData('steps'))->firstWhere('key', 'employees_import');
-        $this->assertTrue($employeeStep['completed']);
+        $this->assertFalse($employeeStep['completed']);
         $this->assertDatabaseMissing('product_events', [
             'organization_id' => $organization->id,
             'event_key' => 'first_import_completed',
@@ -314,14 +345,34 @@ class OnboardingControllerTest extends TestCase
             ->assertRedirect(route('settings.organization'));
 
         foreach (['employees', 'assets'] as $targetType) {
+            $target = $targetType === 'employees'
+                ? Employee::query()->create([
+                    'organization_id' => $organization->id,
+                    'employee_number' => 'FREE-'.Str::upper(Str::random(6)),
+                    'name' => 'Onboarding employee',
+                    'email' => 'onboarding-'.Str::uuid().'@example.test',
+                    'employment_status' => 'active',
+                ])
+                : Asset::query()->create([
+                    'organization_id' => $organization->id,
+                    'asset_number' => 'FREE-'.Str::upper(Str::random(6)),
+                    'asset_type' => 'laptop',
+                    'status' => 'in_stock',
+                ]);
             $batch = ImportBatch::query()->create([
                 'organization_id' => $organization->id,
                 'source_type' => 'csv',
                 'source_name' => $targetType.'.csv',
-                'status' => 'ready',
+                'status' => 'completed',
             ]);
             $mapping = $batch->mappings()->create(['target_type' => $targetType, 'column_map' => [], 'status' => 'ready']);
             $batch->update(['mapping_id' => (string) $mapping->id]);
+            $batch->rowResults()->create([
+                'source_row_number' => 2,
+                'target_type' => $targetType,
+                'target_id' => $target->id,
+                'action' => 'inserted',
+            ]);
         }
 
         SaasService::query()->create([
@@ -341,7 +392,7 @@ class OnboardingControllerTest extends TestCase
         $this->actingAs($user)->withSession($session)
             ->get(route('onboarding.index'))
             ->assertSee('5/5 完了')
-            ->assertSee('Freeプランの初期設定が完了')
+            ->assertSee('無料プラン（Free）の初期設定が完了')
             ->assertDontSee('導入完了です。');
 
         $this->assertDatabaseHas('product_events', [

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ReferralCode;
+use App\Services\PlanFeatureService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -13,6 +14,7 @@ class ReferralController extends Controller
     public function show(Request $request): View
     {
         $organization = $request->attributes->get('currentOrganization');
+        abort_unless(app(PlanFeatureService::class)->isAvailable($organization, 'referrals'), 404);
         abort_unless($request->user()?->can('export', $organization) === true, 403);
         $referral = ReferralCode::query()->firstOrCreate(['organization_id' => $organization->id], ['code' => Str::lower(Str::random(16)), 'active' => true]);
         $referral->loadCount('conversions');
@@ -22,6 +24,7 @@ class ReferralController extends Controller
 
     public function redirect(string $code): RedirectResponse
     {
+        abort_unless(config('opsdeck.release_features.referrals'), 404);
         $referral = ReferralCode::query()->where('code', $code)->where('active', true)->firstOrFail();
         $referral->increment('click_count');
         $referral->update(['last_clicked_at' => now()]);

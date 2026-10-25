@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360" viewBox="0 0 800 360" role="img" aria-labelledby="title description">
+  <title id="title">確認内容を一覧とCSVで共有</title>
+  <desc id="description">保存した一覧と週次まとめを確認し、権限のある管理者がCSVを書き出す流れ</desc>
+  <rect width="800" height="360" rx="18" fill="#f4f7fb"/>
+  <rect x="24" y="24" width="752" height="312" rx="14" fill="#ffffff" stroke="#9fb3c8" stroke-width="2"/>
+  <text x="48" y="62" fill="#102a43" font-family="sans-serif" font-size="22" font-weight="700">確認した情報を共有する</text>
+  <g font-family="sans-serif" text-anchor="middle" fill="#102a43">
+    <rect x="72" y="112" width="190" height="132" rx="12" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="167" y="158" font-size="18" font-weight="700">保存した一覧</text><text x="167" y="194" font-size="15" fill="#486581">同じ条件で確認</text>
+    <rect x="305" y="112" width="190" height="132" rx="12" fill="#f7fafc" stroke="#486581" stroke-width="2"/>
+    <text x="400" y="158" font-size="18" font-weight="700">週次まとめ</text><text x="400" y="194" font-size="15" fill="#486581">最近の対応を見る</text>
+    <rect x="538" y="112" width="190" height="132" rx="12" fill="#fffaf0" stroke="#c05621" stroke-width="2"/>
+    <text x="633" y="158" font-size="18" font-weight="700">CSV出力</text><text x="633" y="194" font-size="15" fill="#486581">権限のある人が実行</text>
+  </g>
+  <path d="M267 178h30m-8-8 8 8-8 8M500 178h30m-8-8 8 8-8 8" fill="none" stroke="#005f73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="48" y="292" fill="#334e68" font-family="sans-serif" font-size="15">書き出せる内容は、登録済みデータと利用プラン、権限によって異なります。</text>
+</svg>

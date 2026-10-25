@@ -6,6 +6,7 @@ use App\Contracts\AiProvider;
 use App\Models\Organization;
 use App\Services\PlanAccessService;
 use App\Services\PlanFeatureService;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\RateLimiter;
 
 class ImportMappingSuggestionService
@@ -27,7 +28,9 @@ class ImportMappingSuggestionService
         }
         $providerHeaders = $this->headersForProvider($headers);
         if (! $this->reserveProviderAttempt($organization, $userId)) {
-            abort(429, 'AI候補の取得回数が上限に達しました。しばらくしてから再度お試しください。');
+            $this->budgetService->recordBlocked($organization, $userId, $fastModel, 'rate_limited');
+
+            return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => 'AI候補の取得回数が上限に達しました。列名を確認して手動で設定してください。', 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
         }
         $fastReservation = $this->budgetService->reserve($organization, $userId, $fastModel, $providerHeaders, $targetType, $targetFields);
         if ($fastReservation === null) {
@@ -37,8 +40,32 @@ class ImportMappingSuggestionService
         }
         try {
             $result = $this->provider->suggestColumnMapping($providerHeaders, $targetType, $targetFields, $fastModel, (string) config('opsdeck.ai.reasoning_effort'));
+        } catch (RequestException $exception) {
+            $providerErrorCode = $this->providerErrorCode($exception);
+            $this->budgetService->settle(
+                $fastReservation,
+                0,
+                0,
+                false,
+                $providerErrorCode,
+                usageOutcomeUnknown: $exception->response->serverError() || $exception->response->status() === 408,
+            );
+            $reason = match ($providerErrorCode) {
+                'provider_quota_exhausted' => 'AIサービスの利用枠またはAPI残高が上限に達しています。管理者がAI提供元の利用状況を確認するまで、AIを再実行せず手動で列を設定してください。',
+                'provider_http_429' => $this->providerRateLimitReason($exception),
+                default => 'AIサービスから候補を取得できませんでした。列名を確認して手動で設定してください。',
+            };
+
+            return array_fill_keys($headers, [
+                'field' => null,
+                'confidence' => 0.0,
+                'reason' => $reason,
+                'requires_review' => true,
+                'question' => null,
+                'source' => 'fallback',
+            ]);
         } catch (\Throwable) {
-            $this->budgetService->settle($fastReservation, 0, 0, false);
+            $this->budgetService->settle($fastReservation, 0, 0, false, usageOutcomeUnknown: true);
 
             return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => 'AIサービスから候補を取得できませんでした。列名を確認して手動で設定してください。', 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
         }
@@ -55,13 +82,23 @@ class ImportMappingSuggestionService
         $escalationModel = (string) config('opsdeck.ai.models.deep');
         $escalationHeaders = $this->headersRequiringEscalation($suggestions);
         if (config('opsdeck.ai.escalation_enabled') && $escalationModel !== '' && $escalationModel !== $fastModel && $escalationHeaders !== []) {
+            $escalationHeaderLookup = array_fill_keys($escalationHeaders, true);
+            $providerHeadersByEscalationHeader = [];
+            foreach (array_values($headers) as $index => $header) {
+                if (isset($escalationHeaderLookup[$header]) && ! array_key_exists($header, $providerHeadersByEscalationHeader)) {
+                    $providerHeadersByEscalationHeader[$header] = $providerHeaders[$index];
+                }
+            }
+            $escalationHeaders = array_keys($providerHeadersByEscalationHeader);
+            $escalationProviderHeaders = array_values($providerHeadersByEscalationHeader);
+
             if (! $this->reserveProviderAttempt($organization, $userId)) {
                 $this->budgetService->recordBlocked($organization, $userId, $escalationModel, 'rate_limited');
 
                 return array_map(fn (array $suggestion): array => $suggestion + ['source' => $suggestion['field'] === null ? 'none' : 'ai'], $suggestions);
             }
 
-            $escalationReservation = $this->budgetService->reserve($organization, $userId, $escalationModel, $providerHeaders, $targetType, $targetFields);
+            $escalationReservation = $this->budgetService->reserve($organization, $userId, $escalationModel, $escalationProviderHeaders, $targetType, $targetFields);
             if ($escalationReservation === null) {
                 $this->budgetService->recordBlocked($organization, $userId, $escalationModel, $this->budgetBlockReason($organization, $escalationModel));
 
@@ -69,7 +106,7 @@ class ImportMappingSuggestionService
             }
 
             try {
-                $escalated = $this->provider->suggestColumnMapping($providerHeaders, $targetType, $targetFields, $escalationModel, (string) config('opsdeck.ai.escalation_reasoning_effort'));
+                $escalated = $this->provider->suggestColumnMapping($escalationProviderHeaders, $targetType, $targetFields, $escalationModel, (string) config('opsdeck.ai.escalation_reasoning_effort'));
                 $this->budgetService->settle(
                     $escalationReservation,
                     $escalated['input_tokens'],
@@ -78,7 +115,7 @@ class ImportMappingSuggestionService
                     cachedInputTokens: $escalated['cached_input_tokens'],
                     cacheWriteInputTokens: $escalated['cache_write_input_tokens'],
                 );
-                $escalatedSuggestions = $this->restoreOriginalHeaders($escalated['suggestions'], $headers, $providerHeaders);
+                $escalatedSuggestions = $this->restoreOriginalHeaders($escalated['suggestions'], $escalationHeaders, $escalationProviderHeaders);
                 foreach ($escalationHeaders as $header) {
                     $candidate = $escalatedSuggestions[$header] ?? null;
                     if (! is_array($candidate) || ($candidate['field'] ?? null) === null) {
@@ -89,12 +126,59 @@ class ImportMappingSuggestionService
                     $suggestions[$header]['source'] = 'ai_escalated';
                     $suggestions[$header]['requires_review'] = true;
                 }
+            } catch (RequestException $exception) {
+                $this->budgetService->settle(
+                    $escalationReservation,
+                    0,
+                    0,
+                    false,
+                    $this->providerErrorCode($exception),
+                    usageOutcomeUnknown: $exception->response->serverError() || $exception->response->status() === 408,
+                );
             } catch (\Throwable) {
-                $this->budgetService->settle($escalationReservation, 0, 0, false);
+                $this->budgetService->settle($escalationReservation, 0, 0, false, usageOutcomeUnknown: true);
             }
         }
 
         return array_map(fn (array $suggestion): array => $suggestion + ['source' => $suggestion['field'] === null ? 'none' : 'ai'], $suggestions);
+    }
+
+    private function providerErrorCode(RequestException $exception): string
+    {
+        if ($exception->response->status() !== 429) {
+            return 'provider_unavailable';
+        }
+
+        $quotaErrorCodes = [
+            'credit_balance_exhausted',
+            'insufficient_quota',
+            'organization_spend_limit_exceeded',
+            'organization_usage_limit_exceeded',
+            'project_spend_limit_exceeded',
+        ];
+        $providerCodes = array_filter([
+            $exception->response->json('error.code'),
+            $exception->response->json('error.type'),
+        ], 'is_string');
+
+        return array_intersect($quotaErrorCodes, $providerCodes) !== []
+            ? 'provider_quota_exhausted'
+            : 'provider_http_429';
+    }
+
+    private function providerRateLimitReason(RequestException $exception): string
+    {
+        $retryAfterSeconds = filter_var(
+            trim($exception->response->header('Retry-After')),
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1]],
+        );
+
+        if (is_int($retryAfterSeconds)) {
+            return 'AIサービス側の一時的な利用制限により候補を取得できませんでした。続けて再実行せず、'.$retryAfterSeconds.'秒以上待ってから再実行するか、手動で列を設定してください。';
+        }
+
+        return 'AIサービス側の一時的な利用制限により候補を取得できませんでした。続けて再実行せず、時間をおいて試すか手動で列を設定してください。';
     }
 
     private function budgetBlockReason(Organization $organization, string $model): string

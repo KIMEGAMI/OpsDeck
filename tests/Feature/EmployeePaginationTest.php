@@ -49,6 +49,60 @@ class EmployeePaginationTest extends TestCase
             ->assertDontSee('href="'.route('employees.show', $employees[99]).'"', false);
     }
 
+    public function test_employee_screens_show_human_readable_japanese_status_labels(): void
+    {
+        [$user, $organization] = $this->ownerOrganization();
+        $employee = Employee::query()->create([
+            'organization_id' => $organization->id,
+            'name' => 'テスト社員',
+            'employment_status' => 'leave',
+        ]);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($user)
+            ->withSession($session)
+            ->get(route('employees.index'))
+            ->assertOk()
+            ->assertSee('休職中');
+
+        $this->get(route('employees.show', $employee))
+            ->assertOk()
+            ->assertSee('休職中');
+
+        $this->get(route('employees.create'))
+            ->assertOk()
+            ->assertSee('在籍中')
+            ->assertSee('入社予定')
+            ->assertSee('退職済み');
+    }
+
+    public function test_invalid_employee_status_and_department_values_fall_back_safely(): void
+    {
+        [$user, $organization] = $this->ownerOrganization();
+        $employeeName = '社員状態確認';
+        $defaultStatus = config('opsdeck.employee_statuses')[0];
+
+        $this->from(route('employees.create'))
+            ->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('employees.store'), [
+                'name' => $employeeName,
+                'employment_status' => 'not-a-configured-status',
+                'department_id' => ['malformed'],
+            ])
+            ->assertOk()
+            ->assertSee('id="employment_status-error" class="errors field-error"', false)
+            ->assertSee('id="department_id-error" class="errors field-error"', false)
+            ->assertSee('<option value="'.$defaultStatus.'" selected>'.config('opsdeck.employee_status_labels.'.$defaultStatus).'</option>', false)
+            ->assertSee('<option value="" selected>未設定</option>', false);
+
+        $this->assertDatabaseMissing('employees', [
+            'organization_id' => $organization->id,
+            'name' => $employeeName,
+        ]);
+    }
+
     /** @return array{0: User, 1: Organization} */
     private function ownerOrganization(): array
     {

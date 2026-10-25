@@ -1,0 +1,124 @@
+- generic [active] [ref=f14e1]:
+  - banner [ref=f14e2]:
+    - strong [ref=f14e4]: OpsDeck
+  - main [ref=f14e5]:
+    - region [ref=f14e6]:
+      - heading "使い方・よくある質問" [level=1] [ref=f14e7]
+      - paragraph [ref=f14e8]: 管理表の取込や、社員・端末・クラウドサービスの管理方法を確認できます。
+      - paragraph [ref=f14e9]:
+        - link "FAQで解決しない場合はお問い合わせ" [ref=f14e10] [cursor=pointer]:
+          - /url: http://localhost:8007/support
+      - paragraph [ref=f14e11]:
+        - text: メールでのお問い合わせ：
+        - link "support@kimegami.jp" [ref=f14e12] [cursor=pointer]:
+          - /url: mailto:support@kimegami.jp
+      - region [ref=f14e13]:
+        - heading "初めて使うとき" [level=2] [ref=f14e14]
+        - list [ref=f14e15]:
+          - listitem [ref=f14e16]:
+            - link "導入チェックリスト" [ref=f14e17] [cursor=pointer]:
+              - /url: http://localhost:8007/onboarding
+            - text: から、組織設定と必要な初期登録を順番に進めます。
+          - listitem [ref=f14e18]:
+            - link "データ取込" [ref=f14e19] [cursor=pointer]:
+              - /url: http://localhost:8007/imports/create
+            - text: を開き、社員・端末などのサンプルプレビューで、必要な列を確認します。
+          - listitem [ref=f14e20]: 実際のデータを使うときは、元のExcelを残したままコピーを作ります。CSVは表の内容を保存するファイル形式です。コピーから必要なシートをCSV、または対応プランのXLSXとして別名保存します。
+          - listitem [ref=f14e21]: 取込前の確認画面で、列の対応と「新規・更新・確認待ち・エラー」を確認します。確認画面を見るだけでは業務データは登録・更新されません。無料プラン（Free）でもCSV/TXTから登録でき、社員・資産・SaaSの登録数は各上限までです。XLSXやGoogle Sheetsなどは有料プラン（Premium）の機能です。
+        - paragraph [ref=f14e22]: サンプルCSVは実データではありません。サンプル行を「データ取込」すると会社の情報として登録されるため、動作確認には「サンプルプレビュー」を使ってください。
+      - region [ref=f14e23]:
+        - heading "Excelの表をCSVにして取り込む" [level=2] [ref=f14e24]
+        - list [ref=f14e25]:
+          - listitem [ref=f14e26]: 元のExcelファイルは残します。コピーを作り、そのコピーを開きます。
+          - listitem [ref=f14e27]: コピーの中で、取り込みたいシート（例：社員名簿）を選びます。
+          - listitem [ref=f14e28]: 「ファイル」から「名前を付けて保存」または「コピーを保存」を選び、元とは別の名前と場所を指定します。
+          - listitem [ref=f14e29]: 保存形式に「CSV UTF-8（コンマ区切り）」があれば選びます。ない場合は「CSV（コンマ区切り）」を選びます。表示名はExcelの版によって異なります。
+          - listitem [ref=f14e30]: 「現在のシートだけが保存される」という確認が出たら、選んだシートが正しいことを確認して続けます。CSVには書式や数式ではなく、セルに表示されている値が保存されます。
+          - listitem [ref=f14e31]: OpsDeckで保存したCSVを選び、「内容を確認する」を押します。列や新規・更新・エラーを確認し、問題がなければ取込を実行します。
+        - paragraph [ref=f14e32]: 複数シートを取り込む場合は、CSVではシートごとに保存します。PremiumではXLSXファイルを選び、取り込むシートを画面で指定できます。
+        - paragraph [ref=f14e33]:
+          - link "MicrosoftのCSV保存手順" [ref=f14e34] [cursor=pointer]:
+            - /url: https://support.microsoft.com/en-us/excel/save-a-workbook-to-text-format-txt-or-csv
+      - region [ref=f14e35]:
+        - heading "費用削減額の見方" [level=2] [ref=f14e36]
+        - paragraph [ref=f14e37]: OpsDeckは登録された契約・クラウドサービス・端末などの情報から、月の費用や見直し候補の概算を表示します。概算は実際の削減額ではなく、契約の解約やライセンス停止も自動では行いません。
+        - paragraph [ref=f14e38]:
+          - text: 実際に削減できた金額は、担当者が根拠を確認して記録します。詳しくは
+          - link "コストダッシュボード" [ref=f14e39] [cursor=pointer]:
+            - /url: http://localhost:8007/costs
+          - text: を確認してください。
+      - region [ref=f14e40]:
+        - heading "困ったとき" [level=2] [ref=f14e41]
+        - paragraph [ref=f14e42]: 問題に近い項目を選ぶと、確認する順番が表示されます。
+        - list [ref=f14e43]:
+          - listitem [ref=f14e44]:
+            - link "Excelなどの取込で困ったとき" [ref=f14e45] [cursor=pointer]:
+              - /url: http://localhost:8007/help/recovery/import
+          - listitem [ref=f14e46]:
+            - link "Googleスプレッドシートに接続できないとき" [ref=f14e47] [cursor=pointer]:
+              - /url: http://localhost:8007/help/recovery/google_oauth
+          - listitem [ref=f14e48]:
+            - link "AIの候補や回答案が使えないとき" [ref=f14e49] [cursor=pointer]:
+              - /url: http://localhost:8007/help/recovery/ai
+          - listitem [ref=f14e50]:
+            - link "メールが届かないとき" [ref=f14e51] [cursor=pointer]:
+              - /url: http://localhost:8007/help/recovery/email
+          - listitem [ref=f14e52]:
+            - link "プラン・お支払いで困ったとき" [ref=f14e53] [cursor=pointer]:
+              - /url: http://localhost:8007/help/recovery/stripe
+      - region [ref=f14e54]:
+        - heading "無料プラン（Free）と有料プラン（Premium）の違い" [level=2] [ref=f14e55]
+        - table "無料プランと有料プランの比較" [ref=f14e57]:
+          - rowgroup [ref=f14e58]:
+            - row [ref=f14e59]:
+              - columnheader "プラン" [ref=f14e60]
+              - columnheader "月額" [ref=f14e61]
+              - columnheader "登録上限" [ref=f14e62]
+              - columnheader "主な機能" [ref=f14e63]
+          - rowgroup [ref=f14e64]:
+            - row [ref=f14e65]:
+              - rowheader "Free" [ref=f14e66]
+              - cell "無料" [ref=f14e67]
+              - cell "社員20名・端末50台・クラウドサービス10件・管理者1名" [ref=f14e68]
+              - cell [ref=f14e69]:
+                - list [ref=f14e70]:
+                  - listitem [ref=f14e71]: CSV/TXTの実データ取込（登録上限まで）
+                  - listitem [ref=f14e72]: 基本ダッシュボード
+                  - listitem [ref=f14e73]: コスト集計
+            - row [ref=f14e74]:
+              - rowheader "Premium" [ref=f14e75]
+              - cell "月額9,800円（税別）" [ref=f14e76]
+              - cell "社員200名・端末500台・クラウドサービス100件・管理者5名" [ref=f14e77]
+              - cell [ref=f14e78]:
+                - list [ref=f14e79]:
+                  - listitem [ref=f14e80]: CSV / XLSX / Google Sheets Import
+                  - listitem [ref=f14e81]: AI列マッピング候補（月500円相当まで）
+                  - listitem [ref=f14e82]: 削減可能額の概算・削減実績の記録・作業時間短縮の参考値
+                  - listitem [ref=f14e83]: 更新・セキュリティアラート
+                  - listitem [ref=f14e84]: 証跡・質問票・Export
+                  - listitem [ref=f14e85]: 導入効果レポート
+        - paragraph [ref=f14e86]: Premiumの適用税額を含むお支払い総額は、申込前にStripe Checkoutで確認できます。
+      - article [ref=f14e87]:
+        - heading "OpsDeckは何を管理するサービスですか？" [level=2] [ref=f14e88]
+        - paragraph [ref=f14e89]: 社員、IT資産、利用中のクラウドサービス、契約更新、証跡、セキュリティの確認項目を検索でき、期限と対応状況を確認するための管理サービスです。MDMやEDR、端末の遠隔操作を提供するものではありません。
+      - article [ref=f14e90]:
+        - heading "確認画面を見るだけで会社のデータは変わりますか？" [level=2] [ref=f14e91]
+        - paragraph [ref=f14e92]: 変わりません。まず内容を確認し、取り込みを実行したときだけ会社のデータが登録・更新されます。元のExcelファイルと取込履歴は残ります。
+      - article [ref=f14e93]:
+        - heading "社内のExcel管理表はどう取り込めばよいですか？" [level=2] [ref=f14e94]
+        - paragraph [ref=f14e95]: 元のExcelは変更せず、取り込むシートのコピーをCSV、またはPremiumプランで利用できるXLSXとして確認画面に進みます。CSVはExcelの表の内容を保存する形式で、UTF-8（BOM付き可）またはShift_JIS（Windows-31J）に対応しています。列名の行と、注記などがある場合はデータ開始行を指定し、画面に表示される列の対応と「新規・更新・確認待ち・エラー」を確認してください。確認画面を見るだけでは会社のデータは登録・更新されません。無料プラン（Free）でもCSV/TXTを取り込めます。社員・端末・SaaSサービスの登録数はFreeの上限までで、上限を超えた行はエラーとして確認できます。XLSX、Google Sheets、セキュリティ管理項目・証跡・質問票の取込はPremiumです。
+      - article [ref=f14e96]:
+        - heading "Excelファイルはどの形式で保存すればよいですか？" [level=2] [ref=f14e97]
+        - paragraph [ref=f14e98]: CSVまたはTXTを取り込めます。有料プラン（Premium）ではXLSXも確認できます。旧形式のXLSファイルは対象外です。元ファイルを残したまま、対象シートをCSV（UTF-8またはShift_JIS）かXLSXで別保存してください。XLSXに複数シートがある場合は、データ取込時に対象シートを選択できます。保存後は確認画面で文字化け、日付・金額、列の対応を確認してください。
+      - article [ref=f14e99]:
+        - heading "AI補助を使うと、どのデータが外部へ送られますか？" [level=2] [ref=f14e100]
+        - paragraph [ref=f14e101]: Premiumプランで組織のAI補助を有効にし、サーバー側の利用条件を満たす場合、列マッピング候補の取得時に列名、対象データ種別、OpsDeck側の候補項目を設定済みAIサービスへ送信します。取込データの行、ファイル全体、シート全体は送信しません。列名に含まれるメールアドレス・電話番号らしき値は伏せますが、氏名などは自動判定できないため、個人情報を含む列名は匿名化してから利用してください。FreeプランではAI候補を利用できないため送信しません。AIを使わず手動でマッピングすることもできます。
+      - article [ref=f14e102]:
+        - heading "AIの候補は自動承認されますか？" [level=2] [ref=f14e103]
+        - paragraph [ref=f14e104]: AI候補は理由と信頼度を表示しますが、自動承認されません。人間が確認してから反映します。
+      - article [ref=f14e105]:
+        - heading "管理者のお知らせメールはどこから届きますか？" [level=2] [ref=f14e106]
+        - paragraph [ref=f14e107]: 管理者のお知らせと週次サマリーは info@kimegami.jp から届きます。配信停止は週次サマリー画面で設定でき、運用上の問い合わせは support@kimegami.jp へご連絡ください。
+      - article [ref=f14e108]:
+        - heading "問い合わせ先はどこですか？" [level=2] [ref=f14e109]
+        - paragraph [ref=f14e110]: 運用上の問い合わせは support@kimegami.jp へご連絡ください。証跡ファイルの内容やパスワード、トークンはメールに記載しないでください。

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Asset;
+use App\Models\AuditLog;
 use App\Models\Contract;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
@@ -29,6 +30,19 @@ class SavedViewControllerTest extends TestCase
     public function test_operator_can_create_personal_saved_view_and_viewer_can_read_shared_view(): void
     {
         [$operator, $organization] = $this->member(MembershipRole::Operator);
+        $this->actingAs($operator)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('saved-views.create'))
+            ->assertOk()
+            ->assertSee('作成しても契約や資産のデータは変更されません。')
+            ->assertSee('作成した一覧は自分だけが見られます。')
+            ->assertSee('例：今月更新する契約');
+        $admin = User::factory()->create(['email' => 'saved-share-admin-'.Str::uuid().'@example.test']);
+        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $admin->id, 'role' => MembershipRole::Admin, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $this->actingAs($admin)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('saved-views.create'))
+            ->assertOk()
+            ->assertSee('組織内で共有すると、同じ組織のメンバー全員がこの一覧を見られます。')
+            ->assertSee('組織内で共有する');
         $response = $this->actingAs($operator)->withSession(['current_organization_id' => $organization->id])->post(route('saved-views.store'), ['name' => '更新確認', 'view_key' => 'renewals', 'is_shared' => '1']);
         $response->assertRedirect(route('saved-views.index'));
         $savedView = SavedView::query()->where('organization_id', $organization->id)->firstOrFail();
@@ -37,7 +51,38 @@ class SavedViewControllerTest extends TestCase
         [$viewer, $viewerOrganization] = $this->member(MembershipRole::Viewer);
         $shared = SavedView::query()->create(['organization_id' => $viewerOrganization->id, 'created_by' => $viewer->id, 'name' => '共有MFA', 'view_key' => 'mfa_unknown', 'is_shared' => true]);
         $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])->get(route('saved-views.show', $shared))->assertOk()->assertSee('共有MFA');
+        $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])
+            ->get(route('saved-views.index'))
+            ->assertOk()
+            ->assertSee('更新期限、未割当の端末、ログイン時の追加確認が済んでいないクラウドサービスのアカウントを、保存した条件で確認できます。')
+            ->assertSee('ログイン時の追加確認が済んでいないクラウドサービスのアカウント')
+            ->assertDontSee('MFA未確認SaaSアカウント');
         $this->actingAs($viewer)->withSession(['current_organization_id' => $viewerOrganization->id])->get(route('saved-views.create'))->assertForbidden();
+    }
+
+    public function test_invalid_saved_view_name_is_shown_next_to_field_and_preserved(): void
+    {
+        [$operator, $organization] = $this->member(MembershipRole::Operator);
+        $invalidName = str_repeat('更', 121);
+
+        $this->from(route('saved-views.create'))
+            ->followingRedirects()
+            ->actingAs($operator)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('saved-views.store'), [
+                'name' => $invalidName,
+                'view_key' => 'renewals',
+            ])
+            ->assertOk()
+            ->assertSee('id="name-error" class="errors field-error"', false)
+            ->assertSee('aria-invalid="true"', false)
+            ->assertSee('aria-describedby="name-error"', false)
+            ->assertSee('value="'.$invalidName.'"', false);
+
+        $this->assertDatabaseMissing('saved_views', [
+            'organization_id' => $organization->id,
+            'name' => $invalidName,
+        ]);
     }
 
     public function test_personal_and_shared_saved_views_have_distinct_delete_permissions(): void
@@ -63,6 +108,30 @@ class SavedViewControllerTest extends TestCase
 
         $this->actingAs($admin)->withSession($session)->delete(route('saved-views.destroy', $sharedView))->assertRedirect(route('saved-views.index'));
         $this->assertDatabaseMissing('saved_views', ['id' => $sharedView->id]);
+        $auditLog = AuditLog::query()->where('entity_id', $sharedView->id)->where('action', AuditLog::SavedViewDeleted)->sole();
+        $this->assertSame($admin->id, $auditLog->actor_user_id);
+        $this->assertSame(['view_key' => 'mfa_unknown', 'is_shared' => true], $auditLog->before_json);
+        $this->assertStringNotContainsString('共有ビュー', json_encode($auditLog->toArray()));
+        $this->assertDatabaseMissing('audit_logs', ['entity_id' => $personalView->id, 'action' => AuditLog::SavedViewDeleted]);
+    }
+
+    public function test_owner_sharing_a_saved_view_records_the_shared_change_without_the_view_name(): void
+    {
+        [$owner, $organization] = $this->member(MembershipRole::Owner);
+
+        $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('saved-views.store'), [
+                'name' => '顧客情報を含む社内名',
+                'view_key' => 'renewals',
+                'is_shared' => '1',
+            ])
+            ->assertRedirect(route('saved-views.index'));
+
+        $savedView = SavedView::query()->where('organization_id', $organization->id)->sole();
+        $auditLog = AuditLog::query()->where('entity_id', $savedView->id)->where('action', AuditLog::SavedViewCreated)->sole();
+        $this->assertSame($owner->id, $auditLog->actor_user_id);
+        $this->assertSame(['view_key' => 'renewals', 'is_shared' => true], $auditLog->after_json);
+        $this->assertStringNotContainsString('顧客情報を含む社内名', json_encode($auditLog->toArray()));
     }
 
     public function test_renewal_saved_view_uses_the_organizations_local_date(): void
@@ -90,11 +159,24 @@ class SavedViewControllerTest extends TestCase
             'status' => 'active',
             'renewal_date' => '2026-10-10',
         ]);
+        Contract::query()->create([
+            'organization_id' => $organization->id,
+            'vendor_name' => 'Cancellation vendor',
+            'contract_name' => 'Cancellation deadline in window',
+            'contract_type' => 'service',
+            'billing_cycle' => 'monthly',
+            'amount' => 1000,
+            'currency' => 'JPY',
+            'auto_renew' => true,
+            'status' => 'active',
+            'cancellation_deadline' => '2026-10-20',
+        ]);
 
         $this->actingAs($owner)->withSession(['current_organization_id' => $organization->id])
             ->get(route('saved-views.show', $savedView))
             ->assertOk()
-            ->assertSee('Organization local today');
+            ->assertSee('Organization local today')
+            ->assertSee('Cancellation deadline in window');
     }
 
     public function test_operational_saved_views_exclude_retired_assets_and_ended_or_inactive_saas(): void
@@ -122,6 +204,8 @@ class SavedViewControllerTest extends TestCase
             ->get(route('saved-views.show', $mfaView))
             ->assertOk()
             ->assertSee('ACTIVE-UNKNOWN')
+            ->assertSee('追加のログイン確認：未確認')
+            ->assertDontSee('(MFA：unknown)')
             ->assertDontSee('ENDED-UNKNOWN')
             ->assertDontSee('INACTIVE-UNKNOWN');
     }

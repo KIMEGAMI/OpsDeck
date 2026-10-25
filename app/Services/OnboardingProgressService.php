@@ -17,7 +17,7 @@ use Illuminate\Database\Eloquent\Builder;
 class OnboardingProgressService
 {
     /**
-     * @param  array<int, array{key:string,label:string,route:string,route_parameters:array<string, string>,completed:bool}>  $steps
+     * @param  array<int, array{key:string,label:string,route:string,route_parameters:array<string, string>,alternatives:array<int, array{label:string,route:string,route_parameters:array<string, string>}>,completed:bool}>  $steps
      */
     public function recordCompletedSteps(Organization $organization, array $steps): void
     {
@@ -34,7 +34,7 @@ class OnboardingProgressService
         $this->recordCompletedSteps($organization, $this->steps($organization));
     }
 
-    /** @return array<int, array{key:string,label:string,route:string,route_parameters:array<string, string>,completed:bool}> */
+    /** @return array<int, array{key:string,label:string,route:string,route_parameters:array<string, string>,alternatives:array<int, array{label:string,route:string,route_parameters:array<string, string>}>,completed:bool}> */
     public function steps(Organization $organization): array
     {
         $planFeatureService = app(PlanFeatureService::class);
@@ -74,7 +74,7 @@ class OnboardingProgressService
                 ? Asset::query()->where('organization_id', $organization->id)->exists() && $hasCompletedImport('assets')
                 : $hasPreviewedImport('assets'),
             'contract_or_saas' => $hasContractOrSaas,
-            'security_control' => SecurityControl::query()->where('organization_id', $organization->id)->exists(),
+            'security_control' => SecurityControl::query()->where('organization_id', $organization->id)->whereNotNull('last_reviewed_at')->exists(),
             'member_invited' => $hasMembership || $hasInvitation,
         ];
         $definitions = array_filter(
@@ -91,6 +91,14 @@ class OnboardingProgressService
                     : $definition['label'],
                 'route' => $definition['route'],
                 'route_parameters' => $definition['route_parameters'] ?? [],
+                'alternatives' => array_map(
+                    static fn (array $alternative): array => [
+                        'label' => $alternative['label'],
+                        'route' => $alternative['route'],
+                        'route_parameters' => $alternative['route_parameters'] ?? [],
+                    ],
+                    $definition['alternatives'] ?? [],
+                ),
                 'completed' => array_key_exists($key, $derived) ? $derived[$key] : isset($recorded[$key]),
             ];
         }, $definitions, array_keys($definitions));

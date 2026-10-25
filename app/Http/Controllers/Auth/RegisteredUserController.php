@@ -28,7 +28,9 @@ class RegisteredUserController extends Controller
 
     public function store(RegisterRequest $request): RedirectResponse
     {
-        $referralCode = ReferralCode::query()->where('code', $request->session()->get('referral_code'))->where('active', true)->first();
+        $referralCode = config('opsdeck.release_features.referrals')
+            ? ReferralCode::query()->where('code', $request->session()->get('referral_code'))->where('active', true)->first()
+            : null;
         [$user, $organization] = DB::transaction(function () use ($request, $referralCode): array {
             $validated = $request->validated();
             $user = User::query()->create([
