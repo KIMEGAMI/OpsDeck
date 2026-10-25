@@ -1,0 +1,122 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful CI workflow run ID on main
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: opsdeck-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.OPSDECK_PRODUCTION_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Resolve successful main CI run
+        id: resolve
+        env:
+          CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CI_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "A numeric successful CI run ID is required." >&2
+            exit 1
+          fi
+
+          run_json="$(curl --fail --silent --show-error \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID")"
+          if ! jq -e --arg repository "$GITHUB_REPOSITORY" '
+            .name == "CI"
+            and .path == ".github/workflows/ci.yml"
+            and .event == "push"
+            and .head_branch == "main"
+            and .status == "completed"
+            and .conclusion == "success"
+            and .repository.full_name == $repository
+            and .head_repository.full_name == $repository
+          ' <<< "$run_json" >/dev/null; then
+            echo "The selected run is not a successful CI run from this repository's main branch." >&2
+            exit 1
+          fi
+
+          commit_sha="$(jq -r '.head_sha' <<< "$run_json")"
+          run_attempt="$(jq -r '.run_attempt' <<< "$run_json")"
+          if [[ ! "$commit_sha" =~ ^[a-f0-9]{40}$ || ! "$run_attempt" =~ ^[0-9]+$ ]]; then
+            echo "The CI run metadata is invalid." >&2
+            exit 1
+          fi
+          {
+            printf 'commit_sha=%s\n' "$commit_sha"
+            printf 'run_id=%s\n' "$CI_RUN_ID"
+            printf 'run_attempt=%s\n' "$run_attempt"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download the tested production artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: opsdeck-release-${{ steps.resolve.outputs.commit_sha }}
+          path: ${{ runner.temp }}/opsdeck-artifact
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout the exact tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Verify release artifact checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/opsdeck-artifact"
+          sha256sum --check opsdeck-release.tar.gz.sha256
+
+      - name: Deploy the tested release to the VPS
+        shell: bash
+        env:
+          OPSDECK_DEPLOY_HOST: ${{ vars.OPSDECK_DEPLOY_HOST }}
+          OPSDECK_DEPLOY_PORT: ${{ vars.OPSDECK_DEPLOY_PORT }}
+          OPSDECK_DEPLOY_USER: ${{ vars.OPSDECK_DEPLOY_USER }}
+          OPSDECK_DEPLOY_ROOT: ${{ vars.OPSDECK_DEPLOY_ROOT }}
+          OPSDECK_DEPLOY_PHP_BIN: ${{ vars.OPSDECK_DEPLOY_PHP_BIN }}
+          OPSDECK_DEPLOY_KNOWN_HOSTS: ${{ vars.OPSDECK_DEPLOY_KNOWN_HOSTS }}
+          OPSDECK_DEPLOY_HEALTHCHECK_URL: ${{ vars.OPSDECK_DEPLOY_HEALTHCHECK_URL }}
+          OPSDECK_DEPLOY_RELEASE_RETENTION_COUNT: ${{ vars.OPSDECK_DEPLOY_RELEASE_RETENTION_COUNT }}
+          OPSDECK_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.OPSDECK_DEPLOY_SSH_PRIVATE_KEY }}
+          OPSDECK_DEPLOY_RELEASE_SHA: ${{ steps.resolve.outputs.commit_sha }}
+          OPSDECK_DEPLOY_CI_RUN_ID: ${{ steps.resolve.outputs.run_id }}
+          OPSDECK_DEPLOY_CI_RUN_ATTEMPT: ${{ steps.resolve.outputs.run_attempt }}
+          OPSDECK_DEPLOY_ARCHIVE: ${{ runner.temp }}/opsdeck-artifact/opsdeck-release.tar.gz
+          OPSDECK_DEPLOY_CHECKSUM: ${{ runner.temp }}/opsdeck-artifact/opsdeck-release.tar.gz.sha256
+        run: bash .github/scripts/deploy-vps.sh

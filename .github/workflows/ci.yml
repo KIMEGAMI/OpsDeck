@@ -27,6 +27,7 @@ jobs:
             echo "Every GitHub Action must use a full commit SHA and a version comment."
             exit 1
           fi
+          bash -n .github/scripts/deploy-vps.sh
 
       - name: Check secrets are not committed
         run: |
@@ -414,12 +415,19 @@ jobs:
 
           package_dir="$RUNNER_TEMP/opsdeck-release"
           mkdir -p "$package_dir"
-          git ls-files -z -- . ':(exclude)storage/**' \
+          git ls-files -z -- . \
+            ':(exclude).github/**' \
+            ':(exclude)storage/**' \
+            ':(exclude)tests/**' \
             | tar --null --files-from=- --create --file=- \
             | tar --extract --file=- --directory "$package_dir"
           mkdir -p "$package_dir/vendor" "$package_dir/public/build"
           cp -a vendor/. "$package_dir/vendor/"
           cp -a public/build/. "$package_dir/public/build/"
+          if find "$package_dir" -type l -print -quit | grep -q .; then
+            echo "Release artifacts must not contain symbolic links." >&2
+            exit 1
+          fi
 
           mkdir -p "$RUNNER_TEMP/opsdeck-artifact"
           tar --create --gzip --file="$RUNNER_TEMP/opsdeck-artifact/opsdeck-release.tar.gz" --directory "$package_dir" .
