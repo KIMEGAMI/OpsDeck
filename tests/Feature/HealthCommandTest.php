@@ -18,6 +18,8 @@ class HealthCommandTest extends TestCase
     {
         parent::setUp();
 
+        config(['opsdeck.storage_quotas.platform_limit_megabytes' => null]);
+
         $this->artisan('migrate:fresh', ['--force' => true])->assertExitCode(0);
     }
 
@@ -359,8 +361,10 @@ class HealthCommandTest extends TestCase
             $healthReport = json_decode($this->app[Kernel::class]->output(), true, flags: JSON_THROW_ON_ERROR);
 
             $this->assertSame(1, $exitCode);
-            $this->assertSame(true, $healthReport['platform_storage_needs_attention']);
-            $this->assertArrayHasKey('platform_storage', $healthReport);
+            $this->assertSame('warning', $healthReport['status']);
+            $this->assertSame('invalid', $healthReport['queue_backlog_status']);
+            $this->assertSame('invalid', $healthReport['queue_timeout_status']);
+            $this->assertSame('invalid', $healthReport['queue_worker_status']);
         } finally {
             DB::table('scheduler_heartbeats')->where('name', 'scheduler')->delete();
             File::deleteDirectory($healthPath);
