@@ -27,6 +27,7 @@ jobs:
             echo "Every GitHub Action must use a full commit SHA and a version comment."
             exit 1
           fi
+          bash -n .github/scripts/deploy-vps.sh
 
       - name: Check secrets are not committed
         run: |
@@ -361,6 +362,99 @@ jobs:
         env:
           DB_USERNAME: opsdeck_test
         run: php artisan test --compact --exclude-group=sqlite-only
+
+  production-package:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
+    needs:
+      - test
+      - test-mysql
+      - test-mariadb
+      - frontend
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          extensions: mbstring, bcmath, pdo_mysql
+          coverage: none
+          tools: composer:v2
+
+      - name: Install production PHP dependencies
+        run: composer install --no-dev --classmap-authoritative --no-interaction --prefer-dist --no-progress
+
+      - name: Verify production PHP platform requirements
+        run: composer check-platform-reqs --no-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts --no-audit
+
+      - name: Build production frontend assets
+        run: npm run build
+
+      - name: Assemble production release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e .env ]]; then
+            echo "A local .env file must never enter a production release artifact." >&2
+            exit 1
+          fi
+
+          package_dir="$RUNNER_TEMP/opsdeck-release"
+          mkdir -p "$package_dir"
+          git ls-files -z -- . \
+            ':(exclude).github/**' \
+            ':(exclude)storage/**' \
+            ':(exclude)tests/**' \
+            | tar --null --files-from=- --create --file=- \
+            | tar --extract --file=- --directory "$package_dir"
+          mkdir -p "$package_dir/vendor" "$package_dir/public/build"
+          cp -a vendor/. "$package_dir/vendor/"
+          cp -a public/build/. "$package_dir/public/build/"
+          if find "$package_dir" -type l -print -quit | grep -q .; then
+            echo "Release artifacts must not contain symbolic links." >&2
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/opsdeck-artifact"
+          tar --create --gzip --file="$RUNNER_TEMP/opsdeck-artifact/opsdeck-release.tar.gz" --directory "$package_dir" .
+          (
+            cd "$RUNNER_TEMP/opsdeck-artifact"
+            sha256sum opsdeck-release.tar.gz > opsdeck-release.tar.gz.sha256
+          )
+
+          archive_listing="$(tar --list --gzip --file="$RUNNER_TEMP/opsdeck-artifact/opsdeck-release.tar.gz")"
+          if grep -Eq '(^|/)\.env($|/)' <<< "$archive_listing"; then
+            echo "A .env file was found in the production release artifact." >&2
+            exit 1
+          fi
+          if grep -Eq '^\./storage(/|$)' <<< "$archive_listing"; then
+            echo "Runtime storage must be provisioned separately from the release artifact." >&2
+            exit 1
+          fi
+
+      - name: Upload versioned production release artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: opsdeck-release-${{ github.sha }}
+          path: ${{ runner.temp }}/opsdeck-artifact/opsdeck-release.tar.gz*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
 
   frontend:
     runs-on: ubuntu-latest
