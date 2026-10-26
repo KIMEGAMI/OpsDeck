@@ -20,6 +20,53 @@ class BillingControllerTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_free_only_mode_hides_paid_offers_and_blocks_all_stripe_mutations(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['stripe_customer_id' => 'cus_free_mode_test']);
+        config([
+            'opsdeck.billing.enabled' => false,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'services.stripe.secret' => 'sk_test_free_mode',
+            'services.stripe.prices.premium' => 'price_test_free_mode',
+            'services.stripe.prices.storage_addon_gib' => 'price_test_addon_free_mode',
+        ]);
+        Http::preventStrayRequests();
+        $session = ['current_organization_id' => $organization->id, '_token' => Str::random(40)];
+
+        $this->get('/')
+            ->assertOk()
+            ->assertSee('現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
+            ->assertDontSee('Premiumに申し込む')
+            ->assertDontSee('9,800円');
+
+        $this->actingAs($user)->withSession($session)
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertSee('月額0円のFreeのみ')
+            ->assertDontSee('9,800円')
+            ->assertDontSee('Stripe Checkoutを開始')
+            ->assertDontSee('Customer Portalを開く');
+
+        $this->actingAs($user)->withSession($session)
+            ->post(route('billing.checkout'), ['_token' => $session['_token']])
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->post(route('billing.portal'), ['_token' => $session['_token']])
+            ->assertNotFound();
+        $this->actingAs($user)->withSession($session)
+            ->post(route('billing.storage-addon.update'), [
+                '_token' => $session['_token'],
+                'quantity' => 1,
+                'confirm_change' => '1',
+            ])
+            ->assertNotFound();
+
+        Http::assertNothingSent();
+    }
+
     public function test_production_checkout_is_hidden_and_blocked_when_seller_disclosure_is_incomplete(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

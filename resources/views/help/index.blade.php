@@ -52,14 +52,19 @@
             </ul>
         </section>
         <section aria-labelledby="help-plans-title">
-            <h2 id="help-plans-title">無料プラン（Free）と有料プラン（Premium）の違い</h2>
+            @if (config('opsdeck.billing.enabled'))
+                <h2 id="help-plans-title">無料プラン（Free）と有料プラン（Premium）の違い</h2>
+            @else
+                <h2 id="help-plans-title">無料プラン（Free）の登録上限</h2>
+            @endif
             <div class="table-scroll help-plan-table-scroll">
                 <table aria-label="無料プランと有料プランの比較">
                     <thead>
                         <tr><th scope="col">プラン</th><th scope="col">月額</th><th scope="col">登録上限</th><th scope="col">主な機能</th></tr>
                     </thead>
                     <tbody>
-                        @foreach ($plans as $plan)
+                        @foreach ($plans as $planCode => $plan)
+                            @if ($planCode === config('opsdeck.free_plan_code') || config('opsdeck.billing.enabled'))
                             <tr>
                                 <th scope="row">{{ $plan['label'] }}</th>
                                 <td data-label="月額">{{ $plan['monthly_price_jpy'] === 0 ? '無料' : '月額'.number_format((int) $plan['monthly_price_jpy']).'円（税別）' }}</td>
@@ -72,11 +77,16 @@
                                     </ul>
                                 </td>
                             </tr>
+                            @endif
                         @endforeach
                     </tbody>
                 </table>
             </div>
-            <p class="muted">Premiumの適用税額を含むお支払い総額は、申込前にStripe Checkoutで確認できます。</p>
+            @if (config('opsdeck.billing.enabled'))
+                <p class="muted">Premiumの適用税額を含むお支払い総額は、申込前にStripe Checkoutで確認できます。</p>
+            @else
+                <p class="muted">現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。</p>
+            @endif
         </section>
         @foreach ($faqs as $faq)
             <details class="help-faq">

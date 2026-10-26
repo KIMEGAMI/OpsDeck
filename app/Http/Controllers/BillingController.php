@@ -28,6 +28,10 @@ class BillingController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
+        if (! (bool) config('opsdeck.billing.enabled')) {
+            return view('billing.free-only');
+        }
+
         $failedStripeEventQuery = StripeWebhookEvent::query()
             ->where('organization_id', $organization->id)
             ->whereNotNull('processing_error');
@@ -69,6 +73,7 @@ class BillingController extends Controller
 
     public function updateStorageAddon(StoreStorageAddonRequest $request, StorageAddonScheduleService $storageAddonScheduleService): RedirectResponse|Response
     {
+        abort_unless((bool) config('opsdeck.billing.enabled'), Response::HTTP_NOT_FOUND);
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
         abort_unless(config('opsdeck.release_features.storage_addon'), Response::HTTP_NOT_FOUND);
@@ -97,6 +102,7 @@ class BillingController extends Controller
 
     public function checkout(Request $request, StripeTaxRegistrationReadiness $taxRegistrationReadiness): RedirectResponse|Response
     {
+        abort_unless((bool) config('opsdeck.billing.enabled'), Response::HTTP_NOT_FOUND);
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
         if (app()->environment('production') && ! app(CommercialInformationReadiness::class)->isConfigured()) {
@@ -203,6 +209,7 @@ class BillingController extends Controller
 
     public function portal(Request $request): RedirectResponse|Response
     {
+        abort_unless((bool) config('opsdeck.billing.enabled'), Response::HTTP_NOT_FOUND);
         $organization = $this->organization($request);
         $this->authorize('manageBilling', $organization);
         abort_unless(config('services.stripe.secret') && $organization->stripe_customer_id, 422, 'Stripe Customerが登録されていません。');

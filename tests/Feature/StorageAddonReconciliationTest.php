@@ -20,7 +20,10 @@ class StorageAddonReconciliationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['opsdeck.release_features.storage_addon' => true]);
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+        ]);
     }
 
     #[RunInSeparateProcess]
@@ -56,6 +59,21 @@ class StorageAddonReconciliationTest extends TestCase
             ->assertExitCode(0);
 
         $this->assertDatabaseCount('storage_addon_reconciliation_runs', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_reconciliation_command_does_not_contact_stripe_when_billing_is_disabled(): void
+    {
+        config([
+            'opsdeck.billing.enabled' => false,
+            'services.stripe.secret' => 'sk_test_disabled_billing',
+        ]);
+        Http::preventStrayRequests();
+
+        $this->artisan('opsdeck:storage-addon:reconcile')
+            ->expectsOutput('Storage add-on reconciliation: disabled')
+            ->assertExitCode(0);
+
         Http::assertNothingSent();
     }
 

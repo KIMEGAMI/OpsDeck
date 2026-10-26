@@ -6,6 +6,13 @@ use Tests\TestCase;
 
 class LegalPagesTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['opsdeck.billing.enabled' => true]);
+    }
+
     public function test_public_legal_pages_are_available_without_authentication(): void
     {
         $this->get(route('legal.terms'))->assertOk()->assertSee('利用規約')->assertSee('最終更新日：'.config('opsdeck.legal_last_updated'));
@@ -63,5 +70,21 @@ class LegalPagesTest extends TestCase
         $this->get(route('legal.commercial-transactions'))
             ->assertOk()
             ->assertSee('未設定（本番公開前に設定が必要です）');
+    }
+
+    public function test_free_only_mode_discloses_that_stripe_billing_is_disabled(): void
+    {
+        config(['opsdeck.billing.enabled' => false]);
+
+        $this->get(route('legal.privacy'))
+            ->assertOk()
+            ->assertSee('Stripe：現在は課金機能を停止しており、決済情報をStripeへ送信しません。')
+            ->assertDontSee('Stripe：Premiumの申込・請求・契約状態の確認に利用します。');
+
+        $this->get(route('legal.commercial-transactions'))
+            ->assertOk()
+            ->assertSee('現在は月額0円のFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
+            ->assertDontSee('月額9,800円（税別）')
+            ->assertDontSee('Stripe Checkoutで合計を表示します');
     }
 }

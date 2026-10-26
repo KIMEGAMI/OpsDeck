@@ -144,8 +144,13 @@
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-pricing-title">
-            <h2 id="landing-pricing-title">まずFreeで整理。もっと深く見直すならPremium。</h2>
-            <p class="landing-note">台帳の一元管理から始めて、必要に応じて費用候補の試算、作業時間の記録、更新通知、セキュリティ対応へ広げられます。</p>
+            @if (config('opsdeck.billing.enabled'))
+                <h2 id="landing-pricing-title">まずFreeで整理。もっと深く見直すならPremium。</h2>
+                <p class="landing-note">台帳の一元管理から始めて、必要に応じて費用候補の試算、作業時間の記録、更新通知、セキュリティ対応へ広げられます。</p>
+            @else
+                <h2 id="landing-pricing-title">無料のFreeプランから始められます。</h2>
+                <p class="landing-note">現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。</p>
+            @endif
             <div class="landing-pricing">
                 <article class="landing-plan">
                     <h3>Free</h3>
@@ -159,20 +164,24 @@
                     </ul>
                     <a class="landing-button" href="{{ route('register') }}">Freeで始める</a>
                 </article>
-                <article class="landing-plan landing-plan-premium">
-                    <h3>Premium</h3>
-                    <p class="landing-price">月額{{ number_format((int) $plans['premium']['monthly_price_jpy']) }}円（税別）</p>
-                    <ul>
-                        <li>社員{{ number_format((int) $plans['premium']['limits']['employees']) }}名・端末{{ number_format((int) $plans['premium']['limits']['assets']) }}台・SaaS{{ number_format((int) $plans['premium']['limits']['saas_services']) }}件まで</li>
-                        @foreach ($plans['premium']['features'] as $feature)
-                            <li>{{ $feature }}</li>
-                        @endforeach
-                        <li>管理者{{ number_format((int) $plans['premium']['limits']['administrators']) }}名まで</li>
-                    </ul>
-                    <a class="landing-button" href="{{ route('register') }}">Premiumに申し込む（登録後）</a>
-                </article>
+                @if (config('opsdeck.billing.enabled'))
+                    <article class="landing-plan landing-plan-premium">
+                        <h3>Premium</h3>
+                        <p class="landing-price">月額{{ number_format((int) $plans['premium']['monthly_price_jpy']) }}円（税別）</p>
+                        <ul>
+                            <li>社員{{ number_format((int) $plans['premium']['limits']['employees']) }}名・端末{{ number_format((int) $plans['premium']['limits']['assets']) }}台・SaaS{{ number_format((int) $plans['premium']['limits']['saas_services']) }}件まで</li>
+                            @foreach ($plans['premium']['features'] as $feature)
+                                <li>{{ $feature }}</li>
+                            @endforeach
+                            <li>管理者{{ number_format((int) $plans['premium']['limits']['administrators']) }}名まで</li>
+                        </ul>
+                        <a class="landing-button" href="{{ route('register') }}">Premiumに申し込む（登録後）</a>
+                    </article>
+                @endif
             </div>
-            <p class="landing-note">適用税額を加算し、申込前にStripe Checkoutでお支払い総額を表示します。削減候補額は入力情報と設定条件に基づく試算であり、実際の削減を保証するものではありません。</p>
+            @if (config('opsdeck.billing.enabled'))
+                <p class="landing-note">適用税額を加算し、申込前にStripe Checkoutでお支払い総額を表示します。削減候補額は入力情報と設定条件に基づく試算であり、実際の削減を保証するものではありません。</p>
+            @endif
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-scope-title">
