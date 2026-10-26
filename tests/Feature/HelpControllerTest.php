@@ -6,6 +6,13 @@ use Tests\TestCase;
 
 class HelpControllerTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['opsdeck.billing.enabled' => true]);
+    }
+
     public function test_help_page_is_public_and_contains_scope_guidance(): void
     {
         config(['opsdeck.release_features.google_sheets' => false]);
@@ -95,5 +102,16 @@ class HelpControllerTest extends TestCase
 
         $response->assertSee('月額'.number_format((int) config('opsdeck.plans.premium.monthly_price_jpy')).'円（税別）')
             ->assertSee('社員'.number_format((int) config('opsdeck.plans.free.limits.employees')).'名');
+    }
+
+    public function test_free_only_mode_hides_premium_pricing_from_the_help_page(): void
+    {
+        config(['opsdeck.billing.enabled' => false]);
+
+        $this->get(route('help.index'))
+            ->assertOk()
+            ->assertSee('無料プラン（Free）の登録上限')
+            ->assertSee('現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
+            ->assertDontSee('月額9,800円（税別）');
     }
 }

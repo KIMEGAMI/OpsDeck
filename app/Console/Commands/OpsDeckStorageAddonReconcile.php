@@ -13,7 +13,7 @@ class OpsDeckStorageAddonReconcile extends Command
 {
     public function handle(StorageAddonReconciliationService $reconciliationService): int
     {
-        if (! config('opsdeck.release_features.storage_addon')) {
+        if (! (bool) config('opsdeck.billing.enabled') || ! config('opsdeck.release_features.storage_addon')) {
             $this->line('Storage add-on reconciliation: disabled');
 
             return self::SUCCESS;

@@ -16,7 +16,8 @@ class StorageAddonScheduleService
 
     public function isAvailableFor(Organization $organization): bool
     {
-        return (bool) config('opsdeck.release_features.storage_addon')
+        return (bool) config('opsdeck.billing.enabled')
+            && (bool) config('opsdeck.release_features.storage_addon')
             && $this->isConfigured()
             && $organization->plan_code === config('opsdeck.premium_plan_code')
             && $organization->billing_status === 'active'

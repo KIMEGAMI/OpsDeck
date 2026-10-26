@@ -25,6 +25,17 @@ use Tests\TestCase;
 
 class StripeWebhookControllerTest extends TestCase
 {
+    public function test_webhook_is_unavailable_when_billing_is_disabled(): void
+    {
+        config(['opsdeck.billing.enabled' => false]);
+        Http::preventStrayRequests();
+
+        $this->post(route('billing.stripe.webhook'), [], ['Stripe-Signature' => 'invalid'])
+            ->assertNotFound();
+
+        Http::assertNothingSent();
+    }
+
     public function test_webhook_queues_only_minimal_encrypted_event_data_and_returns_before_processing(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

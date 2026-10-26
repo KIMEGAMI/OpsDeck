@@ -19,6 +19,7 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing" force="true"/>
+        <env name="OPSDECK_BILLING_ENABLED" value="true" force="true"/>
         <env name="OPSDECK_RELEASE_GOOGLE_SHEETS" value="true" force="true"/>
         <env name="OPSDECK_RELEASE_IMPACT_REPORT" value="true" force="true"/>
         <env name="OPSDECK_RELEASE_REFERRALS" value="true" force="true"/>

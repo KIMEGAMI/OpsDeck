@@ -2,6 +2,7 @@
 
 $maximumXlsxRows = max(1, (int) env('OPSDECK_XLSX_MAX_ROWS', 20000));
 $aiPremiumMonthlyBudgetJpy = max(0, (int) env('OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY', 500));
+$billingEnabled = filter_var(env('OPSDECK_BILLING_ENABLED', false), FILTER_VALIDATE_BOOLEAN);
 $localBackupRetentionDays = filter_var(env('OPSDECK_BACKUP_LOCAL_RETENTION_DAYS', 30), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 $localBackupRetentionDays = $localBackupRetentionDays === false ? 30 : $localBackupRetentionDays;
 $aiModelPrices = json_decode((string) env('OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS', '{}'), true);
@@ -185,12 +186,13 @@ return [
         'stripe' => ['title' => 'プラン・お支払いで困ったとき', 'steps' => ['プラン・お支払い画面で、現在の契約状態を確認してください', '支払い後も状態が変わらない場合は、受付番号と発生日時を添えてお問い合わせください', 'カード番号やセキュリティコードは、メールやお問い合わせフォームに書かないでください']],
     ],
     'default_timezone' => env('OPSDECK_DEFAULT_TIMEZONE', config('app.timezone')),
-    'default_plan_code' => env('OPSDECK_DEFAULT_PLAN_CODE', 'free'),
+    'default_plan_code' => $billingEnabled ? env('OPSDECK_DEFAULT_PLAN_CODE', 'free') : 'free',
     'free_plan_code' => 'free',
     'premium_plan_code' => 'premium',
     'legacy_plan_code' => 'standard',
-    'default_billing_status' => env('OPSDECK_DEFAULT_BILLING_STATUS', 'inactive'),
+    'default_billing_status' => $billingEnabled ? env('OPSDECK_DEFAULT_BILLING_STATUS', 'inactive') : 'inactive',
     'billing' => [
+        'enabled' => $billingEnabled,
         'past_due_grace_days' => (int) env('OPSDECK_BILLING_PAST_DUE_GRACE_DAYS', 7),
         'checkout_attempts_per_minute' => max(1, (int) env('OPSDECK_BILLING_CHECKOUT_ATTEMPTS_PER_MINUTE', 3)),
         'portal_attempts_per_minute' => max(1, (int) env('OPSDECK_BILLING_PORTAL_ATTEMPTS_PER_MINUTE', 3)),

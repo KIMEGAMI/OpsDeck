@@ -19,6 +19,7 @@ class StripeWebhookController extends Controller
 {
     public function __invoke(Request $request): Response
     {
+        abort_unless((bool) config('opsdeck.billing.enabled'), Response::HTTP_NOT_FOUND);
         $payload = $request->getContent();
         $this->verifySignature($payload, (string) $request->header('Stripe-Signature'));
         $decoded = json_decode($payload, true);
@@ -64,6 +65,10 @@ class StripeWebhookController extends Controller
     /** @param array<string, mixed> $event */
     public function processRecordedEvent(int $eventId, array $event): void
     {
+        if (! (bool) config('opsdeck.billing.enabled')) {
+            return;
+        }
+
         $recordedEvent = StripeWebhookEvent::query()->findOrFail($eventId);
         if ($recordedEvent->processed_at !== null) {
             return;

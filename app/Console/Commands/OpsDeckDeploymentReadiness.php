@@ -129,9 +129,11 @@ class OpsDeckDeploymentReadiness extends Command
         }
         $skipProviderVerification = (bool) $this->option('skip-provider-verification');
         $skipStripeVerification = $skipProviderVerification || (bool) $this->option('skip-stripe-verification');
-        $skippedProviderChecks = $skipProviderVerification
-            ? ['mail', 'failure_alert', 'stripe']
-            : ($skipStripeVerification ? ['stripe'] : []);
+        $billingEnabled = (bool) config('opsdeck.billing.enabled');
+        $skippedProviderChecks = $skipProviderVerification ? ['mail', 'failure_alert'] : [];
+        if ($billingEnabled && $skipStripeVerification) {
+            $skippedProviderChecks[] = 'stripe';
+        }
         $productionMailTransportReady = $skipProviderVerification ? null : $this->hasProductionMailTransport();
         $this->backupRestoreTargetIssue = $restoreTargetConfiguration->readinessStatus();
         $latestBackupStatus = 'not_applicable';
@@ -181,8 +183,10 @@ class OpsDeckDeploymentReadiness extends Command
             'failure_alert' => $skipProviderVerification
                 ? 'unverified'
                 : ($this->hasProductionFailureAlert($productionMailTransportReady) ? 'pass' : 'fail'),
-            'stripe' => $skipStripeVerification ? 'unverified' : ($this->hasProductionStripeCredentials() ? 'pass' : 'fail'),
-            'commercial_information' => app()->environment('production')
+            'stripe' => ! $billingEnabled
+                ? 'not_applicable'
+                : ($skipStripeVerification ? 'unverified' : ($this->hasProductionStripeCredentials() ? 'pass' : 'fail')),
+            'commercial_information' => app()->environment('production') && $billingEnabled
                 ? (app(CommercialInformationReadiness::class)->isConfigured() ? 'pass' : 'fail')
                 : 'not_applicable',
             'frontend_assets' => app()->environment('production')
@@ -254,7 +258,9 @@ class OpsDeckDeploymentReadiness extends Command
                 ));
             }
 
-            if ($skipProviderVerification) {
+            if (! $billingEnabled) {
+                $this->line('課金機能が無効のため、Stripeと販売者情報の確認は対象外です。');
+            } elseif ($skipProviderVerification) {
                 $this->line('ResendとStripeの外部検証は省略されました。リリース前に通常の導入チェックを実行してください。');
             } elseif ($skipStripeVerification) {
                 $this->line('Stripeの外部検証は省略されました。リリース前に通常の導入チェックを実行してください。');

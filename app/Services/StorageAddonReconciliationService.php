@@ -24,7 +24,8 @@ class StorageAddonReconciliationService
         $secret = config('services.stripe.secret');
         $premiumPriceId = config('services.stripe.prices.premium');
         $addonPriceId = config('services.stripe.prices.storage_addon_gib');
-        $isConfigured = is_string($secret) && trim($secret) !== ''
+        $isConfigured = (bool) config('opsdeck.billing.enabled')
+            && is_string($secret) && trim($secret) !== ''
             && is_string($premiumPriceId) && trim($premiumPriceId) !== ''
             && is_string($addonPriceId) && trim($addonPriceId) !== '';
 

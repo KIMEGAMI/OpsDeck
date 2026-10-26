@@ -74,6 +74,16 @@ class PlanAccessServiceTest extends TestCase
         $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
     }
 
+    public function test_free_only_mode_forces_premium_organizations_to_free_entitlements(): void
+    {
+        config(['opsdeck.billing.enabled' => false]);
+        $organization = $this->organization(['billing_status' => 'active']);
+
+        $this->assertSame(config('opsdeck.free_plan_code'), app(PlanAccessService::class)->effectivePlanCode($organization));
+        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
+        $this->assertSame(20, collect(app(PlanUsageService::class)->forOrganization($organization))->firstWhere('key', 'employees')['limit']);
+    }
+
     /** @param array<string, mixed> $overrides */
     private function organization(array $overrides = []): Organization
     {

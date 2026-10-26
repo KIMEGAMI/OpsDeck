@@ -697,6 +697,27 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             && str_starts_with($request->url(), 'https://api.resend.com/domains'));
     }
 
+    public function test_free_only_mode_does_not_require_stripe_or_seller_information(): void
+    {
+        $this->configureReadyDeployment();
+        config(['opsdeck.billing.enabled' => false]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ready', $output['status']);
+        $this->assertSame('not_applicable', $output['checks']['stripe']);
+        $this->assertSame('not_applicable', $output['checks']['commercial_information']);
+        $this->assertSame(0, $exitCode);
+        Http::assertSentCount(1);
+        Http::assertNotSent(fn (Request $request): bool => str_starts_with($request->url(), 'https://api.stripe.com/'));
+    }
+
     public function test_production_readiness_requires_a_platform_storage_limit(): void
     {
         $this->configureReadyDeployment();

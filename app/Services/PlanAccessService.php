@@ -9,6 +9,10 @@ class PlanAccessService
 {
     public function effectivePlanCode(Organization $organization): string
     {
+        if (! (bool) config('opsdeck.billing.enabled')) {
+            return (string) config('opsdeck.free_plan_code');
+        }
+
         if ($organization->plan_code !== config('opsdeck.premium_plan_code')) {
             return $organization->plan_code;
         }
