@@ -152,6 +152,20 @@ remote_deploy() {
         if [[ -n "${staging_path:-}" && -d "$staging_path" ]]; then
             rm -rf -- "$staging_path"
         fi
+        if [[ -d "$release_path" ]]; then
+            local active_link
+            local active_release_target
+            for active_link in "$root/current" "$root/previous"; do
+                if [[ -L "$active_link" ]]; then
+                    active_release_target="$(realpath -e -- "$active_link" 2>/dev/null || true)"
+                    if [[ "$active_release_target" == "$release_path" ]]; then
+                        rm -f -- "$archive_path"
+                        return
+                    fi
+                fi
+            done
+            rm -rf -- "$release_path"
+        fi
         rm -f -- "$archive_path"
     }
     trap cleanup_remote_files EXIT
@@ -169,36 +183,40 @@ remote_deploy() {
     ln -s -- "$root/shared/.env" "$staging_path/.env"
     ln -s -- "$root/shared/storage" "$staging_path/storage"
 
-    if ! "$php_bin" "$staging_path/artisan" config:cache --no-interaction >/dev/null 2>&1; then
+    chmod 755 "$staging_path"
+    mv -- "$staging_path" "$release_path"
+    staging_path=""
+
+    if ! "$php_bin" "$release_path/artisan" config:cache --no-interaction >/dev/null 2>&1; then
         fail "The new release configuration cache could not be created."
     fi
-    if ! "$php_bin" "$staging_path/artisan" event:cache --no-interaction >/dev/null 2>&1; then
+    if ! "$php_bin" "$release_path/artisan" event:cache --no-interaction >/dev/null 2>&1; then
         fail "The new release event cache could not be created."
     fi
-    if ! "$php_bin" "$staging_path/artisan" view:cache --no-interaction >/dev/null 2>&1; then
+    if ! "$php_bin" "$release_path/artisan" view:cache --no-interaction >/dev/null 2>&1; then
         fail "The new release view cache could not be created."
     fi
     if [[ "$has_previous_release" != true ]]; then
-        if ! "$php_bin" "$staging_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
+        if ! "$php_bin" "$release_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
             fail "The initial pre-migration production database backup failed; the active release was not switched."
         fi
     fi
-    if ! "$php_bin" "$staging_path/artisan" migrate --force --no-interaction >/dev/null 2>&1; then
+    if ! "$php_bin" "$release_path/artisan" migrate --force --no-interaction >/dev/null 2>&1; then
         fail "The production database migration failed; the active release was not switched."
     fi
     if [[ "$has_previous_release" != true ]]; then
-        if ! "$php_bin" "$staging_path/artisan" opsdeck:scheduler:heartbeat --no-interaction >/dev/null 2>&1; then
+        if ! "$php_bin" "$release_path/artisan" opsdeck:scheduler:heartbeat --no-interaction >/dev/null 2>&1; then
             fail "The initial scheduler heartbeat could not be recorded; the active release was not switched."
         fi
-        if ! "$php_bin" "$staging_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
+        if ! "$php_bin" "$release_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
             fail "The initial production database backup failed; the active release was not switched."
         fi
-        if ! "$php_bin" "$staging_path/artisan" opsdeck:backup:restore-test --no-interaction >/dev/null 2>&1; then
+        if ! "$php_bin" "$release_path/artisan" opsdeck:backup:restore-test --no-interaction >/dev/null 2>&1; then
             fail "The initial backup restore test failed; the active release was not switched."
         fi
     fi
     if [[ "$has_previous_release" == true ]]; then
-        if ! readiness_output="$("$php_bin" "$staging_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
+        if ! readiness_output="$("$php_bin" "$release_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
             if [[ -n "$readiness_output" ]]; then
                 printf 'Production readiness result: %s\n' "$readiness_output" >&2
             fi
@@ -209,9 +227,6 @@ remote_deploy() {
         fi
     fi
 
-    chmod 755 "$staging_path"
-    mv -- "$staging_path" "$release_path"
-    staging_path=""
     if [[ "$has_previous_release" == true ]]; then
         atomic_symlink "$root" previous "$current_target" "$deployment_id"
     fi
