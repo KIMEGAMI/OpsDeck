@@ -13,6 +13,7 @@ use App\Services\PlanAccessService;
 use App\Services\PlanFeatureService;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as StripeHttpRequest;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +26,8 @@ use Tests\TestCase;
 
 class StripeWebhookControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_webhook_is_unavailable_when_billing_is_disabled(): void
     {
         config(['opsdeck.billing.enabled' => false]);
@@ -887,6 +890,8 @@ class StripeWebhookControllerTest extends TestCase
             },
         ]);
 
+        $transactionLevelBeforeProcessing = DB::connection()->transactionLevel();
+
         $this->postSignedStripeEvent([
             'id' => 'evt_same_second_payment_failure_'.Str::uuid(),
             'type' => 'invoice.payment_failed',
@@ -901,7 +906,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertSame('active', $organization->billing_status);
         $this->assertSame('premium', $organization->plan_code);
         $this->assertNull($organization->billing_failure_event_id);
-        $this->assertSame([0], $transactionLevels);
+        $this->assertSame([$transactionLevelBeforeProcessing], $transactionLevels);
         Http::assertSent(fn (StripeHttpRequest $request): bool => $request->method() === 'GET'
             && $request->url() === 'https://api.stripe.com/v1/subscriptions/'.$subscriptionId);
     }

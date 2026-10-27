@@ -26,7 +26,8 @@ class TestingEnvironmentIsolationTest extends TestCase
         $this->assertTrue(config('opsdeck.ai.enabled'));
         $this->assertSame('openai', config('opsdeck.ai.provider'));
         $this->assertSame('', config('opsdeck.ai.api_key'));
-        $this->assertSame('', config('services.stripe.secret'));
+        $this->assertSame('test', config('services.stripe.environment'));
+        $this->assertNull(config('services.stripe.secret'));
     }
 
     public function test_unmatched_http_requests_are_rejected_before_network_access(): void

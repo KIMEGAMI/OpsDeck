@@ -10,6 +10,7 @@ use App\Http\Controllers\AssetController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Auth\EmailVerificationController;
+use App\Http\Controllers\Auth\GoogleLoginController;
 use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
 use App\Http\Controllers\Auth\RegisteredUserController;
@@ -45,6 +46,7 @@ use App\Http\Controllers\SavedViewController;
 use App\Http\Controllers\SecurityControlController;
 use App\Http\Controllers\StripeWebhookController;
 use App\Http\Controllers\SupportRequestController;
+use App\Http\Controllers\UserSettingsController;
 use App\Http\Controllers\WeeklySummaryController;
 use App\Http\Controllers\WorkTimeMeasurementController;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
@@ -69,6 +71,7 @@ Route::get('/support', [SupportRequestController::class, 'create'])->name('suppo
 Route::post('/support', [SupportRequestController::class, 'store'])->middleware('throttle:support')->name('support.store');
 
 Route::middleware('guest')->group(function (): void {
+    Route::get('/auth/google/redirect', [GoogleLoginController::class, 'redirect'])->middleware('throttle:login')->name('login.google.redirect');
     Route::get('/register', [RegisteredUserController::class, 'create'])->name('register');
     Route::post('/register', [RegisteredUserController::class, 'store'])->middleware('throttle:register')->name('register.store');
     Route::get('/login', [AuthenticatedSessionController::class, 'create'])->name('login');
@@ -81,8 +84,14 @@ Route::middleware('guest')->group(function (): void {
 
 Route::post('/billing/stripe/webhook', StripeWebhookController::class)->withoutMiddleware([ValidateCsrfToken::class])->name('billing.stripe.webhook');
 Route::get('/r/{code}', [ReferralController::class, 'redirect'])->middleware(['release.feature:referrals', 'throttle:referrals'])->name('referrals.redirect');
+Route::get('/auth/google/callback', [GoogleLoginController::class, 'callback'])->middleware('throttle:login')->name('login.google.callback');
 
 Route::middleware('auth')->group(function (): void {
+    Route::get('/settings/profile', [UserSettingsController::class, 'edit'])->name('settings.profile');
+    Route::put('/settings/profile', [UserSettingsController::class, 'updateProfile'])->name('settings.profile.update');
+    Route::put('/settings/password', [UserSettingsController::class, 'updatePassword'])->middleware('throttle:password-reset')->name('settings.password.update');
+    Route::post('/settings/google-login/connect', [GoogleLoginController::class, 'connect'])->middleware(['verified', 'throttle:password-reset'])->name('settings.google-login.connect');
+    Route::post('/settings/google-login/disconnect', [UserSettingsController::class, 'disconnectGoogleLogin'])->middleware('throttle:password-reset')->name('settings.google-login.disconnect');
     Route::get('/email/verify', [EmailVerificationController::class, 'notice'])->name('verification.notice');
     Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])->middleware('signed')->name('verification.verify');
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])->middleware('throttle:email-verification')->name('verification.send');

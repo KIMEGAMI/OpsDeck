@@ -1,5 +1,45 @@
 <?php
 
+$stripeEnvironment = strtolower(trim((string) env('OPSDECK_STRIPE_ENVIRONMENT', 'test')));
+$stripeCredentials = match ($stripeEnvironment) {
+    'test' => [
+        'secret' => env('OPSDECK_STRIPE_TEST_SECRET_KEY'),
+        'premium_price' => env('OPSDECK_STRIPE_TEST_PRICE_PREMIUM'),
+        'storage_addon_price' => env('OPSDECK_STRIPE_TEST_PRICE_STORAGE_ADDON_GIB'),
+        'webhook_secret' => env('OPSDECK_STRIPE_TEST_WEBHOOK_SECRET'),
+    ],
+    'live' => [
+        'secret' => env('OPSDECK_STRIPE_LIVE_SECRET_KEY'),
+        'premium_price' => env('OPSDECK_STRIPE_LIVE_PRICE_PREMIUM'),
+        'storage_addon_price' => env('OPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIB'),
+        'webhook_secret' => env('OPSDECK_STRIPE_LIVE_WEBHOOK_SECRET'),
+    ],
+    default => [
+        'secret' => null,
+        'premium_price' => null,
+        'storage_addon_price' => null,
+        'webhook_secret' => null,
+    ],
+};
+
+foreach ($stripeCredentials as $name => $value) {
+    $normalizedValue = is_string($value) ? trim($value) : '';
+    $stripeCredentials[$name] = $normalizedValue !== '' ? $normalizedValue : null;
+}
+
+$expectedStripeSecretPrefix = match ($stripeEnvironment) {
+    'test' => 'sk_test_',
+    'live' => 'sk_live_',
+    default => null,
+};
+
+$stripeSecret = $stripeCredentials['secret'];
+if (! is_string($stripeSecret)
+    || $expectedStripeSecretPrefix === null
+    || ! str_starts_with($stripeSecret, $expectedStripeSecretPrefix)) {
+    $stripeSecret = null;
+}
+
 return [
 
     /*
@@ -39,21 +79,29 @@ return [
         'client_id' => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),
         'redirect_uri' => env('GOOGLE_REDIRECT_URI'),
+        'login_redirect_uri' => env('GOOGLE_LOGIN_REDIRECT_URI'),
+        'login_enabled' => filled(env('GOOGLE_CLIENT_ID'))
+            && filled(env('GOOGLE_CLIENT_SECRET'))
+            && filled(env('GOOGLE_LOGIN_REDIRECT_URI')),
+        'login_scopes' => ['openid'],
         'scopes' => [
             'https://www.googleapis.com/auth/drive.metadata.readonly',
             'https://www.googleapis.com/auth/spreadsheets.readonly',
         ],
         'authorization_endpoint' => 'https://accounts.google.com/o/oauth2/v2/auth',
         'token_endpoint' => 'https://oauth2.googleapis.com/token',
+        'userinfo_endpoint' => 'https://openidconnect.googleapis.com/v1/userinfo',
+        'timeout_seconds' => max(1, (int) env('GOOGLE_OAUTH_TIMEOUT_SECONDS', 10)),
     ],
 
     'stripe' => [
-        'secret' => env('STRIPE_SECRET'),
+        'environment' => $stripeEnvironment,
+        'secret' => $stripeSecret,
         'prices' => [
-            'premium' => env('STRIPE_PRICE_PREMIUM', env('STRIPE_PRICE_ID')),
-            'storage_addon_gib' => env('STRIPE_PRICE_STORAGE_ADDON_GIB'),
+            'premium' => $stripeCredentials['premium_price'],
+            'storage_addon_gib' => $stripeCredentials['storage_addon_price'],
         ],
-        'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+        'webhook_secret' => $stripeCredentials['webhook_secret'],
         'signature_tolerance_seconds' => (int) env('STRIPE_SIGNATURE_TOLERANCE_SECONDS', 300),
         'connect_timeout_seconds' => max(1, (int) env('STRIPE_CONNECT_TIMEOUT_SECONDS', 3)),
         'timeout_seconds' => max(1, (int) env('STRIPE_TIMEOUT_SECONDS', 10)),

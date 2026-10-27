@@ -344,7 +344,7 @@ class OpsDeckDeploymentReadiness extends Command
                 'cache_lock' => '共有Cacheの接続、DB利用時はcache/cache_locksテーブルを確認し、一時ロックの取得・解放ができることを確認する',
                 'mail' => 'Resend SMTPを使う場合は、既存のMAIL_MAILER=smtp、MAIL_HOST=smtp.resend.com、MAIL_PORT=587、MAIL_SCHEME=smtp、MAIL_USERNAME=resend、MAIL_PASSWORD、MAIL_FROM_ADDRESS、MAIL_FROM_NAME、CONTACT_TO_ADDRESSを設定する。問い合わせ先CONTACT_TO_ADDRESSは送信元と分ける。メール送信の再試行間隔MAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する。このSMTP確認は設定値の確認であり、実際の配信成功や重複排除を保証しない。API方式を選ぶ場合のみ、冪等性設定とドメイン確認用APIキーが必要',
                 'failure_alert' => 'OPSDECK_PLATFORM_ADMIN_EMAILSに有効な管理者メールを設定し、共有Cacheとメール送信設定を確認する',
-                'stripe' => '本番用STRIPE_SECRET / STRIPE_PRICE_PREMIUM / STRIPE_WEBHOOK_SECRETを設定し、Stripe上のPremium Priceが有効なJPY月額価格であることを確認する',
+                'stripe' => 'OPSDECK_STRIPE_ENVIRONMENT=liveを設定し、OPSDECK_STRIPE_LIVE_SECRET_KEY / OPSDECK_STRIPE_LIVE_PRICE_PREMIUM / OPSDECK_STRIPE_LIVE_WEBHOOK_SECRETを本番モードの値にする。追加容量を公開する場合はOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBも設定する',
                 'ai_mapping' => 'OPSDECK_AI_ENABLED=true、OPSDECK_AI_PROVIDER=openai、OPENAI_API_KEY と OPENAI_API_ENDPOINT=https://api.openai.com/v1/responses を設定してください。この確認は外部APIへ接続しません。AI障害時は手動マッピングを利用できます',
                 'ai_cost' => 'OPSDECK_AI_USD_TO_JPY_RATE と OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS を設定し、利用モデルの入力・出力単価をAI事業者の最新料金表に合わせる',
                 'commercial_information' => 'OPSDECK_SELLER_NAME / OPSDECK_SELLER_ADDRESS / OPSDECK_SELLER_PHONE / OPSDECK_SELLER_REPRESENTATIVE に正確な販売者情報を設定する',
@@ -2047,7 +2047,7 @@ class OpsDeckDeploymentReadiness extends Command
             'mailer_must_be_idempotent_resend' => 'MAIL_MAILERはsmtpまたはresend_idempotentを設定してください。',
             'resend_idempotency_configuration_incomplete' => 'RESEND_IDEMPOTENT_MAIL_ENABLED=trueとMAIL_PASSWORD（Resend APIキー）、RESEND_API_TIMEOUTを確認してください。MAIL_*の名前は変更不要です。',
             'resend_sending_domain_unverified_or_unavailable' => 'ドメイン確認用APIキーと、送信元ドメインのverified・sending enabled状態を確認してください。',
-            'live_secret_price_or_webhook_key_invalid' => 'Stripe本番用Secret、Price ID、Webhook Secretが設定されているか確認してください。値は表示しません。',
+            'live_secret_price_or_webhook_key_invalid' => 'OPSDECK_STRIPE_ENVIRONMENT=liveと、OPSDECK_STRIPE_LIVE_SECRET_KEY / OPSDECK_STRIPE_LIVE_PRICE_PREMIUM / OPSDECK_STRIPE_LIVE_WEBHOOK_SECRETの組み合わせを確認してください。追加容量を公開する場合はOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBも確認してください。値は表示しません。',
             'stripe_price_api_unavailable' => 'Stripe Price APIへ接続できませんでした。ネットワークとAPI利用可否を確認してください。',
             'stripe_price_api_rejected_request' => 'Stripe Price APIが要求を受け付けませんでした。SecretとPrice IDの組み合わせを確認してください。',
             'premium_price_configuration_mismatch' => sprintf(
@@ -2055,7 +2055,7 @@ class OpsDeckDeploymentReadiness extends Command
                 number_format((int) config('opsdeck.plans.premium.monthly_price_jpy')),
             ),
             'storage_addon_capacity_limit_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBに1社あたりの追加容量上限（最大48GiB）を設定してください。全社合計はOPSDECK_PLATFORM_STORAGE_LIMIT_MIBの枠内で制御されます。',
-            'storage_addon_price_configuration_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBを設定する場合は、STRIPE_PRICE_STORAGE_ADDON_GIBに追加容量用Price IDを設定してください。値は表示しません。',
+            'storage_addon_price_configuration_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBを設定する場合は、現在のStripeモードに対応するOPSDECK_STRIPE_TEST_PRICE_STORAGE_ADDON_GIBまたはOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBを設定してください。値は表示しません。',
             'storage_addon_price_api_unavailable' => '追加容量用PriceをStripe APIで確認できませんでした。ネットワークとAPI利用可否を確認してください。',
             'storage_addon_price_api_rejected_request' => '追加容量用PriceのStripe API要求が拒否されました。SecretとPrice IDの組み合わせを確認してください。',
             'storage_addon_price_configuration_mismatch' => sprintf(

@@ -5,6 +5,9 @@
         @if (session('status'))
             <p role="status">{{ session('status') }}</p>
         @endif
+        @if (config('services.google.login_enabled'))
+            <p><a class="auth-provider-button" href="{{ route('login.google.redirect') }}">Googleでログイン</a></p>
+        @endif
         <form method="post" action="{{ route('login.store') }}">
             @csrf
             <label for="email">メールアドレス</label>
