@@ -119,6 +119,8 @@ class OpsDeckDeploymentReadinessTest extends TestCase
 
     private function setResendDomainCheckApiKey(?string $apiKey): void
     {
+        config(['mail.resend_domain_check_key' => $apiKey]);
+
         if ($apiKey === null) {
             putenv('RESEND_DOMAIN_CHECK_API_KEY');
             unset($_ENV['RESEND_DOMAIN_CHECK_API_KEY'], $_SERVER['RESEND_DOMAIN_CHECK_API_KEY']);
@@ -1325,26 +1327,65 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         Http::assertNotSent(static fn (Request $request): bool => str_contains($request->url(), 'api.resend.com/domains'));
     }
 
-    public function test_it_uses_a_temporary_process_key_for_the_resend_domain_check(): void
+    public function test_it_uses_the_configured_key_for_the_resend_domain_check(): void
     {
         $this->setResendDomainCheckApiKey('test-ephemeral-domain-check-key');
 
         try {
-            $this->configureReadyDeployment();
-            $connection = $this->mock(Connection::class);
-            $connection->shouldReceive('getPdo')->once();
-            $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
-            DB::shouldReceive('connection')->twice()->andReturn($connection);
+            config([
+                'mail.from.address' => 'info@kimegami.jp',
+                'opsdeck.admin_mail_from_address' => 'opsdeck@kimegami.jp',
+            ]);
+            Http::fake([
+                'api.resend.com/domains*' => Http::response([
+                    'object' => 'list',
+                    'has_more' => false,
+                    'data' => [[
+                        'name' => 'kimegami.jp',
+                        'status' => 'verified',
+                        'capabilities' => ['sending' => 'enabled'],
+                    ]],
+                ], 200),
+            ]);
 
-            $this->artisan('opsdeck:deployment-check', ['--json' => true])
-                ->expectsOutputToContain('"mail":"pass"')
-                ->assertExitCode(0);
+            $command = app(OpsDeckDeploymentReadiness::class);
+            $domainReadiness = new ReflectionMethod($command, 'hasVerifiedResendSendingDomain');
+
+            $this->assertTrue($domainReadiness->invoke($command));
 
             Http::assertSent(static fn (Request $request): bool => str_contains($request->url(), 'api.resend.com/domains')
                 && $request->hasHeader('Authorization', 'Bearer test-ephemeral-domain-check-key'));
         } finally {
             $this->setResendDomainCheckApiKey('test-domain-check-key');
         }
+    }
+
+    public function test_it_uses_cached_mail_configuration_when_the_process_environment_has_no_key(): void
+    {
+        $this->setResendDomainCheckApiKey(null);
+        config([
+            'mail.resend_domain_check_key' => 'cached-domain-check-key',
+            'mail.from.address' => 'info@kimegami.jp',
+            'opsdeck.admin_mail_from_address' => 'opsdeck@kimegami.jp',
+        ]);
+        Http::fake([
+            'api.resend.com/domains*' => Http::response([
+                'object' => 'list',
+                'has_more' => false,
+                'data' => [[
+                    'name' => 'kimegami.jp',
+                    'status' => 'verified',
+                    'capabilities' => ['sending' => 'enabled'],
+                ]],
+            ], 200),
+        ]);
+
+        $command = app(OpsDeckDeploymentReadiness::class);
+        $domainReadiness = new ReflectionMethod($command, 'hasVerifiedResendSendingDomain');
+
+        $this->assertTrue($domainReadiness->invoke($command));
+        Http::assertSent(static fn (Request $request): bool => str_contains($request->url(), 'api.resend.com/domains')
+            && $request->hasHeader('Authorization', 'Bearer cached-domain-check-key'));
     }
 
     public function test_it_fails_readiness_when_resend_sending_capability_is_disabled(): void

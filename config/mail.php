@@ -10,6 +10,8 @@ $resendIdempotentMailEnabled = filter_var(env('RESEND_IDEMPOTENT_MAIL_ENABLED', 
 
 return [
 
+    'resend_domain_check_key' => env('RESEND_DOMAIN_CHECK_API_KEY'),
+
     /*
     |--------------------------------------------------------------------------
     | Default Mailer
