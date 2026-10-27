@@ -31,13 +31,17 @@ cat > "$php_bin" <<'MOCK_PHP'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_PHP_LOG"
 if [[ " $* " == *" opsdeck:deployment-check "* ]]; then
+    [[ -L "$FAKE_APPLICATION_ROOT/current" ]] || {
+        echo "Readiness ran before the current release was switched." >&2
+        exit 1
+    }
     printf '%s\n' '{"status":"ready","checks":{"test":"pass"}}'
 fi
 MOCK_PHP
 
 chmod 755 "$mock_bin/sudo" "$php_bin"
 PATH="$mock_bin:$PATH"
-export PATH FAKE_PHP_LOG="$php_log"
+export PATH FAKE_PHP_LOG="$php_log" FAKE_APPLICATION_ROOT="$application_root"
 
 validate_remote_root() {
     [[ "$1" == "$application_root" ]] || fail "Test used an unexpected application root."
@@ -105,4 +109,4 @@ assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_rele
 remote_prune "$application_root" 2
 assert_true "$( [[ -d "$old_release" && -d "$second_release" && ! -d "$first_release" ]] && printf true || printf false )" "Release cleanup did not preserve the current and previous releases."
 
-printf '%s\n' 'PASS: first deploy, readiness preflight, and rollback flows'
+printf '%s\n' 'PASS: first deploy readiness after activation, preflight, and rollback flows'
