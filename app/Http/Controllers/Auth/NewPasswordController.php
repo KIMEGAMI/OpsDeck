@@ -27,7 +27,7 @@ class NewPasswordController extends Controller
         $status = Password::reset($request->validated(), function (User $user, string $password): void {
             $user->forceFill([
                 'password' => $password,
-                'remember_token' => Str::random(60),
+                'remember_token' => Str::random((int) config('opsdeck.auth.remember_token_length')),
             ])->save();
 
             event(new PasswordReset($user));

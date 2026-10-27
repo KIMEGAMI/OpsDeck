@@ -1,6 +1,10 @@
 @auth
     <nav class="app-navigation" aria-label="メインメニュー">
         <div class="nav-section">
+            <span class="nav-section-label">アカウント</span>
+            <x-nav-link :href="route('settings.profile')" :active="request()->routeIs('settings.profile*', 'settings.password.*')">個人設定</x-nav-link>
+        </div>
+        <div class="nav-section">
             <span class="nav-section-label">基本</span>
             <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">ダッシュボード</x-nav-link>
             <x-nav-link :href="route('employees.index')" :active="request()->routeIs('employees.*')">社員</x-nav-link>

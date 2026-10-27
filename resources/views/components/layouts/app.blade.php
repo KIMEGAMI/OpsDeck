@@ -27,6 +27,7 @@
         .table-scroll table { width: max-content; min-width: 100%; }
         th, td { border-bottom: 1px solid #bcccdc; padding: .75rem; text-align: left; }
         button { cursor: pointer; min-height: var(--interactive-target-min-height); margin-top: 1.25rem; padding: .65rem 1rem; border: 0; border-radius: .25rem; background: #005f73; color: #ffffff; font-weight: 700; }
+        .auth-provider-button { display: inline-flex; min-height: var(--interactive-target-min-height); align-items: center; padding: .65rem 1rem; border: 1px solid #486581; border-radius: .25rem; background: #ffffff; color: #102a43; font-weight: 700; text-decoration: none; }
         a { color: #005f73; font-weight: 700; }
         .errors { color: #9b1c1c; background: #fff5f5; border-left: .25rem solid #c53030; padding: .75rem 1rem; }
         .muted { color: #486581; }

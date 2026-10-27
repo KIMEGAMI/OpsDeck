@@ -33,6 +33,84 @@ class StorageAddonCapacityService
             && $platformLimitMegabytes > 0;
     }
 
+    public function maximumCheckoutQuantity(): ?int
+    {
+        $maximumQuantity = $this->maximumQuantity();
+        $platformLimitMegabytes = config('opsdeck.storage_quotas.platform_limit_megabytes');
+        $premiumLimitMegabytes = config('opsdeck.storage_quotas.plan_limit_megabytes.'.config('opsdeck.premium_plan_code'));
+        $bytesPerMegabyte = config('opsdeck.storage_quotas.bytes_per_megabyte');
+
+        if ($maximumQuantity === null
+            || ! is_int($platformLimitMegabytes)
+            || $platformLimitMegabytes < 1
+            || ! is_int($premiumLimitMegabytes)
+            || $premiumLimitMegabytes < 1
+            || ! is_int($bytesPerMegabyte)
+            || $bytesPerMegabyte < 1
+            || $platformLimitMegabytes > intdiv(PHP_INT_MAX, $bytesPerMegabyte)
+            || $premiumLimitMegabytes > intdiv(PHP_INT_MAX, $bytesPerMegabyte)) {
+            return null;
+        }
+
+        $platformLimitBytes = $platformLimitMegabytes * $bytesPerMegabyte;
+        $basePremiumBytes = $premiumLimitMegabytes * $bytesPerMegabyte;
+        $reservedBytes = 0;
+        $organizations = Organization::query()
+            ->where('plan_code', config('opsdeck.premium_plan_code'))
+            ->select([
+                'id',
+                'plan_code',
+                'billing_status',
+                'billing_past_due_since',
+                'stripe_last_event_created_at',
+                'storage_addon_gib',
+                'storage_addon_pending_gib',
+            ])
+            ->cursor();
+
+        foreach ($organizations as $organization) {
+            if ($this->planAccessService->effectivePlanCode($organization) !== config('opsdeck.premium_plan_code')) {
+                continue;
+            }
+
+            $currentQuantity = max(0, (int) $organization->storage_addon_gib);
+            $committedQuantity = $organization->storage_addon_pending_gib === null
+                ? $currentQuantity
+                : max($currentQuantity, (int) $organization->storage_addon_pending_gib);
+
+            if ($committedQuantity > intdiv(PHP_INT_MAX - $basePremiumBytes, self::BYTES_PER_GIBIBYTE)) {
+                return 0;
+            }
+
+            $organizationReservation = $basePremiumBytes + ($committedQuantity * self::BYTES_PER_GIBIBYTE);
+            if ($organizationReservation > PHP_INT_MAX - $reservedBytes) {
+                return 0;
+            }
+
+            $reservedBytes += $organizationReservation;
+        }
+
+        if ($reservedBytes > $platformLimitBytes) {
+            return 0;
+        }
+
+        $remainingBytes = $platformLimitBytes - $reservedBytes;
+        if ($remainingBytes < $basePremiumBytes) {
+            return 0;
+        }
+
+        return min($maximumQuantity, intdiv($remainingBytes - $basePremiumBytes, self::BYTES_PER_GIBIBYTE));
+    }
+
+    public function canStartPremiumSubscriptionWithAddon(int $targetQuantity): bool
+    {
+        $maximumCheckoutQuantity = $this->maximumCheckoutQuantity();
+
+        return $maximumCheckoutQuantity !== null
+            && $targetQuantity >= 0
+            && $targetQuantity <= $maximumCheckoutQuantity;
+    }
+
     public function canSchedule(Organization $targetOrganization, int $targetQuantity): bool
     {
         $maximumQuantity = $this->maximumQuantity();

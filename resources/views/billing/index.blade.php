@@ -119,7 +119,24 @@
             <form method="post" action="{{ route('billing.portal') }}">@csrf<button type="submit">{{ $organization->billing_status === 'past_due' ? '支払い方法・請求状況を確認する' : 'Customer Portalを開く' }}</button></form>
         @endif
         @if ($checkoutAvailable && $effectivePlanCode !== config('opsdeck.premium_plan_code') && ! in_array($organization->billing_status, ['active', 'trialing', 'past_due'], true))
-            <form method="post" action="{{ route('billing.checkout') }}">@csrf<button type="submit">Stripe Checkoutを開始</button></form>
+            <form method="post" action="{{ route('billing.checkout') }}">
+                @csrf
+                @if (config('opsdeck.release_features.storage_addon') && $checkoutStorageAddonMaximumQuantity !== null && $checkoutStorageAddonMaximumQuantity > 0)
+                    <label for="checkout-storage-addon-quantity">Premiumと一緒に申し込む追加容量（GiB）</label>
+                    <select id="checkout-storage-addon-quantity" name="storage_addon_gib" aria-describedby="checkout-storage-addon-help">
+                        <option value="0" @selected((int) old('storage_addon_gib', 0) === 0)>追加なし（追加料金なし）</option>
+                        @for ($quantity = 1; $quantity <= $checkoutStorageAddonMaximumQuantity; $quantity++)
+                            <option value="{{ $quantity }}" @selected((int) old('storage_addon_gib', 0) === $quantity)>
+                                {{ number_format($quantity) }}GiB（追加 月額{{ number_format($quantity * (int) config('opsdeck.storage_quotas.storage_addon_monthly_price_jpy')) }}円・税別）
+                            </option>
+                        @endfor
+                    </select>
+                    <p id="checkout-storage-addon-help">追加容量は1GiBあたり月額{{ number_format(config('opsdeck.storage_quotas.storage_addon_monthly_price_jpy')) }}円（税別）です。選択した追加料金はPremiumの初回請求から加算され、以後も同じ月額で請求されます。税額を含む合計はStripe Checkoutで支払い前に確認できます。Premium契約後の容量変更は、従来どおり次回更新日から反映されます。</p>
+                @elseif (config('opsdeck.release_features.storage_addon') && $checkoutStorageAddonMaximumQuantity === 0)
+                    <p class="muted">今回の申し込みで選べる追加容量はありません。Premiumの申し込みは続けられます。</p>
+                @endif
+                <button type="submit">Stripe Checkoutを開始</button>
+            </form>
         @endif
         <p class="muted">契約状態の確定はStripe Webhookの受信結果に基づきます。</p>
     </section>
