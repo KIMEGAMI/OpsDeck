@@ -36,6 +36,26 @@ printf 'LARAVEL_STORAGE_PATH=%s\n' "${LARAVEL_STORAGE_PATH:-}" >> "$FAKE_STORAGE
     echo "Laravel storage path did not use the stable shared directory." >&2
     exit 1
 }
+case "${1:-}" in
+    "$FAKE_APPLICATION_ROOT"/releases/.staging-*)
+        echo "Artisan ran from a temporary staging directory." >&2
+        exit 1
+        ;;
+esac
+[[ -f "${1:-}" ]] || {
+    echo "Artisan did not run from an installed release." >&2
+    exit 1
+}
+if [[ "${2:-}" == config:cache ]]; then
+    [[ "${1:-}" == "$FAKE_APPLICATION_ROOT"/releases/*/artisan && -f "${1:-}" ]] || {
+        echo "Configuration cache was not built from an installed release path." >&2
+        exit 1
+    }
+    if [[ -L "$FAKE_APPLICATION_ROOT/current" && "$(realpath -e -- "$FAKE_APPLICATION_ROOT/current")" == "$(dirname -- "$1")" ]]; then
+        echo "Configuration cache was built after the new release became current." >&2
+        exit 1
+    fi
+fi
 if [[ " $* " == *" opsdeck:deployment-check "* ]]; then
     [[ -L "$FAKE_APPLICATION_ROOT/current" ]] || {
         echo "Readiness ran before the current release was switched." >&2
