@@ -114,4 +114,43 @@ if bash -s -- unsupported < "$script_directory/deploy-vps.sh" > "$test_root/stdi
 fi
 grep -q 'Unsupported deployment script mode.' "$test_root/stdin-mode.log" || fail "The stdin deployment entry point exited before dispatching its command."
 
+cat > "$mock_bin/ssh-keygen" <<'MOCK_SSH_KEYGEN'
+#!/usr/bin/env bash
+exit 0
+MOCK_SSH_KEYGEN
+cat > "$mock_bin/ssh" <<'MOCK_SSH'
+#!/usr/bin/env bash
+exit 1
+MOCK_SSH
+chmod 755 "$mock_bin/ssh-keygen" "$mock_bin/ssh"
+deploy_archive="$test_root/deploy-release.tar.gz"
+deploy_checksum="$test_root/deploy-release.tar.gz.sha256"
+printf '%s\n' 'deployment probe' > "$test_root/deploy-probe.txt"
+tar --create --gzip --file="$deploy_archive" --directory="$test_root" deploy-probe.txt
+(
+    cd "$test_root"
+    sha256sum "$(basename "$deploy_archive")" > "$(basename "$deploy_checksum")"
+)
+if env \
+    RUNNER_TEMP="$test_root" \
+    OPSDECK_DEPLOY_HOST="opsdeck-test.invalid" \
+    OPSDECK_DEPLOY_PORT="22" \
+    OPSDECK_DEPLOY_USER="deploy-opsdeck" \
+    OPSDECK_DEPLOY_ROOT="/var/www/OpsDeck" \
+    OPSDECK_DEPLOY_PHP_BIN="/usr/bin/php" \
+    OPSDECK_DEPLOY_KNOWN_HOSTS="opsdeck-test.invalid ssh-ed25519 AAAA" \
+    OPSDECK_DEPLOY_HEALTHCHECK_URL="https://opsdeck.kimegami.jp/up" \
+    OPSDECK_DEPLOY_RELEASE_RETENTION_COUNT="2" \
+    OPSDECK_DEPLOY_SSH_PRIVATE_KEY="test-key" \
+    OPSDECK_DEPLOY_RELEASE_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+    OPSDECK_DEPLOY_CI_RUN_ID="20261027001" \
+    OPSDECK_DEPLOY_CI_RUN_ATTEMPT="1" \
+    OPSDECK_DEPLOY_ARCHIVE="$deploy_archive" \
+    OPSDECK_DEPLOY_CHECKSUM="$deploy_checksum" \
+    bash "$script_directory/deploy-vps.sh" > "$test_root/local-deploy-failure.log" 2>&1; then
+    fail "Local deployment unexpectedly passed the mocked VPS preflight."
+fi
+grep -q 'VPS pre-deploy readiness checks failed' "$test_root/local-deploy-failure.log" || fail "Local deployment did not report the mocked VPS preflight failure."
+remaining_ssh_directory="$(find "$test_root" -mindepth 1 -maxdepth 1 -type d -name 'opsdeck-ssh.*' -print -quit)"
+[[ -z "$remaining_ssh_directory" ]] || fail "Local deployment did not clean its temporary SSH credentials after failure."
 printf '%s\n' 'PASS: first deploy readiness after activation, preflight, and rollback flows'
