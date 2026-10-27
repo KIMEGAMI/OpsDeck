@@ -198,6 +198,9 @@ remote_deploy() {
     fi
     if [[ "$has_previous_release" == true ]]; then
         if ! readiness_output="$("$php_bin" "$staging_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
+            if [[ -n "$readiness_output" ]]; then
+                printf 'Production readiness result: %s\n' "$readiness_output" >&2
+            fi
             fail "The new release failed the production readiness check; the active release was not switched."
         fi
         if [[ -z "$(printf '%s\n' "$readiness_output" | grep -m1 -E '^\{.*\}$' || true)" ]]; then
@@ -242,6 +245,9 @@ remote_deploy() {
     fi
     sleep "$QUEUE_STARTUP_SETTLE_SECONDS"
     if ! readiness_output="$("$php_bin" "$release_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
+        if [[ -n "$readiness_output" ]]; then
+            printf 'Production readiness result: %s\n' "$readiness_output" >&2
+        fi
         rollback_after_readiness_failure "$root" "$php_bin" "$has_previous_release" "$current_target" "$release_path" "$deployment_id"
         if [[ "$has_previous_release" == true ]]; then
             fail "The activated release failed the production readiness check; the previous release was restored."
@@ -413,10 +419,11 @@ local_deploy() {
     fi
 
     ssh_directory="$(mktemp -d "$RUNNER_TEMP/opsdeck-ssh.XXXXXX")"
+    OPSDECK_DEPLOY_CREDENTIAL_DIRECTORY="$ssh_directory"
     key_file="$ssh_directory/id_ed25519"
     known_hosts_file="$ssh_directory/known_hosts"
     cleanup_local_credentials() {
-        rm -rf -- "$ssh_directory"
+        rm -rf -- "$OPSDECK_DEPLOY_CREDENTIAL_DIRECTORY"
     }
     trap cleanup_local_credentials EXIT
     umask 077
