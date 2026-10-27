@@ -193,8 +193,13 @@ class OpsDeckDeploymentReadiness extends Command
                 ? ($this->hasBuiltFrontendAssets() ? 'pass' : 'fail')
                 : 'not_applicable',
         ];
-        $this->checks['ai_mapping'] = $this->hasAiMappingConfiguration() ? 'pass' : 'fail';
-        $this->checks['ai_cost'] = $this->hasAiCostConfiguration($aiModelPricing) ? 'pass' : 'fail';
+        $aiEnabled = config('opsdeck.ai.enabled') === true;
+        $this->checks['ai_mapping'] = ! $aiEnabled
+            ? 'not_applicable'
+            : ($this->hasAiMappingConfiguration() ? 'pass' : 'fail');
+        $this->checks['ai_cost'] = ! $aiEnabled
+            ? 'not_applicable'
+            : ($this->hasAiCostConfiguration($aiModelPricing) ? 'pass' : 'fail');
         if (app()->environment('production') && config('opsdeck.storage_quotas.platform_limit_megabytes') === null) {
             $this->checks['platform_storage_capacity'] = 'fail';
         }

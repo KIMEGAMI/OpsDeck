@@ -924,18 +924,27 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         Http::assertNotSent(fn (Request $request): bool => $request->url() === 'https://api.openai.com/v1/responses');
     }
 
-    public function test_it_fails_production_readiness_when_required_ai_mapping_is_disabled(): void
+    public function test_ai_disabled_allows_production_readiness_without_openai_credentials_or_pricing(): void
     {
         $this->configureReadyDeployment();
-        config(['opsdeck.ai.enabled' => false]);
+        config([
+            'opsdeck.ai.enabled' => false,
+            'opsdeck.ai.api_key' => null,
+            'opsdeck.ai.usd_to_jpy_rate' => null,
+            'opsdeck.ai.model_prices_per_million_tokens' => [],
+        ]);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
-        $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutputToContain('"ai_mapping":"fail"')
-            ->assertExitCode(1);
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('not_applicable', $output['checks']['ai_mapping']);
+        $this->assertSame('not_applicable', $output['checks']['ai_cost']);
+        $this->assertSame(0, $exitCode);
 
         Http::assertNotSent(fn (Request $request): bool => $request->url() === 'https://api.openai.com/v1/responses');
     }
