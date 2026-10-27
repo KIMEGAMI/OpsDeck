@@ -28,7 +28,6 @@ use Illuminate\Console\Command;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Database\Schema\Builder;
 use Illuminate\Encryption\Encrypter;
-use Illuminate\Support\Env;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -1721,7 +1720,7 @@ class OpsDeckDeploymentReadiness extends Command
         }
 
         $fromAddresses = [config('mail.from.address'), config('opsdeck.admin_mail_from_address')];
-        $apiKey = Env::get('RESEND_DOMAIN_CHECK_API_KEY');
+        $apiKey = config('mail.resend_domain_check_key');
         if (! is_string($apiKey) || trim($apiKey) === '') {
             return $this->resendSendingDomainReadiness = false;
         }
