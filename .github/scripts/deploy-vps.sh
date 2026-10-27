@@ -34,6 +34,7 @@ remote_layout() {
     local current_target
 
     validate_remote_root "$root"
+    export LARAVEL_STORAGE_PATH="$root/shared/storage"
     [[ "$(id -u)" -ne 0 ]] || fail "The VPS deployment account must not be root."
     [[ "$php_bin" =~ ^/[A-Za-z0-9_./-]+$ && "$php_bin" != *"/../"* ]] || fail "OPSDECK_DEPLOY_PHP_BIN must be an absolute executable path."
     [[ -x "$php_bin" ]] || fail "The configured PHP CLI executable is unavailable on the VPS."

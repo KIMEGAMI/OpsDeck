@@ -9,6 +9,7 @@ mock_bin="$test_root/mock-bin"
 application_root="$test_root/application"
 php_bin="$mock_bin/php"
 php_log="$test_root/php-commands.log"
+storage_path_log="$test_root/storage-paths.log"
 
 cleanup_test_files() {
     rm -rf -- "$test_root"
@@ -30,6 +31,11 @@ cat > "$php_bin" <<'MOCK_PHP'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_PHP_LOG"
+printf 'LARAVEL_STORAGE_PATH=%s\n' "${LARAVEL_STORAGE_PATH:-}" >> "$FAKE_STORAGE_PATH_LOG"
+[[ "${LARAVEL_STORAGE_PATH:-}" == "$FAKE_APPLICATION_ROOT/shared/storage" ]] || {
+    echo "Laravel storage path did not use the stable shared directory." >&2
+    exit 1
+}
 if [[ " $* " == *" opsdeck:deployment-check "* ]]; then
     [[ -L "$FAKE_APPLICATION_ROOT/current" ]] || {
         echo "Readiness ran before the current release was switched." >&2
@@ -41,7 +47,7 @@ MOCK_PHP
 
 chmod 755 "$mock_bin/sudo" "$php_bin"
 PATH="$mock_bin:$PATH"
-export PATH FAKE_PHP_LOG="$php_log" FAKE_APPLICATION_ROOT="$application_root"
+export PATH FAKE_PHP_LOG="$php_log" FAKE_STORAGE_PATH_LOG="$storage_path_log" FAKE_APPLICATION_ROOT="$application_root"
 
 validate_remote_root() {
     [[ "$1" == "$application_root" ]] || fail "Test used an unexpected application root."
@@ -75,6 +81,10 @@ remote_deploy "$application_root" "$first_sha" "$first_deployment_id" "$php_bin"
 assert_true "$( [[ -L "$application_root/current" ]] && printf true || printf false )" "Initial deployment did not create current."
 assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$first_release" ]] && printf true || printf false )" "Initial deployment selected the wrong release."
 assert_true "$( [[ ! -e "$application_root/previous" && ! -L "$application_root/previous" ]] && printf true || printf false )" "Initial deployment unexpectedly created previous."
+grep -Fxq "LARAVEL_STORAGE_PATH=$application_root/shared/storage" "$storage_path_log" || fail "Deployment did not use the stable shared storage path."
+if grep -Fq "$application_root/releases/.staging-" "$storage_path_log"; then
+    fail "Deployment cached a temporary staging storage path."
+fi
 grep -q 'opsdeck:scheduler:heartbeat' "$php_log" || fail "Initial deployment did not record a scheduler heartbeat."
 backup_lines="$(grep -n 'opsdeck:backup --no-interaction' "$php_log" | cut -d: -f1)"
 [[ "$(printf '%s\n' "$backup_lines" | wc -l)" -eq 2 ]] || fail "Initial deployment did not create pre- and post-migration backups."
