@@ -109,4 +109,9 @@ assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_rele
 remote_prune "$application_root" 2
 assert_true "$( [[ -d "$old_release" && -d "$second_release" && ! -d "$first_release" ]] && printf true || printf false )" "Release cleanup did not preserve the current and previous releases."
 
+if bash -s -- unsupported < "$script_directory/deploy-vps.sh" > "$test_root/stdin-mode.log" 2>&1; then
+    fail "The deployment entry point did not run when its script was provided on stdin."
+fi
+grep -q 'Unsupported deployment script mode.' "$test_root/stdin-mode.log" || fail "The stdin deployment entry point exited before dispatching its command."
+
 printf '%s\n' 'PASS: first deploy readiness after activation, preflight, and rollback flows'

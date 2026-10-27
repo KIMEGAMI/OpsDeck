@@ -501,7 +501,7 @@ local_deploy() {
     printf 'Deployed release %s and verified %s.\n' "$sha" "$healthcheck_url"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "${1:-local}" in
         local)
             local_deploy
