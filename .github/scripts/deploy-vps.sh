@@ -40,16 +40,20 @@ remote_layout() {
     [[ -w "$root/.incoming" ]] || fail "The deployment account cannot write to the VPS incoming directory."
     [[ -f "$root/shared/.env" && -r "$root/shared/.env" ]] || fail "The shared production .env file is unavailable to the PHP CLI user."
     [[ -d "$root/shared/storage" && -w "$root/shared/storage" ]] || fail "The shared production storage directory is unavailable to the PHP CLI user."
-    [[ -L "$root/current" ]] || fail "The current application must be an existing release symlink."
+    [[ ! -e "$root/current" || -L "$root/current" ]] || fail "The current application path must be a release symlink when present."
     [[ ! -e "$root/previous" || -L "$root/previous" ]] || fail "The previous release path must be a symlink when present."
 
     releases_path="$(realpath -e -- "$root/releases")" || fail "The VPS release directory cannot be resolved."
-    current_target="$(realpath -e -- "$root/current")" || fail "The current release symlink is invalid."
-    case "$current_target" in
-        "$releases_path"/*) ;;
-        *) fail "The current release symlink points outside the configured releases directory." ;;
-    esac
-    [[ -f "$current_target/artisan" && -f "$current_target/vendor/autoload.php" ]] || fail "The current release is incomplete."
+    if [[ -L "$root/current" ]]; then
+        current_target="$(realpath -e -- "$root/current")" || fail "The current release symlink is invalid."
+        case "$current_target" in
+            "$releases_path"/*) ;;
+            *) fail "The current release symlink points outside the configured releases directory." ;;
+        esac
+        [[ -f "$current_target/artisan" && -f "$current_target/vendor/autoload.php" ]] || fail "The current release is incomplete."
+    elif [[ -L "$root/previous" ]]; then
+        fail "A previous release exists without a current release; manual recovery is required."
+    fi
 
     if ! sudo -n "$RUNTIME_RELOAD_WRAPPER" --check >/dev/null 2>&1; then
         fail "The root-owned runtime reload wrapper is missing or its read-only preflight failed."
@@ -64,6 +68,12 @@ remote_preflight() {
     local readiness_json
 
     remote_layout "$root" "$php_bin"
+    if [[ ! -L "$root/current" ]]; then
+        printf '%s\n' '{"status":"first_deploy","checks":{"release_layout":"pass"}}'
+
+        return
+    fi
+
     current_target="$(realpath -e -- "$root/current")"
     if ! readiness_output="$("$php_bin" "$current_target/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
         fail "OpsDeck production readiness check failed; no release files were changed."
@@ -97,12 +107,18 @@ remote_deploy() {
     local archive_path
     local staging_path
     local readiness_output
+    local has_previous_release=false
 
     validate_release_id "$sha" "$deployment_id"
     umask 0022
     remote_layout "$root" "$php_bin"
     releases_path="$(realpath -e -- "$root/releases")"
-    current_target="$(realpath -e -- "$root/current")"
+    if [[ -L "$root/current" ]]; then
+        current_target="$(realpath -e -- "$root/current")"
+        has_previous_release=true
+    else
+        current_target=""
+    fi
     release_id="$sha-$deployment_id"
     release_path="$releases_path/$release_id"
     archive_path="$root/.incoming/opsdeck-$release_id.tar.gz"
@@ -143,6 +159,17 @@ remote_deploy() {
     if ! "$php_bin" "$staging_path/artisan" migrate --force --no-interaction >/dev/null 2>&1; then
         fail "The production database migration failed; the active release was not switched."
     fi
+    if [[ "$has_previous_release" != true ]]; then
+        if ! "$php_bin" "$staging_path/artisan" opsdeck:scheduler:heartbeat --no-interaction >/dev/null 2>&1; then
+            fail "The initial scheduler heartbeat could not be recorded; the active release was not switched."
+        fi
+        if ! "$php_bin" "$staging_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
+            fail "The initial production database backup failed; the active release was not switched."
+        fi
+        if ! "$php_bin" "$staging_path/artisan" opsdeck:backup:restore-test --no-interaction >/dev/null 2>&1; then
+            fail "The initial backup restore test failed; the active release was not switched."
+        fi
+    fi
     if ! readiness_output="$("$php_bin" "$staging_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
         fail "The new release failed the production readiness check; the active release was not switched."
     fi
@@ -153,22 +180,41 @@ remote_deploy() {
     chmod 755 "$staging_path"
     mv -- "$staging_path" "$release_path"
     staging_path=""
-    atomic_symlink "$root" previous "$current_target" "$deployment_id"
+    if [[ "$has_previous_release" == true ]]; then
+        atomic_symlink "$root" previous "$current_target" "$deployment_id"
+    fi
     atomic_symlink "$root" current "$release_path" "$deployment_id"
 
     if ! "$php_bin" "$release_path/artisan" queue:restart --no-interaction >/dev/null 2>&1; then
-        atomic_symlink "$root" current "$current_target" "$deployment_id"
-        atomic_symlink "$root" previous "$release_path" "$deployment_id"
+        if [[ "$has_previous_release" == true ]]; then
+            atomic_symlink "$root" current "$current_target" "$deployment_id"
+            atomic_symlink "$root" previous "$release_path" "$deployment_id"
+        else
+            rm -f -- "$root/current"
+        fi
         sudo -n "$RUNTIME_RELOAD_WRAPPER" >/dev/null 2>&1 || true
-        fail "The queue workers could not be signalled to restart; the previous release was restored."
+        if [[ "$has_previous_release" == true ]]; then
+            fail "The queue workers could not be signalled to restart; the previous release was restored."
+        fi
+        fail "The queue workers could not be signalled to restart; the initial release was removed from current."
     fi
     if ! sudo -n "$RUNTIME_RELOAD_WRAPPER" >/dev/null 2>&1; then
-        atomic_symlink "$root" current "$current_target" "$deployment_id"
-        atomic_symlink "$root" previous "$release_path" "$deployment_id"
-        "$php_bin" "$current_target/artisan" queue:restart --no-interaction >/dev/null 2>&1 || true
+        if [[ "$has_previous_release" == true ]]; then
+            atomic_symlink "$root" current "$current_target" "$deployment_id"
+            atomic_symlink "$root" previous "$release_path" "$deployment_id"
+            "$php_bin" "$current_target/artisan" queue:restart --no-interaction >/dev/null 2>&1 || true
+        else
+            rm -f -- "$root/current"
+        fi
         sudo -n "$RUNTIME_RELOAD_WRAPPER" >/dev/null 2>&1 || true
-        fail "The runtime reload failed; the previous release was restored."
+        if [[ "$has_previous_release" == true ]]; then
+            fail "The runtime reload failed; the previous release was restored."
+        fi
+        fail "The runtime reload failed; the initial release was removed from current."
     fi
+
+    cleanup_remote_files
+    trap - EXIT
 }
 
 remote_rollback() {
@@ -184,19 +230,32 @@ remote_rollback() {
     validate_release_id "$sha" "$deployment_id"
     [[ "$(id -u)" -ne 0 ]] || fail "The VPS deployment account must not be root."
     [[ "$php_bin" =~ ^/[A-Za-z0-9_./-]+$ && "$php_bin" != *"/../" && -x "$php_bin" ]] || fail "The configured PHP CLI executable is unavailable on the VPS."
-    [[ -d "$root/releases" && -L "$root/current" && -L "$root/previous" ]] || fail "The current or previous release link is unavailable."
+    [[ -d "$root/releases" && -L "$root/current" ]] || fail "The current release link is unavailable."
+    [[ ! -e "$root/previous" || -L "$root/previous" ]] || fail "The previous release path must be a symlink when present."
     if ! sudo -n "$RUNTIME_RELOAD_WRAPPER" --check >/dev/null 2>&1; then
         fail "The root-owned runtime reload wrapper is missing or its read-only preflight failed."
     fi
     releases_path="$(realpath -e -- "$root/releases")" || fail "The VPS release directory cannot be resolved."
     current_target="$(realpath -e -- "$root/current")" || fail "The current release symlink is invalid."
-    previous_target="$(realpath -e -- "$root/previous")" || fail "The previous release symlink is invalid."
-    case "$current_target:$previous_target" in
-        "$releases_path"/*:"$releases_path"/*) ;;
-        *) fail "A release symlink points outside the configured releases directory." ;;
+    case "$current_target" in
+        "$releases_path"/*) ;;
+        *) fail "The current release symlink points outside the configured releases directory." ;;
     esac
     [[ "$(basename -- "$current_target")" == "$sha-$deployment_id" ]] || fail "The current release changed after the deployment health check; automatic rollback was stopped."
 
+    if [[ ! -L "$root/previous" ]]; then
+        "$php_bin" "$current_target/artisan" queue:restart --no-interaction >/dev/null 2>&1 || true
+        rm -- "$root/current"
+        sudo -n "$RUNTIME_RELOAD_WRAPPER" >/dev/null 2>&1 || fail "The initial release was removed, but the runtime reload wrapper failed."
+
+        return
+    fi
+
+    previous_target="$(realpath -e -- "$root/previous")" || fail "The previous release symlink is invalid."
+    case "$previous_target" in
+        "$releases_path"/*) ;;
+        *) fail "The previous release symlink points outside the configured releases directory." ;;
+    esac
     atomic_symlink "$root" current "$previous_target" "$deployment_id"
     atomic_symlink "$root" previous "$current_target" "$deployment_id"
     if ! "$php_bin" "$previous_target/artisan" queue:restart --no-interaction >/dev/null 2>&1; then
@@ -221,16 +280,32 @@ remote_prune() {
     [[ "$(id -u)" -ne 0 ]] || fail "The VPS deployment account must not be root."
     [[ "$retention_count" =~ ^[0-9]+$ ]] || fail "The release retention count must be numeric."
     (( retention_count >= 2 )) || fail "The release retention count must preserve both current and previous releases."
-    [[ -L "$root/current" && -L "$root/previous" ]] || fail "Current and previous release links are required for cleanup."
+    [[ -L "$root/current" ]] || fail "The current release link is required for cleanup."
+    [[ ! -e "$root/previous" || -L "$root/previous" ]] || fail "The previous release path must be a symlink when present."
     releases_path="$(realpath -e -- "$root/releases")" || fail "The VPS release directory cannot be resolved."
     current_target="$(realpath -e -- "$root/current")" || fail "The current release symlink is invalid."
-    previous_target="$(realpath -e -- "$root/previous")" || fail "The previous release symlink is invalid."
-    additional_to_keep=$((retention_count - 2))
+    case "$current_target" in
+        "$releases_path"/*) ;;
+        *) fail "The current release symlink points outside the configured releases directory." ;;
+    esac
+    previous_target=""
+    if [[ -L "$root/previous" ]]; then
+        previous_target="$(realpath -e -- "$root/previous")" || fail "The previous release symlink is invalid."
+        case "$previous_target" in
+            "$releases_path"/*) ;;
+            *) fail "The previous release symlink points outside the configured releases directory." ;;
+        esac
+    fi
+    if [[ -n "$previous_target" ]]; then
+        additional_to_keep=$((retention_count - 2))
+    else
+        additional_to_keep=$((retention_count - 1))
+    fi
     mapfile -t candidates < <(find "$releases_path" -mindepth 1 -maxdepth 1 -type d ! -name '.staging-*' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
 
     for candidate in "${candidates[@]}"; do
         [[ "$candidate" == "$releases_path/"* && ! -L "$candidate" ]] || fail "Release cleanup encountered an unsafe path."
-        if [[ "$candidate" == "$current_target" || "$candidate" == "$previous_target" ]]; then
+        if [[ "$candidate" == "$current_target" || ( -n "$previous_target" && "$candidate" == "$previous_target" ) ]]; then
             continue
         fi
         if (( additional_kept < additional_to_keep )); then
@@ -382,27 +457,29 @@ local_deploy() {
     printf 'Deployed release %s and verified %s.\n' "$sha" "$healthcheck_url"
 }
 
-case "${1:-local}" in
-    local)
-        local_deploy
-        ;;
-    remote-preflight)
-        shift
-        remote_preflight "$@"
-        ;;
-    remote-deploy)
-        shift
-        remote_deploy "$@"
-        ;;
-    remote-rollback)
-        shift
-        remote_rollback "$@"
-        ;;
-    remote-prune)
-        shift
-        remote_prune "$@"
-        ;;
-    *)
-        fail "Unsupported deployment script mode."
-        ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    case "${1:-local}" in
+        local)
+            local_deploy
+            ;;
+        remote-preflight)
+            shift
+            remote_preflight "$@"
+            ;;
+        remote-deploy)
+            shift
+            remote_deploy "$@"
+            ;;
+        remote-rollback)
+            shift
+            remote_rollback "$@"
+            ;;
+        remote-prune)
+            shift
+            remote_prune "$@"
+            ;;
+        *)
+            fail "Unsupported deployment script mode."
+            ;;
+    esac
+fi
