@@ -28,6 +28,8 @@ jobs:
             exit 1
           fi
           bash -n .github/scripts/deploy-vps.sh
+          bash -n .github/scripts/test-deploy-vps.sh
+          bash .github/scripts/test-deploy-vps.sh
 
       - name: Check secrets are not committed
         run: |
