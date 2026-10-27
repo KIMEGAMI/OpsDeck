@@ -72,7 +72,15 @@ assert_true "$( [[ -L "$application_root/current" ]] && printf true || printf fa
 assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$first_release" ]] && printf true || printf false )" "Initial deployment selected the wrong release."
 assert_true "$( [[ ! -e "$application_root/previous" && ! -L "$application_root/previous" ]] && printf true || printf false )" "Initial deployment unexpectedly created previous."
 grep -q 'opsdeck:scheduler:heartbeat' "$php_log" || fail "Initial deployment did not record a scheduler heartbeat."
-grep -q 'opsdeck:backup --no-interaction' "$php_log" || fail "Initial deployment did not create a backup."
+backup_lines="$(grep -n 'opsdeck:backup --no-interaction' "$php_log" | cut -d: -f1)"
+[[ "$(printf '%s\n' "$backup_lines" | wc -l)" -eq 2 ]] || fail "Initial deployment did not create pre- and post-migration backups."
+pre_migration_backup_line="$(printf '%s\n' "$backup_lines" | head -n 1)"
+post_migration_backup_line="$(printf '%s\n' "$backup_lines" | tail -n 1)"
+migration_line="$(grep -n 'artisan migrate --force' "$php_log" | head -n 1 | cut -d: -f1)"
+restore_test_line="$(grep -n 'opsdeck:backup:restore-test' "$php_log" | head -n 1 | cut -d: -f1)"
+if ! (( pre_migration_backup_line < migration_line && migration_line < post_migration_backup_line && post_migration_backup_line < restore_test_line )); then
+    fail "Initial deployment did not back up before migrations and verify the post-migration restore in order."
+fi
 grep -q 'opsdeck:backup:restore-test' "$php_log" || fail "Initial deployment did not test the backup restore."
 
 live_preflight_output="$(remote_preflight "$application_root" "$php_bin")"
