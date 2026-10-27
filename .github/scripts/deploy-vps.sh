@@ -5,6 +5,7 @@ readonly SSH_CONNECT_TIMEOUT_SECONDS=10
 readonly HEALTH_CHECK_ATTEMPTS=10
 readonly HEALTH_CHECK_DELAY_SECONDS=5
 readonly HEALTH_CHECK_TIMEOUT_SECONDS=15
+readonly QUEUE_STARTUP_SETTLE_SECONDS=3
 readonly RUNTIME_RELOAD_WRAPPER=/usr/local/sbin/opsdeck-reload-runtime
 
 fail() {
@@ -95,6 +96,25 @@ atomic_symlink() {
     mv -Tf -- "$temporary_link" "$root/$link_name"
 }
 
+rollback_after_readiness_failure() {
+    local root="$1"
+    local php_bin="$2"
+    local has_previous_release="$3"
+    local current_target="$4"
+    local release_path="$5"
+    local deployment_id="$6"
+
+    if [[ "$has_previous_release" == true ]]; then
+        atomic_symlink "$root" current "$current_target" "$deployment_id"
+        atomic_symlink "$root" previous "$release_path" "$deployment_id"
+        "$php_bin" "$current_target/artisan" queue:restart --no-interaction >/dev/null 2>&1 || true
+    else
+        "$php_bin" "$release_path/artisan" queue:restart --no-interaction >/dev/null 2>&1 || true
+        rm -f -- "$root/current"
+    fi
+
+    sudo -n "$RUNTIME_RELOAD_WRAPPER" >/dev/null 2>&1 || true
+}
 remote_deploy() {
     local root="$1"
     local sha="$2"
@@ -107,6 +127,7 @@ remote_deploy() {
     local archive_path
     local staging_path
     local readiness_output
+    local readiness_json
     local has_previous_release=false
 
     validate_release_id "$sha" "$deployment_id"
@@ -175,11 +196,13 @@ remote_deploy() {
             fail "The initial backup restore test failed; the active release was not switched."
         fi
     fi
-    if ! readiness_output="$("$php_bin" "$staging_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
-        fail "The new release failed the production readiness check; the active release was not switched."
-    fi
-    if [[ -z "$(printf '%s\n' "$readiness_output" | grep -m1 -E '^\{.*\}$' || true)" ]]; then
-        fail "The new release production readiness check did not return valid JSON."
+    if [[ "$has_previous_release" == true ]]; then
+        if ! readiness_output="$("$php_bin" "$staging_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
+            fail "The new release failed the production readiness check; the active release was not switched."
+        fi
+        if [[ -z "$(printf '%s\n' "$readiness_output" | grep -m1 -E '^\{.*\}$' || true)" ]]; then
+            fail "The new release production readiness check did not return valid JSON."
+        fi
     fi
 
     chmod 755 "$staging_path"
@@ -216,6 +239,22 @@ remote_deploy() {
             fail "The runtime reload failed; the previous release was restored."
         fi
         fail "The runtime reload failed; the initial release was removed from current."
+    fi
+    sleep "$QUEUE_STARTUP_SETTLE_SECONDS"
+    if ! readiness_output="$("$php_bin" "$release_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then
+        rollback_after_readiness_failure "$root" "$php_bin" "$has_previous_release" "$current_target" "$release_path" "$deployment_id"
+        if [[ "$has_previous_release" == true ]]; then
+            fail "The activated release failed the production readiness check; the previous release was restored."
+        fi
+        fail "The initial release failed the production readiness check; it was removed from current."
+    fi
+    readiness_json="$(printf '%s\n' "$readiness_output" | grep -m1 -E '^[{].*[}]$' || true)"
+    if [[ -z "$readiness_json" ]]; then
+        rollback_after_readiness_failure "$root" "$php_bin" "$has_previous_release" "$current_target" "$release_path" "$deployment_id"
+        if [[ "$has_previous_release" == true ]]; then
+            fail "The activated release production readiness check returned invalid JSON; the previous release was restored."
+        fi
+        fail "The initial release production readiness check returned invalid JSON; it was removed from current."
     fi
 
     cleanup_remote_files
