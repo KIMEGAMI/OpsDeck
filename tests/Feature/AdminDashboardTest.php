@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\ContractMonthlyCostCalculator;
 use App\Services\DatabaseMigrationHealthService;
 use App\Services\ImportFailureMetrics;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
@@ -20,11 +21,7 @@ use Tests\TestCase;
 
 class AdminDashboardTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-        $this->artisan('migrate:fresh', ['--force' => true])->assertExitCode(0);
-    }
+    use RefreshDatabase;
 
     public function test_platform_admin_can_view_aggregate_dashboard(): void
     {

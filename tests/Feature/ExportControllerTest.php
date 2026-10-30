@@ -10,14 +10,16 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\RealizedSaving;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class ExportControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_admin_can_download_only_current_organization_data(): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         Employee::query()->create(['organization_id' => $organization->id, 'name' => '同じ組織', 'email' => 'same-'.Str::random(8).'@example.test', 'employment_status' => 'active']);
         [, $otherOrganization] = $this->member(MembershipRole::Admin);
@@ -32,7 +34,6 @@ class ExportControllerTest extends TestCase
 
     public function test_export_request_is_audited_without_exported_values(): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         Employee::query()->create([
             'organization_id' => $organization->id,
@@ -63,7 +64,6 @@ class ExportControllerTest extends TestCase
 
     public function test_audit_log_export_contains_only_current_organization_logs(): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         AuditLog::query()->create([
             'organization_id' => $organization->id,
@@ -90,7 +90,6 @@ class ExportControllerTest extends TestCase
 
     public function test_csv_export_round_trips_quotes_and_backslashes_using_rfc_csv_escaping(): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         $expectedName = 'Tokyo, "HQ" \\ branch';
         Employee::query()->create(['organization_id' => $organization->id, 'name' => $expectedName, 'email' => 'csv-'.Str::uuid().'@example.test', 'employment_status' => 'active']);
@@ -109,7 +108,6 @@ class ExportControllerTest extends TestCase
 
     public function test_csv_export_neutralizes_formula_like_names_without_changing_numeric_or_normal_values(): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         $expectedNames = [
             "\t=HYPERLINK(\"https://example.test\",\"open\")",
@@ -145,7 +143,6 @@ class ExportControllerTest extends TestCase
 
     public function test_realized_savings_export_is_tenant_scoped_formula_safe_and_includes_void_history(): void
     {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Admin);
         $activeSaving = RealizedSaving::factory()->create([
             'organization_id' => $organization->id,

@@ -8,17 +8,14 @@ use App\Models\Organization;
 use App\Models\OrganizationInvitation;
 use App\Models\User;
 use App\Models\WeeklySummaryDelivery;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class AdminMailDeliveryReviewControllerTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
-    }
+    use RefreshDatabase;
 
     public function test_platform_admin_can_view_unresolved_mail_deliveries(): void
     {

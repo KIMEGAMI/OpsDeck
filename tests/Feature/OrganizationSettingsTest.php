@@ -12,12 +12,15 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\SaasService;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OrganizationSettingsTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -119,7 +122,7 @@ class OrganizationSettingsTest extends TestCase
             'source_type' => 'csv',
             'source_name' => '社員名簿',
             'source_file_path' => 'imports/storage-usage-check.csv',
-            'source_file_size_bytes' => 10 * 1024 * 1024,
+            'source_file_size_bytes' => 100 * 1024 * 1024,
             'status' => 'completed',
         ]);
 
@@ -127,8 +130,8 @@ class OrganizationSettingsTest extends TestCase
             ->get(route('settings.organization'))
             ->assertOk()
             ->assertSee('会社の保存容量')
-            ->assertSee('現在 10.0 MiB ／ 上限 100 MiB（10%）')
-            ->assertSee('あと約 90.0 MiB 保存できます。');
+            ->assertSee('現在 0.1 GiB ／ 上限 1 GiB（10%）')
+            ->assertSee('あと約 0.9 GiB 保存できます。');
     }
 
     public function test_ai_monthly_budget_displays_the_configured_amount_as_an_fx_estimate(): void

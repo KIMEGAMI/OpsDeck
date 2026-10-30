@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\ImportBatch;
 use App\Models\Organization;
 use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
@@ -14,13 +15,14 @@ use Tests\TestCase;
 
 class HealthCommandTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         config(['opsdeck.storage_quotas.platform_limit_megabytes' => null]);
 
-        $this->artisan('migrate:fresh', ['--force' => true])->assertExitCode(0);
     }
 
     public function test_health_command_passes_when_database_and_backup_destination_are_available(): void
