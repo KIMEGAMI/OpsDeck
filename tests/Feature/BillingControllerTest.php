@@ -12,6 +12,7 @@ use App\Services\StorageAddonCapacityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as ClientRequest;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -1179,10 +1180,14 @@ class BillingControllerTest extends TestCase
             }
 
             if ($request->method() === 'GET' && str_contains($request->url(), '/v1/checkout/sessions')) {
+                $this->assertPlatformStorageQuotaLockAvailable();
+
                 return Http::response(['has_more' => false, 'data' => []], 200);
             }
 
             if ($request->method() === 'POST' && $request->url() === 'https://api.stripe.com/v1/checkout/sessions') {
+                $this->assertPlatformStorageQuotaLockAvailable();
+
                 $reservedOrganization = $organization->fresh();
                 $this->assertSame(1, DB::transactionLevel());
                 $this->assertSame(0, $reservedOrganization->storage_addon_checkout_reserved_gib);
@@ -1881,5 +1886,12 @@ class BillingControllerTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => $role, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
 
         return [$user, $organization];
+    }
+
+    private function assertPlatformStorageQuotaLockAvailable(): void
+    {
+        $lock = Cache::lock('opsdeck:platform-storage-quota', 10);
+        $this->assertTrue($lock->get(), 'Stripe requests must not hold the shared storage quota lock.');
+        $lock->release();
     }
 }

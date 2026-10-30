@@ -453,22 +453,14 @@ class BillingController extends Controller
         try {
             $organizationLockKey = 'opsdeck:organization-storage-quota:'.hash('sha256', (string) $organization->getKey());
             $result = Cache::lock($organizationLockKey, (int) config('opsdeck.storage_quotas.lock_seconds'))
-                ->block((int) config('opsdeck.storage_quotas.lock_wait_seconds'), fn (): array => Cache::lock(
-                    'opsdeck:platform-storage-quota',
-                    (int) config('opsdeck.storage_quotas.lock_seconds'),
-                )->block((int) config('opsdeck.storage_quotas.lock_wait_seconds'), function () use (
+                ->block((int) config('opsdeck.storage_quotas.lock_wait_seconds'), function () use (
                     $organization,
                     $customerId,
                     $checkoutParameters,
                     $checkoutFingerprint,
                     $storageAddonQuantity,
                 ): array {
-                    $reservationResult = DB::transaction(function () use (
-                        $organization,
-                        $customerId,
-                        $checkoutFingerprint,
-                        $storageAddonQuantity,
-                    ): array {
+                    $checkoutState = DB::transaction(function () use ($organization): array {
                         $lockedOrganization = Organization::query()
                             ->lockForUpdate()
                             ->findOrFail($organization->id);
@@ -485,103 +477,148 @@ class BillingController extends Controller
                                 ? $lastStripeEventCreatedAt - self::STRIPE_CHECKOUT_SESSION_MAX_LIFETIME_SECONDS
                                 : 0,
                         );
-                        $openSessions = $this->listStripeCheckoutSessions($customerId, 'open');
-                        if (! $openSessions->successful()
-                            || ! is_array($openSessions->json('data'))
-                            || ! is_bool($openSessions->json('has_more'))) {
-                            return [
-                                'status' => 'unavailable',
-                                'operation' => 'checkout_session_reconciliation',
-                                'diagnostics' => $this->stripeResponseDiagnostics($openSessions),
-                            ];
-                        }
-                        if ($openSessions->json('has_more')) {
-                            return [
-                                'status' => 'unavailable',
-                                'operation' => 'checkout_session_reconciliation',
-                                'diagnostics' => ['failure' => 'session_list_incomplete'],
-                            ];
-                        }
 
-                        $organizationOpenSessions = $this->organizationCheckoutSessions($openSessions->json('data'), (int) $lockedOrganization->id);
-                        if (count($organizationOpenSessions) > 1) {
-                            return ['status' => 'processing'];
-                        }
-
-                        $existingSessionUrl = null;
-                        if ($organizationOpenSessions !== []) {
-                            $existingSession = $organizationOpenSessions[0];
-                            $existingFingerprint = data_get($existingSession, 'metadata.opsdeck_checkout_fingerprint');
-                            if (is_string($existingFingerprint) && hash_equals($checkoutFingerprint, $existingFingerprint)) {
-                                $existingUrl = $existingSession['url'] ?? null;
-                                if (is_string($existingUrl) && $existingUrl !== '') {
-                                    $existingSessionUrl = $existingUrl;
-                                } else {
-                                    return ['status' => 'processing'];
-                                }
-                            } else {
-                                $sessionId = $existingSession['id'] ?? null;
-                                if (! is_string($sessionId) || $sessionId === '') {
-                                    return ['status' => 'processing'];
-                                }
-
-                                $expiredSession = Http::withBasicAuth(config('services.stripe.secret'), '')
-                                    ->asForm()
-                                    ->timeout(10)
-                                    ->post('https://api.stripe.com/v1/checkout/sessions/'.rawurlencode($sessionId).'/expire');
-                                if (! $expiredSession->successful() || $expiredSession->json('status') !== 'expired') {
-                                    return ['status' => 'processing'];
-                                }
-                            }
-                        }
-
-                        $completedSessions = $this->listStripeCheckoutSessions($customerId, 'complete', $createdAfter);
-                        if (! $completedSessions->successful()
-                            || ! is_array($completedSessions->json('data'))
-                            || ! is_bool($completedSessions->json('has_more'))) {
-                            return [
-                                'status' => 'unavailable',
-                                'operation' => 'checkout_session_reconciliation',
-                                'diagnostics' => $this->stripeResponseDiagnostics($completedSessions),
-                            ];
-                        }
-                        if ($completedSessions->json('has_more')) {
-                            return [
-                                'status' => 'unavailable',
-                                'operation' => 'checkout_session_reconciliation',
-                                'diagnostics' => ['failure' => 'session_list_incomplete'],
-                            ];
-                        }
-                        if ($this->hasUnprocessedCompletedCheckout($completedSessions->json('data'), (int) $lockedOrganization->id)) {
-                            return ['status' => 'processing'];
-                        }
-
-                        $capacityService = app(StorageAddonCapacityService::class);
-                        if (config('opsdeck.release_features.storage_addon')) {
-                            $maximumCheckoutQuantity = $capacityService->maximumCheckoutQuantity($lockedOrganization);
-                            if ($maximumCheckoutQuantity === null || $storageAddonQuantity > $maximumCheckoutQuantity) {
-                                return ['status' => 'capacity_unavailable'];
-                            }
-                        }
-
-                        if ($existingSessionUrl !== null) {
-                            $existingSession = $organizationOpenSessions[0];
-                            $this->reserveCheckoutCapacity(
-                                $lockedOrganization,
-                                $storageAddonQuantity,
-                                data_get($existingSession, 'id'),
-                                data_get($existingSession, 'expires_at'),
-                            );
-
-                            return ['status' => 'ready', 'url' => $existingSessionUrl];
-                        }
-
-                        if (config('opsdeck.release_features.storage_addon')) {
-                            $this->reserveCheckoutCapacity($lockedOrganization, $storageAddonQuantity, null);
-                        }
-
-                        return ['status' => 'create'];
+                        return [
+                            'status' => 'reconcile',
+                            'created_after' => $createdAfter,
+                            'last_stripe_event_created_at' => $lastStripeEventCreatedAt,
+                        ];
                     }, 1);
+
+                    if ($checkoutState['status'] !== 'reconcile') {
+                        return $checkoutState;
+                    }
+
+                    $openSessions = $this->listStripeCheckoutSessions($customerId, 'open');
+                    if (! $openSessions->successful()
+                        || ! is_array($openSessions->json('data'))
+                        || ! is_bool($openSessions->json('has_more'))) {
+                        return [
+                            'status' => 'unavailable',
+                            'operation' => 'checkout_session_reconciliation',
+                            'diagnostics' => $this->stripeResponseDiagnostics($openSessions),
+                        ];
+                    }
+                    if ($openSessions->json('has_more')) {
+                        return [
+                            'status' => 'unavailable',
+                            'operation' => 'checkout_session_reconciliation',
+                            'diagnostics' => ['failure' => 'session_list_incomplete'],
+                        ];
+                    }
+
+                    $organizationOpenSessions = $this->organizationCheckoutSessions($openSessions->json('data'), (int) $organization->id);
+                    if (count($organizationOpenSessions) > 1) {
+                        return ['status' => 'processing'];
+                    }
+
+                    $existingSession = null;
+                    $existingSessionUrl = null;
+                    if ($organizationOpenSessions !== []) {
+                        $existingSession = $organizationOpenSessions[0];
+                        $existingFingerprint = data_get($existingSession, 'metadata.opsdeck_checkout_fingerprint');
+                        if (is_string($existingFingerprint) && hash_equals($checkoutFingerprint, $existingFingerprint)) {
+                            $existingUrl = $existingSession['url'] ?? null;
+                            if (is_string($existingUrl) && $existingUrl !== '') {
+                                $existingSessionUrl = $existingUrl;
+                            } else {
+                                return ['status' => 'processing'];
+                            }
+                        } else {
+                            $sessionId = $existingSession['id'] ?? null;
+                            if (! is_string($sessionId) || $sessionId === '') {
+                                return ['status' => 'processing'];
+                            }
+
+                            $expiredSession = Http::withBasicAuth(config('services.stripe.secret'), '')
+                                ->asForm()
+                                ->timeout(10)
+                                ->post('https://api.stripe.com/v1/checkout/sessions/'.rawurlencode($sessionId).'/expire');
+                            if (! $expiredSession->successful() || $expiredSession->json('status') !== 'expired') {
+                                return ['status' => 'processing'];
+                            }
+
+                            $existingSession = null;
+                        }
+                    }
+
+                    $completedSessions = $this->listStripeCheckoutSessions($customerId, 'complete', $checkoutState['created_after']);
+                    if (! $completedSessions->successful()
+                        || ! is_array($completedSessions->json('data'))
+                        || ! is_bool($completedSessions->json('has_more'))) {
+                        return [
+                            'status' => 'unavailable',
+                            'operation' => 'checkout_session_reconciliation',
+                            'diagnostics' => $this->stripeResponseDiagnostics($completedSessions),
+                        ];
+                    }
+                    if ($completedSessions->json('has_more')) {
+                        return [
+                            'status' => 'unavailable',
+                            'operation' => 'checkout_session_reconciliation',
+                            'diagnostics' => ['failure' => 'session_list_incomplete'],
+                        ];
+                    }
+                    if ($this->hasUnprocessedCompletedCheckout($completedSessions->json('data'), (int) $organization->id)) {
+                        return ['status' => 'processing'];
+                    }
+
+                    $reserveCheckoutCapacity = function () use (
+                        $organization,
+                        $checkoutState,
+                        $existingSession,
+                        $existingSessionUrl,
+                        $storageAddonQuantity,
+                    ): array {
+                        return DB::transaction(function () use (
+                            $organization,
+                            $checkoutState,
+                            $existingSession,
+                            $existingSessionUrl,
+                            $storageAddonQuantity,
+                        ): array {
+                            $lockedOrganization = Organization::query()
+                                ->lockForUpdate()
+                                ->findOrFail($organization->id);
+                            $effectivePlanCode = app(PlanAccessService::class)->effectivePlanCode($lockedOrganization);
+                            if ($effectivePlanCode === config('opsdeck.premium_plan_code')
+                                || in_array($lockedOrganization->billing_status, ['active', 'trialing', 'past_due'], true)
+                                || (int) ($lockedOrganization->stripe_last_event_created_at ?? 0) !== $checkoutState['last_stripe_event_created_at']) {
+                                return ['status' => 'processing'];
+                            }
+
+                            if (config('opsdeck.release_features.storage_addon')) {
+                                $maximumCheckoutQuantity = app(StorageAddonCapacityService::class)->maximumCheckoutQuantity($lockedOrganization);
+                                if ($maximumCheckoutQuantity === null || $storageAddonQuantity > $maximumCheckoutQuantity) {
+                                    return ['status' => 'capacity_unavailable'];
+                                }
+                            }
+
+                            if ($existingSessionUrl !== null && $existingSession !== null) {
+                                $this->reserveCheckoutCapacity(
+                                    $lockedOrganization,
+                                    $storageAddonQuantity,
+                                    data_get($existingSession, 'id'),
+                                    data_get($existingSession, 'expires_at'),
+                                );
+
+                                return ['status' => 'ready', 'url' => $existingSessionUrl];
+                            }
+
+                            if (config('opsdeck.release_features.storage_addon')) {
+                                $this->reserveCheckoutCapacity($lockedOrganization, $storageAddonQuantity, null);
+                            }
+
+                            return ['status' => 'create'];
+                        }, 1);
+                    };
+
+                    $reservationResult = config('opsdeck.release_features.storage_addon')
+                        ? Cache::lock(
+                            'opsdeck:platform-storage-quota',
+                            (int) config('opsdeck.storage_quotas.lock_seconds'),
+                        )->block((int) config('opsdeck.storage_quotas.lock_wait_seconds'), $reserveCheckoutCapacity)
+                        : $reserveCheckoutCapacity();
 
                     if ($reservationResult['status'] !== 'create') {
                         return $reservationResult;
@@ -638,7 +675,7 @@ class BillingController extends Controller
                     }
 
                     return ['status' => 'ready', 'url' => $checkout->json('url')];
-                }));
+                });
         } catch (LockTimeoutException) {
             return $this->stripeUnavailableResponse('storage_addon_capacity', ['failure' => 'capacity_lock_unavailable']);
         } catch (ConnectionException) {
