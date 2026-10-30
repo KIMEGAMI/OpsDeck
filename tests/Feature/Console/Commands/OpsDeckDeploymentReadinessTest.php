@@ -1627,6 +1627,54 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_it_passes_readiness_when_an_unspecified_premium_price_uses_the_exclusive_account_default(): void
+    {
+        $this->configureReadyDeployment(
+            stripePriceTaxBehavior: 'unspecified',
+            stripeDefaultTaxBehavior: 'exclusive',
+        );
+        Http::preventStrayRequests();
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->artisan('opsdeck:deployment-check', ['--json' => true])
+            ->expectsOutputToContain('"stripe":"pass"')
+            ->assertExitCode(0);
+    }
+
+    #[DataProvider('nonExclusiveDefaultTaxBehaviors')]
+    public function test_it_fails_readiness_when_an_unspecified_premium_price_has_no_exclusive_account_default(?string $defaultTaxBehavior): void
+    {
+        $this->configureReadyDeployment(
+            stripePriceTaxBehavior: 'unspecified',
+            stripeDefaultTaxBehavior: $defaultTaxBehavior,
+        );
+        Http::preventStrayRequests();
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+        $this->withoutMockingConsoleOutput();
+
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('fail', $output['checks']['stripe']);
+        $this->assertSame('stripe_tax_behavior_not_exclusive', $output['diagnostics']['stripe']);
+        $this->assertSame(1, $exitCode);
+    }
+
+    /** @return array<string, array{?string}> */
+    public static function nonExclusiveDefaultTaxBehaviors(): array
+    {
+        return [
+            'inclusive default' => ['inclusive'],
+            'missing default' => [null],
+        ];
+    }
+
     public function test_it_fails_readiness_when_the_stripe_product_has_no_tax_code(): void
     {
         $this->configureReadyDeployment(stripeProductTaxCode: null, stripeDefaultTaxCode: null);
@@ -2689,7 +2737,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         Http::assertNothingSent();
     }
 
-    private function configureReadyDeployment(bool $hasDatabaseBackupTool = true, array $missingPhpExtensions = [], bool $hasDatabaseRestoreTool = true, bool $hasDatabaseCacheTables = true, bool $hasReadyRestoreTarget = true, bool $hasPendingMigrations = false, bool $hasMigrationRepository = true, bool $cacheLockAcquisitionSucceeds = true, bool $cacheLockReleaseSucceeds = true, bool $hasDatabaseQueueTable = true, bool $hasFailedJobsTable = true, int $stripePriceAmount = 9800, bool $hasFreshQueueWorker = true, bool $hasSafeQueueJobTimeout = true, string $stripePriceTaxBehavior = 'exclusive', bool $hasJapanTaxRegistration = true, bool $taxRegistrationOnSecondPage = false, ?string $stripeProductTaxCode = 'txcd_test_service', ?string $stripeDefaultTaxCode = 'txcd_test_default', string $stripeTaxSettingsStatus = 'active', string $resendDomainStatus = 'verified', string $resendSendingCapability = 'enabled', bool $resendDomainOnSecondPage = false, bool $databaseConnectionAvailable = true, bool $databaseClientVersionSupported = true, bool $hasFreshSchedulerHeartbeat = true, int $storageAddonPriceAmount = 100, ?string $storageAddonProductTaxCode = 'txcd_test_service', string $latestBackupStatus = 'ok', string $backupRestoreTestStatus = 'ok', ?string $backupRestoreTargetStatus = null, bool $stripePortalCancellationEnabled = true, string $stripePortalCancellationMode = 'at_period_end', string $stripePortalCancellationProrationBehavior = 'none', bool $stripePortalLivemode = true, int $stripePortalResponseStatus = 200): void
+    private function configureReadyDeployment(bool $hasDatabaseBackupTool = true, array $missingPhpExtensions = [], bool $hasDatabaseRestoreTool = true, bool $hasDatabaseCacheTables = true, bool $hasReadyRestoreTarget = true, bool $hasPendingMigrations = false, bool $hasMigrationRepository = true, bool $cacheLockAcquisitionSucceeds = true, bool $cacheLockReleaseSucceeds = true, bool $hasDatabaseQueueTable = true, bool $hasFailedJobsTable = true, int $stripePriceAmount = 9800, bool $hasFreshQueueWorker = true, bool $hasSafeQueueJobTimeout = true, ?string $stripePriceTaxBehavior = 'exclusive', bool $hasJapanTaxRegistration = true, bool $taxRegistrationOnSecondPage = false, ?string $stripeProductTaxCode = 'txcd_test_service', ?string $stripeDefaultTaxCode = 'txcd_test_default', string $stripeTaxSettingsStatus = 'active', string $resendDomainStatus = 'verified', string $resendSendingCapability = 'enabled', bool $resendDomainOnSecondPage = false, bool $databaseConnectionAvailable = true, bool $databaseClientVersionSupported = true, bool $hasFreshSchedulerHeartbeat = true, int $storageAddonPriceAmount = 100, ?string $storageAddonProductTaxCode = 'txcd_test_service', string $latestBackupStatus = 'ok', string $backupRestoreTestStatus = 'ok', ?string $backupRestoreTargetStatus = null, bool $stripePortalCancellationEnabled = true, string $stripePortalCancellationMode = 'at_period_end', string $stripePortalCancellationProrationBehavior = 'none', bool $stripePortalLivemode = true, int $stripePortalResponseStatus = 200, ?string $stripeDefaultTaxBehavior = null): void
     {
         $this->app['env'] = 'production';
         config([
@@ -2889,7 +2937,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             ], $stripePortalResponseStatus),
             'api.stripe.com/v1/tax/settings' => Http::response([
                 'status' => $stripeTaxSettingsStatus,
-                'defaults' => ['tax_code' => $stripeDefaultTaxCode],
+                'defaults' => ['tax_behavior' => $stripeDefaultTaxBehavior, 'tax_code' => $stripeDefaultTaxCode],
             ], 200),
             'api.stripe.com/v1/tax/registrations*' => $taxRegistrationResponses,
             'api.resend.com/domains*' => $resendDomains,

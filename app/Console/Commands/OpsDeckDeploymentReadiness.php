@@ -1973,13 +1973,14 @@ class OpsDeckDeploymentReadiness extends Command
             return 'stripe_price_api_rejected_request';
         }
 
+        $premiumPriceTaxBehavior = $stripePrice->json('tax_behavior');
         $priceIsReady = $stripePrice->json('id') === $price
             && $stripePrice->json('active') === true
             && $stripePrice->json('type') === 'recurring'
             && $stripePrice->json('billing_scheme') === 'per_unit'
             && $stripePrice->json('currency') === 'jpy'
             && $stripePrice->json('unit_amount') === (int) config('opsdeck.plans.premium.monthly_price_jpy')
-            && $stripePrice->json('tax_behavior') === 'exclusive'
+            && in_array($premiumPriceTaxBehavior, ['exclusive', 'unspecified', null], true)
             && $stripePrice->json('recurring.interval') === 'month'
             && (int) $stripePrice->json('recurring.interval_count') === 1;
 
@@ -2076,6 +2077,11 @@ class OpsDeckDeploymentReadiness extends Command
             return 'stripe_tax_settings_inactive_or_tax_code_missing';
         }
 
+        $defaultTaxBehavior = $taxSettings->json('defaults.tax_behavior');
+        if (! $this->hasExclusiveEffectiveTaxBehavior($premiumPriceTaxBehavior, $defaultTaxBehavior)) {
+            return 'stripe_tax_behavior_not_exclusive';
+        }
+
         if ($storageAddonEnabled
             && ! (is_string($storageAddonProductTaxCode) && trim($storageAddonProductTaxCode) !== '')
             && ! $hasDefaultTaxCode) {
@@ -2108,6 +2114,7 @@ class OpsDeckDeploymentReadiness extends Command
             'stripe_customer_portal_configuration_unavailable' => 'Stripe Customer Portal設定を読み取れませんでした。ネットワークを確認してください。',
             'stripe_customer_portal_configuration_api_rejected_request' => 'Stripe Customer Portal設定の読取りが拒否されました。Stripe APIキーの権限とモードを確認してください。',
             'stripe_customer_portal_cancellation_configuration_mismatch' => 'Stripe DashboardのCustomer Portal既定設定で、解約を有効化し「期間末に解約」「按分なし」にしてください。',
+            'stripe_tax_behavior_not_exclusive' => 'Premium Priceの税区分、またはStripe Taxの既定税区分を外税（exclusive）にしてください。Priceがunspecifiedの場合はStripe Taxの既定値が使われます。',
             'storage_addon_capacity_limit_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBに1社あたりの追加容量上限（最大48GiB）を設定してください。全社合計はOPSDECK_PLATFORM_STORAGE_LIMIT_MIBの枠内で制御されます。',
             'storage_addon_price_configuration_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBを設定する場合は、現在のStripeモードに対応するOPSDECK_STRIPE_TEST_PRICE_STORAGE_ADDON_GIBまたはOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBを設定してください。値は表示しません。',
             'storage_addon_price_api_unavailable' => '追加容量用PriceをStripe APIで確認できませんでした。ネットワークとAPI利用可否を確認してください。',
@@ -2122,5 +2129,15 @@ class OpsDeckDeploymentReadiness extends Command
             'japan_tax_registration_unavailable_or_inactive' => 'Stripeで日本の有効な税務登録を確認できませんでした。Tax設定とAPI権限を確認してください。',
             default => '設定内容を確認してください。秘密値やAPI応答本文は表示しません。',
         };
+    }
+
+    private function hasExclusiveEffectiveTaxBehavior(mixed $priceTaxBehavior, mixed $defaultTaxBehavior): bool
+    {
+        if ($priceTaxBehavior === 'exclusive') {
+            return true;
+        }
+
+        return in_array($priceTaxBehavior, ['unspecified', null], true)
+            && $defaultTaxBehavior === 'exclusive';
     }
 }
