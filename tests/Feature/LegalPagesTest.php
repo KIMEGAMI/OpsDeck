@@ -57,6 +57,15 @@ class LegalPagesTest extends TestCase
             ->assertSee('mailto:support@kimegami.jp');
     }
 
+    public function test_environment_template_uses_current_legal_page_update_dates(): void
+    {
+        $environmentTemplate = file_get_contents(base_path('.env.example'));
+
+        $this->assertIsString($environmentTemplate);
+        $this->assertStringContainsString('OPSDECK_LEGAL_LAST_UPDATED="2026年10月29日"', $environmentTemplate);
+        $this->assertStringContainsString('OPSDECK_PRIVACY_POLICY_LAST_UPDATED="2026年10月28日"', $environmentTemplate);
+    }
+
     public function test_commercial_information_uses_configured_seller_details_and_escapes_html(): void
     {
         config([
