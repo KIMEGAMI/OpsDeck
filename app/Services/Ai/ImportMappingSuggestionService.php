@@ -11,6 +11,12 @@ use Illuminate\Support\Facades\RateLimiter;
 
 class ImportMappingSuggestionService
 {
+    private const int HTTP_ERROR_STATUS_MINIMUM = 400;
+
+    private const int HTTP_ERROR_STATUS_MAXIMUM = 599;
+
+    private const int HTTP_TOO_MANY_REQUESTS_STATUS = 429;
+
     public function __construct(private AiProvider $provider, private AiUsageBudgetService $budgetService, private AiModelPricing $modelPricing) {}
 
     /** @return array<string, array{field: string|null, confidence: float, reason: string, requires_review: bool, question: string|null, source: string}> */
@@ -40,6 +46,10 @@ class ImportMappingSuggestionService
         }
         try {
             $result = $this->provider->suggestColumnMapping($providerHeaders, $targetType, $targetFields, $fastModel, (string) config('opsdeck.ai.reasoning_effort'));
+        } catch (AiProviderResponseException $exception) {
+            $this->budgetService->settle($fastReservation, 0, 0, false, $exception->failureCode, usageOutcomeUnknown: true);
+
+            return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => 'AIサービスから候補を取得できませんでした。列名を確認して手動で設定してください。', 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
         } catch (RequestException $exception) {
             $providerErrorCode = $this->providerErrorCode($exception);
             $this->budgetService->settle(
@@ -135,6 +145,8 @@ class ImportMappingSuggestionService
                     $this->providerErrorCode($exception),
                     usageOutcomeUnknown: $exception->response->serverError() || $exception->response->status() === 408,
                 );
+            } catch (AiProviderResponseException $exception) {
+                $this->budgetService->settle($escalationReservation, 0, 0, false, $exception->failureCode, usageOutcomeUnknown: true);
             } catch (\Throwable) {
                 $this->budgetService->settle($escalationReservation, 0, 0, false, usageOutcomeUnknown: true);
             }
@@ -145,8 +157,11 @@ class ImportMappingSuggestionService
 
     private function providerErrorCode(RequestException $exception): string
     {
-        if ($exception->response->status() !== 429) {
-            return 'provider_unavailable';
+        $status = $exception->response->status();
+        if ($status !== self::HTTP_TOO_MANY_REQUESTS_STATUS) {
+            return $status >= self::HTTP_ERROR_STATUS_MINIMUM && $status <= self::HTTP_ERROR_STATUS_MAXIMUM
+                ? 'provider_http_'.$status
+                : 'provider_http_error';
         }
 
         $quotaErrorCodes = [

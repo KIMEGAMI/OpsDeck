@@ -38,6 +38,7 @@ class CsvImportSource
             if (fwrite($stream, $contents) !== strlen($contents)) {
                 throw new \RuntimeException('CSVを解析できません。');
             }
+            $this->assertMaximumColumnsAllowed($stream);
             rewind($stream);
 
             return $this->parseUtf8Stream($stream, $onRow, $maximumDataRows, $headerRowNumber, $dataStartRowNumber, $headerEndRowNumber);
@@ -82,6 +83,7 @@ class CsvImportSource
                 return $this->fallbackToStringParser($stream, $onRow, $maximumDataRows, $headerRowNumber, $dataStartRowNumber, $headerEndRowNumber);
             }
             if ($utf8Valid) {
+                $this->assertMaximumColumnsAllowed($stream, $bomOffset);
                 fseek($stream, $bomOffset);
 
                 return $this->parseUtf8Stream($stream, $onRow, $maximumDataRows, $headerRowNumber, $dataStartRowNumber, $headerEndRowNumber);
@@ -97,6 +99,7 @@ class CsvImportSource
                 ]);
             }
 
+            $this->assertMaximumColumnsAllowed($stream, $bomOffset);
             fseek($stream, $bomOffset);
             $conversionFilter = stream_filter_append($stream, 'convert.iconv.CP932/UTF-8', STREAM_FILTER_READ);
             if (! is_resource($conversionFilter)) {
@@ -239,6 +242,79 @@ class CsvImportSource
         if ($dataStartRowNumber !== null
             && ($dataStartRowNumber <= $headerEndRowNumber || $dataStartRowNumber > (int) config('opsdeck.import.max_source_row_number'))) {
             throw ValidationException::withMessages(['file' => 'データ開始行番号は見出し範囲の終了行より後、かつ許可範囲内で指定してください。']);
+        }
+    }
+
+    /** @param resource $stream */
+    private function assertMaximumColumnsAllowed(mixed $stream, int $startOffset = 0): void
+    {
+        $maximumColumns = max(1, (int) config('opsdeck.import.max_columns'));
+        $columnCount = 1;
+        $isFieldStart = true;
+        $insideQuotedField = false;
+        $quotePending = false;
+
+        fseek($stream, $startOffset);
+        try {
+            while (! feof($stream)) {
+                $chunk = fread($stream, 8192);
+                if ($chunk === false || ($chunk === '' && ! feof($stream))) {
+                    throw new \RuntimeException('CSVを読み込めません。');
+                }
+
+                $chunkLength = strlen($chunk);
+                for ($index = 0; $index < $chunkLength; $index++) {
+                    $character = $chunk[$index];
+
+                    if ($insideQuotedField) {
+                        if (! $quotePending) {
+                            if ($character === '"') {
+                                $quotePending = true;
+                            }
+
+                            continue;
+                        }
+
+                        $quotePending = false;
+                        if ($character === '"') {
+                            continue;
+                        }
+
+                        $insideQuotedField = false;
+                    }
+
+                    if ($character === ',') {
+                        $columnCount++;
+                        if ($columnCount > $maximumColumns) {
+                            throw ValidationException::withMessages([
+                                'file' => "CSVの列数が上限（{$maximumColumns}列）を超えています。列数を減らして再度お試しください。",
+                            ]);
+                        }
+
+                        $isFieldStart = true;
+
+                        continue;
+                    }
+
+                    if ($character === '"' && $isFieldStart) {
+                        $insideQuotedField = true;
+                        $isFieldStart = false;
+
+                        continue;
+                    }
+
+                    if ($character === "\r" || $character === "\n") {
+                        $columnCount = 1;
+                        $isFieldStart = true;
+
+                        continue;
+                    }
+
+                    $isFieldStart = false;
+                }
+            }
+        } finally {
+            rewind($stream);
         }
     }
 

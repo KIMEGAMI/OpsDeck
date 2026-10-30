@@ -31,6 +31,7 @@ class CsvImportSourceTest extends TestCase
 
     public function test_it_streams_utf8_and_shift_jis_csv_with_the_same_values(): void
     {
+        config(['opsdeck.import.max_columns' => 2]);
         $contents = "\xEF\xBB\xBF氏名,email\r\n山田太郎,taro@example.test\r\n\r\n";
         $source = new CsvImportSource;
         $utf8Stream = fopen('php://temp', 'w+b');
@@ -60,6 +61,7 @@ class CsvImportSourceTest extends TestCase
 
     public function test_it_parses_non_seekable_streams_with_quoted_newlines(): void
     {
+        config(['opsdeck.import.max_columns' => 2]);
         $contents = "name,email\r\n\"Tokyo,\r\nHQ\",tokyo@example.test\r\nAlice,alice@example.test\r\n";
         $stream = fopen('data://text/plain;base64,'.base64_encode($contents), 'rb');
         $rows = [];
@@ -71,6 +73,62 @@ class CsvImportSourceTest extends TestCase
         $this->assertSame(['name', 'email'], $parsed['headers']);
         $this->assertSame([2, 4], array_column($rows, 'source_row_number'));
         $this->assertSame("Tokyo,\r\nHQ", $rows[0]['values'][0]);
+    }
+
+    public function test_it_rejects_csv_records_that_exceed_the_configured_column_limit_before_dispatching_rows(): void
+    {
+        config(['opsdeck.import.max_columns' => 2]);
+
+        foreach (["name,email,department\nAlice,alice@example.test,Sales\n", "name,email\nAlice,alice@example.test,Sales\n"] as $contents) {
+            $dispatchedRows = [];
+
+            try {
+                (new CsvImportSource)->parseEach($contents, static function (array $row) use (&$dispatchedRows): void {
+                    $dispatchedRows[] = $row;
+                });
+                $this->fail('CSV rows above the configured column limit must be rejected.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(['CSVの列数が上限（2列）を超えています。列数を減らして再度お試しください。'], $exception->errors()['file']);
+                $this->assertSame([], $dispatchedRows);
+            }
+        }
+    }
+
+    public function test_it_rejects_overwide_non_seekable_streams_before_dispatching_rows(): void
+    {
+        config(['opsdeck.import.max_columns' => 2]);
+        $stream = fopen('data://text/plain;base64,'.base64_encode("name,email\nAlice,alice@example.test,Sales\n"), 'rb');
+        $dispatchedRows = [];
+
+        try {
+            (new CsvImportSource)->parseEachStream($stream, static function (array $row) use (&$dispatchedRows): void {
+                $dispatchedRows[] = $row;
+            });
+            $this->fail('Non-seekable CSV streams above the configured column limit must be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['CSVの列数が上限（2列）を超えています。列数を減らして再度お試しください。'], $exception->errors()['file']);
+            $this->assertSame([], $dispatchedRows);
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    public function test_it_counts_columns_correctly_after_a_bom_before_quoted_fields(): void
+    {
+        config(['opsdeck.import.max_columns' => 2]);
+        $stream = fopen('php://temp', 'w+b');
+        fwrite($stream, "\xEF\xBB\xBF\"氏名,読み\",備考\r\n\"山田,太郎\",確認済み\r\n");
+        rewind($stream);
+        $rows = [];
+
+        $parsed = (new CsvImportSource)->parseEachStream($stream, static function (array $row) use (&$rows): void {
+            $rows[] = $row;
+        });
+
+        fclose($stream);
+
+        $this->assertSame(['氏名,読み', '備考'], $parsed['headers']);
+        $this->assertSame(['山田,太郎', '確認済み'], $rows[0]['values']);
     }
 
     public function test_it_keeps_quoted_commas_and_original_row_numbers(): void

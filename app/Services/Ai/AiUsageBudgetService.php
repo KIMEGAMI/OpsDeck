@@ -58,11 +58,13 @@ class AiUsageBudgetService
         $rate = config('opsdeck.ai.usd_to_jpy_rate');
         $modelPrices = config('opsdeck.ai.model_prices_per_million_tokens', []);
         $pricing = is_array($modelPrices) ? ($modelPrices[$model] ?? null) : null;
+        $longContextPricing = $this->longContextPricingForModel($model);
         if (! app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping')
             || $budgetJpy <= 0
             || ! is_numeric($rate)
             || (float) $rate <= 0
-            || ! $this->modelPricing->hasValidRates($pricing)) {
+            || ! $this->modelPricing->hasValidRates($pricing)
+            || ($longContextPricing !== null && ! $this->modelPricing->hasValidLongContextPricing($longContextPricing))) {
             return null;
         }
 
@@ -70,7 +72,13 @@ class AiUsageBudgetService
         $inputTokens = (strlen($encodedInput) * (int) config('opsdeck.ai.input_token_estimate_multiplier'))
             + (int) config('opsdeck.ai.estimated_input_overhead_tokens');
         $outputTokens = (int) config('opsdeck.ai.max_output_tokens');
-        $maximumCostUsd = $this->modelPricing->reservationCostUsd($pricing, $inputTokens, $outputTokens, (int) config('opsdeck.ai.tokens_per_million'));
+        $maximumCostUsd = $this->modelPricing->reservationCostUsd(
+            $pricing,
+            $inputTokens,
+            $outputTokens,
+            (int) config('opsdeck.ai.tokens_per_million'),
+            is_array($longContextPricing) ? $longContextPricing : null,
+        );
         $monthlyBudgetUsd = $budgetJpy / (float) $rate;
         $configuredReservationTtlMinutes = (int) config('opsdeck.ai.monthly_budget_reservation_ttl_minutes');
         $providerTimeoutMinutes = (int) ceil((int) config('opsdeck.ai.timeout_seconds') / 60)
@@ -112,9 +120,19 @@ class AiUsageBudgetService
 
             $modelPrices = config('opsdeck.ai.model_prices_per_million_tokens', []);
             $pricing = is_array($modelPrices) ? ($modelPrices[$lockedReservation->model] ?? null) : null;
-            $hasPricing = $this->modelPricing->hasValidRates($pricing);
+            $longContextPricing = $this->longContextPricingForModel($lockedReservation->model);
+            $hasPricing = $this->modelPricing->hasValidRates($pricing)
+                && ($longContextPricing === null || $this->modelPricing->hasValidLongContextPricing($longContextPricing));
             $costUsd = $hasPricing
-                ? $this->modelPricing->actualCostUsd($pricing, $inputTokens, $cachedInputTokens, $cacheWriteInputTokens, $outputTokens, (int) config('opsdeck.ai.tokens_per_million'))
+                ? $this->modelPricing->actualCostUsd(
+                    $pricing,
+                    $inputTokens,
+                    $cachedInputTokens,
+                    $cacheWriteInputTokens,
+                    $outputTokens,
+                    (int) config('opsdeck.ai.tokens_per_million'),
+                    is_array($longContextPricing) ? $longContextPricing : null,
+                )
                 : (float) $lockedReservation->reserved_cost_usd;
             if (! $success && $usageOutcomeUnknown && $inputTokens === 0 && $outputTokens === 0) {
                 $costUsd = (float) $lockedReservation->reserved_cost_usd;
@@ -153,5 +171,16 @@ class AiUsageBudgetService
             'success' => false,
             'error_code' => $errorCode,
         ]);
+    }
+
+    private function longContextPricingForModel(string $model): mixed
+    {
+        $pricing = config('opsdeck.ai.long_context_pricing', []);
+
+        if (! is_array($pricing)) {
+            return false;
+        }
+
+        return $pricing[$model] ?? null;
     }
 }
