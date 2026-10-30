@@ -10,21 +10,35 @@ class LegalPagesTest extends TestCase
     {
         parent::setUp();
 
-        config(['opsdeck.billing.enabled' => true]);
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+        ]);
     }
 
     public function test_public_legal_pages_are_available_without_authentication(): void
     {
-        $this->get(route('legal.terms'))->assertOk()->assertSee('利用規約')->assertSee('最終更新日：'.config('opsdeck.legal_last_updated'));
+        $this->get(route('legal.terms'))
+            ->assertOk()
+            ->assertSee('利用規約')
+            ->assertSee('最終更新日：'.config('opsdeck.legal_last_updated'))
+            ->assertSee('組織のOwner・管理者')
+            ->assertSee('Premiumは会社単位で月額9,800円（税別）です。')
+            ->assertSee('解約は次回更新日前にBilling画面から案内されるCustomer Portalで手続きしてください。')
+            ->assertSee('解約手続後も次回更新日までは利用でき、契約は次回更新日に終了します。')
+            ->assertSee('決済済み期間の利用料は日割りで返金しません。')
+            ->assertSee('Customer Portal')
+            ->assertSee(route('legal.privacy'));
         $this->get(route('legal.privacy'))
             ->assertOk()
             ->assertSee('プライバシーポリシー')
             ->assertSee('最終更新日：'.config('opsdeck.privacy_policy_last_updated'))
-            ->assertSee('Stripe：Premiumの申込・請求・契約状態の確認に利用します。')
-            ->assertSee('Resend：メール配信先に設定している場合、お知らせ・招待・週次サマリー')
-            ->assertSee('Google Sheets：利用者が連携した場合、読み取り専用の権限')
-            ->assertSee('OpenAI：Premiumで組織のAI補助が有効な場合')
-            ->assertSee('Import元ファイル、取込履歴、行ごとの確認結果は、再確認・エラー修正・取込取消のため、期限を設けず保存します。')
+            ->assertSee('Stripe：Premiumの申込、請求、契約状態の確認に利用します。')
+            ->assertSee('Resend：メール配信に利用する設定の場合')
+            ->assertSee('Google Sheets：連携機能を利用した場合')
+            ->assertSee('OpenAI：組織でAI列マッピングを有効にして利用した場合')
+            ->assertSee('Cloudflare R2：OpsDeckのファイル保存先として設定されている場合')
+            ->assertSee('Import元ファイル、取込履歴、行ごとの確認結果は、再確認・エラー修正・取込取消に使用するため、現在は期限を設けず保存します。')
             ->assertSee(number_format(config('opsdeck.impact_snapshots.daily_retention_days')).'日間保存し、保存期間を過ぎた分は定期処理で削除します。')
             ->assertSee(route('support.create', ['category' => 'privacy']))
             ->assertSee('お問い合わせフォーム（個人情報・データの取扱い）')
@@ -35,7 +49,10 @@ class LegalPagesTest extends TestCase
             ->assertSee('特定商取引法に基づく表記')
             ->assertSee('最終更新日：'.config('opsdeck.legal_last_updated'))
             ->assertSee('月額9,800円（税別）')
-            ->assertSee('決済前にStripe Checkoutで合計を表示します')
+            ->assertSee('1GiBあたり月額100円（税別）')
+            ->assertSee('次回更新日前に手続きしてください。契約は次回更新日に終了し、終了日までは利用できます。')
+            ->assertSee('決済済み期間の利用料は日割りで返金しません。')
+            ->assertSee('決済前にStripe Checkoutで表示します')
             ->assertSee('support@kimegami.jp')
             ->assertSee('mailto:support@kimegami.jp');
     }
@@ -80,6 +97,11 @@ class LegalPagesTest extends TestCase
             ->assertOk()
             ->assertSee('Stripe：現在は課金機能を停止しており、決済情報をStripeへ送信しません。')
             ->assertDontSee('Stripe：Premiumの申込・請求・契約状態の確認に利用します。');
+
+        $this->get(route('legal.terms'))
+            ->assertOk()
+            ->assertSee('現在は月額0円のFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
+            ->assertDontSee('Premiumは会社単位で月額9,800円（税別）です。');
 
         $this->get(route('legal.commercial-transactions'))
             ->assertOk()

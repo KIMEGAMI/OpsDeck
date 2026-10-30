@@ -6,6 +6,7 @@ use App\Http\Requests\Auth\GoogleAccountSettingsRequest;
 use App\Http\Requests\UpdateUserPasswordRequest;
 use App\Http\Requests\UpdateUserProfileRequest;
 use App\Models\User;
+use App\Services\GoogleLoginCallbackReadiness;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -13,7 +14,7 @@ use Illuminate\View\View;
 
 class UserSettingsController extends Controller
 {
-    public function edit(Request $request): View
+    public function edit(Request $request, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): View
     {
         /** @var User $user */
         $user = $request->user();
@@ -22,7 +23,14 @@ class UserSettingsController extends Controller
             ->orderBy('organization_id')
             ->get();
 
-        return view('settings.profile', compact('user', 'memberships'));
+        $googleLoginEnabled = config('services.google.login_enabled') === true;
+
+        return view('settings.profile', [
+            'user' => $user,
+            'memberships' => $memberships,
+            'googleLoginEnabled' => $googleLoginEnabled,
+            'googleLoginAvailable' => $googleLoginEnabled && $googleLoginCallbackReadiness->matchesRequestUrl($request),
+        ]);
     }
 
     public function updateProfile(UpdateUserProfileRequest $request): RedirectResponse

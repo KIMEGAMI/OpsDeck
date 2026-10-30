@@ -35,6 +35,38 @@ class AuthenticationTest extends TestCase
             ->assertDontSee('aria-pressed', false);
     }
 
+    public function test_login_page_explains_google_is_for_registered_linked_accounts(): void
+    {
+        config([
+            'app.url' => 'https://opsdeck.example.test',
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'https://opsdeck.example.test/auth/google/callback',
+        ]);
+
+        $this->get('https://opsdeck.example.test/login')
+            ->assertOk()
+            ->assertSee('Googleでログイン')
+            ->assertSee('Googleログインは、すでにOpsDeckに登録し、Googleアカウントを連携した方が使えます。')
+            ->assertSee('初めて利用する場合は、先に「組織を新規登録」から登録してください。')
+            ->assertSee('登録後、個人設定からGoogleアカウントを連携できます。');
+    }
+
+    public function test_login_page_hides_google_login_when_callback_origin_does_not_match_application(): void
+    {
+        config([
+            'app.url' => 'http://localhost:8007',
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'http://127.0.0.1:8006/auth/google/callback',
+        ]);
+
+        $this->get('/login')
+            ->assertOk()
+            ->assertDontSee('Googleでログイン')
+            ->assertSee('Googleログインは現在利用できません。')
+            ->assertSee('メールアドレスとパスワードでログインしてください。')
+            ->assertSee(route('login.store'));
+    }
+
     public function test_authenticated_user_can_log_in_and_reach_dashboard(): void
     {
         $user = User::factory()->create(['email' => 'member@example.test']);

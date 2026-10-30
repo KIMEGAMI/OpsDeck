@@ -75,4 +75,20 @@ class UserSettingsControllerTest extends TestCase
 
         $this->assertNull($user->refresh()->google_id);
     }
+
+    public function test_google_linking_is_not_offered_when_callback_origin_does_not_match_application(): void
+    {
+        $user = User::factory()->create();
+        config([
+            'app.url' => 'http://localhost:8007',
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'http://127.0.0.1:8006/auth/google/callback',
+        ]);
+
+        $this->actingAs($user)->get(route('settings.profile'))
+            ->assertOk()
+            ->assertDontSee('Googleアカウントを連携</button>', false)
+            ->assertSee('Googleログインは現在利用できません。')
+            ->assertSee('メールアドレスとパスワードでログインしてください。');
+    }
 }

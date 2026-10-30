@@ -129,4 +129,11 @@
     <div class="dashboard-announcements">
         @include('dashboard-announcements', ['announcements' => $announcements])
     </div>
+    <footer class="dashboard-legal-footer">
+        <nav aria-label="規約と運営情報">
+            <a href="{{ route('legal.privacy') }}">プライバシーポリシー</a>
+            <a href="{{ route('legal.terms') }}">利用規約</a>
+            <a href="{{ route('legal.commercial-transactions') }}">特定商取引法に基づく表記</a>
+        </nav>
+    </footer>
 </x-layouts.app>

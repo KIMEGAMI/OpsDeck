@@ -16,6 +16,7 @@
         .landing-summary img { display: block; width: 100%; height: auto; border-radius: .35rem; }
         .landing-summary figcaption { margin-top: .65rem; color: #e6f1f7; font-size: .9rem; line-height: 1.6; }
         .landing-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+        .landing-results-single { grid-template-columns: minmax(0, 1fr); }
         .landing-result { padding: clamp(1.1rem, 3vw, 1.75rem); border: 1px solid #9fb3c8; border-top: .35rem solid #005f73; border-radius: .6rem; background: #ffffff; }
         .landing-result h3 { margin-top: 0; color: #102a43; }
         .landing-result p { color: #334e68; line-height: 1.7; }
@@ -47,7 +48,7 @@
     <div class="landing-page">
         <section class="landing-hero" aria-labelledby="landing-title">
             <div>
-                <p class="landing-eyebrow">IT運用の見える化から、費用と時間の改善へ</p>
+                <p class="landing-eyebrow">IT運用の見える化から、費用の見直しへ</p>
                 <h1 id="landing-title">見つける。見直す。<br>改善の手応えを、数字で残す。</h1>
                 <p>社員・端末・クラウドサービス・契約をひとつに集約。更新前の契約や利用者のいないサービスなど、見逃しやすい確認候補を整理します。費用の見直し候補を試算し、確認できた削減実績を記録できます。</p>
                 <div class="landing-actions">
@@ -60,12 +61,12 @@
                 <h2>データを、見直しの判断材料に。</h2>
                 <figure>
                     <img src="{{ asset('feature-guides/landing-value-flow.svg') }}" alt="社員や端末、契約などの情報を集め、費用見直し候補と確認済みの削減実績を整理する図">
-                    <figcaption>費用の候補は登録情報から試算。作業時間は改善前後を記録し、実績と分けて確認できます。</figcaption>
+                    <figcaption>費用の見直し候補は登録情報から試算し、確認済みの削減実績と分けて確認できます。</figcaption>
                 </figure>
             </aside>
         </section>
 
-        <section class="landing-results" aria-label="費用と作業時間の効果">
+        <section class="landing-results{{ config('opsdeck.release_features.work_time_tracking') ? '' : ' landing-results-single' }}" aria-label="{{ config('opsdeck.release_features.work_time_tracking') ? '費用と作業時間の効果' : '費用の見直し効果' }}">
             <article class="landing-result">
                 <h2>「いくら見直せる？」を、自社データから。</h2>
                 <p><span class="landing-feature-label">Premium</span></p>
@@ -74,16 +75,18 @@
                 <p class="landing-note">金額は入力情報と設定条件に基づく候補額です。削減実績や削減保証ではありません。</p>
                 <p><a href="#landing-pricing-title">Premiumの機能・料金を見る</a></p>
             </article>
-            <article class="landing-result">
-                <h2>「作業時間がどれだけ変わった？」を、前後の記録で。</h2>
-                <p><span class="landing-feature-label">Premium</span></p>
-                <p>改善前・改善後の作業時間と、月あたりの回数を記録すると、月間の時間差を参考値として計算できます。</p>
-                <div class="landing-time-example" aria-label="作業時間の入力例">
-                    入力例：1回30分から10分に短縮し、月4回行う場合
-                    <strong>(30分 − 10分) × 4回 ＝ 月80分短縮</strong>
-                </div>
-                <p class="landing-note">これは入力例です。OpsDeckが作業時間を自動計測するものではなく、実際の効果は担当者が記録した値によって異なります。</p>
-            </article>
+            @if (config('opsdeck.release_features.work_time_tracking'))
+                <article class="landing-result">
+                    <h2>「作業時間がどれだけ変わった？」を、前後の記録で。</h2>
+                    <p><span class="landing-feature-label">Premium</span></p>
+                    <p>改善前・改善後の作業時間と、月あたりの回数を記録すると、月間の時間差を参考値として計算できます。</p>
+                    <div class="landing-time-example" aria-label="作業時間の入力例">
+                        入力例：1回30分から10分に短縮し、月4回行う場合
+                        <strong>(30分 − 10分) × 4回 ＝ 月80分短縮</strong>
+                    </div>
+                    <p class="landing-note">これは入力例です。OpsDeckが作業時間を自動計測するものではなく、実際の効果は担当者が記録した値によって異なります。</p>
+                </article>
+            @endif
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-workflow-title">
@@ -120,7 +123,7 @@
                     <p>取込履歴、確認済みの削減実績、週次サマリーで、状況を振り返れます。</p>
                 </article>
             </div>
-            <p class="landing-note">一部の取込形式・更新通知・セキュリティ機能・レポート・書き出し機能はPremiumで利用できます。</p>
+            <p class="landing-note">一部の取込形式・更新通知・セキュリティ機能・CSV書き出し機能はPremiumで利用できます。</p>
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-savings-title">
@@ -146,7 +149,7 @@
         <section class="card landing-section" aria-labelledby="landing-pricing-title">
             @if (config('opsdeck.billing.enabled'))
                 <h2 id="landing-pricing-title">まずFreeで整理。もっと深く見直すならPremium。</h2>
-                <p class="landing-note">台帳の一元管理から始めて、必要に応じて費用候補の試算、作業時間の記録、更新通知、セキュリティ対応へ広げられます。</p>
+                <p class="landing-note">台帳の一元管理から始めて、必要に応じて費用候補の試算、更新通知、セキュリティ対応へ広げられます。</p>
             @else
                 <h2 id="landing-pricing-title">無料のFreeプランから始められます。</h2>
                 <p class="landing-note">現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。</p>
