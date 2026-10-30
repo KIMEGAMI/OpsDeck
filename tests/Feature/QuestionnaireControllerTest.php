@@ -11,11 +11,14 @@ use App\Models\Questionnaire;
 use App\Models\QuestionnaireAnswer;
 use App\Models\QuestionnaireQuestion;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class QuestionnaireControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_questionnaire_index_counts_and_filters_pending_answers_within_the_current_organization(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

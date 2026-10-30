@@ -10,12 +10,15 @@ use App\Models\ProductEvent;
 use App\Models\ReferralCode;
 use App\Models\ReferralConversion;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class ReferralControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

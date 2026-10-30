@@ -10,11 +10,14 @@ use App\Models\OrganizationInvitation;
 use App\Models\OrganizationMembership;
 use App\Models\User;
 use App\Services\PlanUsageService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Tests\TestCase;
 
 class PlanUsageServiceTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_usage_service_marks_warning_boundary_and_counts_only_active_or_invited_administrators(): void
     {
         Config::set('opsdeck.plans.free.limits.employees', 5);

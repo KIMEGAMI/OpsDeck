@@ -10,6 +10,7 @@ use App\Models\ProductEvent;
 use App\Models\User;
 use App\Services\OrganizationActivityRecorder;
 use Illuminate\Database\QueryException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Mockery;
@@ -18,6 +19,8 @@ use Tests\TestCase;
 
 class OrganizationActivityMetricsTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

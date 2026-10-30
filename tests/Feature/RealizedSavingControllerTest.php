@@ -11,11 +11,14 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\RealizedSaving;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class RealizedSavingControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_can_record_realized_savings_with_an_audit_entry(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

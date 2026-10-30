@@ -14,11 +14,14 @@ use App\Models\OrganizationMembership;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OnboardingControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

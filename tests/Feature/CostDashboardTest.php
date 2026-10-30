@@ -17,11 +17,14 @@ use App\Services\ContractRenewalWindow;
 use App\Services\CostSavingsEstimator;
 use App\Services\ImpactReportMetricsService;
 use Carbon\CarbonImmutable;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class CostDashboardTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_company_savings_assumptions_override_defaults_without_affecting_other_organizations(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

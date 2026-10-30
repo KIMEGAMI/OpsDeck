@@ -11,6 +11,7 @@ use App\Models\OrganizationMembership;
 use App\Models\User;
 use App\Services\ImpactReportMetricsService;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Mockery;
@@ -18,6 +19,8 @@ use Tests\TestCase;
 
 class ImpactMetricSnapshotCommandTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_impact_report_routes_are_unavailable_even_to_premium_members_outside_release_scope(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

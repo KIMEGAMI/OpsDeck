@@ -11,6 +11,7 @@ use App\Models\ImportRowResult;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
@@ -20,6 +21,8 @@ use ZipArchive;
 
 class ImportXlsxExecutionTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_xlsx_rows_over_the_plan_limit_are_recorded_as_errors(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

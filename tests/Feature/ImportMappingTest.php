@@ -32,6 +32,7 @@ use App\Services\Import\ImportProfileService;
 use App\Services\ImportBatchExecutionService;
 use App\Services\ImportBatchRollbackService;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -43,6 +44,8 @@ use Tests\TestCase;
 
 class ImportMappingTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_can_execute_a_shift_jis_csv_import_without_mojibake(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

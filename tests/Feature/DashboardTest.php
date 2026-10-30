@@ -21,12 +21,15 @@ use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Models\User;
 use App\Services\ContractRenewalWindow;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class DashboardTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_dashboard_metrics_use_a_compact_mobile_grid_without_overflowing_values(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

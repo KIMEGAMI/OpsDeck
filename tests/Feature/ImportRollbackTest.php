@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Services\ImportBatchExecutionService;
 use App\Services\ImportBatchRollbackService;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -25,6 +26,8 @@ use Tests\TestCase;
 
 class ImportRollbackTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_synchronous_rollback_records_the_user_who_cancelled_the_import(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

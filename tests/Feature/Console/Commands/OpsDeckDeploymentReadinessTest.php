@@ -56,6 +56,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config(['services.google.login_enabled' => false]);
         $this->originalPublicPath = $this->app->publicPath();
         $this->frontendTestPublicPath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-deployment-assets-'.bin2hex(random_bytes(8));
         $frontendAssetsPath = $this->frontendTestPublicPath.DIRECTORY_SEPARATOR.'build'.DIRECTORY_SEPARATOR.'assets';
@@ -317,6 +318,45 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->assertSame(0, $exitCode, $actualOutput);
     }
 
+    public function test_enabled_google_login_requires_a_callback_matching_the_application_origin_and_route(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'http://127.0.0.1:8006/auth/google/callback',
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true, '--skip-provider-verification' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('fail', $output['checks']['google_login_callback']);
+        $this->assertSame(1, $exitCode);
+    }
+
+    public function test_enabled_google_login_accepts_a_callback_matching_the_application_origin_and_route(): void
+    {
+        $this->configureReadyDeployment();
+        config([
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'https://opsdeck.example.test/auth/google/callback',
+        ]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $this->artisan('opsdeck:deployment-check', ['--json' => true, '--skip-provider-verification' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('pass', $output['checks']['google_login_callback']);
+    }
+
     public function test_production_readiness_accepts_smtp_with_idempotent_resend_delivery_enabled(): void
     {
         $this->configureReadyDeployment();
@@ -420,10 +460,27 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->assertSame('fail', $output['checks']['release_scope']);
     }
 
-    public function test_production_readiness_fails_when_storage_addon_is_enabled_outside_the_1_0_scope(): void
+    public function test_production_readiness_allows_storage_addon_as_a_1_0_scope_feature(): void
     {
         $this->configureReadyDeployment();
         config(['opsdeck.release_features.storage_addon' => true]);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true, '--skip-provider-verification' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(1, $exitCode);
+        $this->assertSame('pass', $output['checks']['release_scope']);
+    }
+
+    public function test_production_readiness_rejects_disabling_required_storage_addon(): void
+    {
+        $this->configureReadyDeployment();
+        config(['opsdeck.release_features.storage_addon' => false]);
         $connection = $this->mock(Connection::class);
         $connection->shouldReceive('getPdo')->once();
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
@@ -699,7 +756,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             && str_starts_with($request->url(), 'https://api.resend.com/domains'));
     }
 
-    public function test_free_only_mode_does_not_require_stripe_or_seller_information(): void
+    public function test_production_paid_1_0_readiness_rejects_free_only_mode_without_calling_stripe(): void
     {
         $this->configureReadyDeployment();
         config(['opsdeck.billing.enabled' => false]);
@@ -712,10 +769,10 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
         $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
 
-        $this->assertSame('ready', $output['status']);
-        $this->assertSame('not_applicable', $output['checks']['stripe']);
+        $this->assertSame('not_ready', $output['status']);
+        $this->assertSame('fail', $output['checks']['stripe']);
         $this->assertSame('not_applicable', $output['checks']['commercial_information']);
-        $this->assertSame(0, $exitCode);
+        $this->assertSame(1, $exitCode);
         Http::assertSentCount(1);
         Http::assertNotSent(fn (Request $request): bool => str_starts_with($request->url(), 'https://api.stripe.com/'));
     }
@@ -926,7 +983,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         Http::assertNotSent(fn (Request $request): bool => $request->url() === 'https://api.openai.com/v1/responses');
     }
 
-    public function test_ai_disabled_allows_production_readiness_without_openai_credentials_or_pricing(): void
+    public function test_ai_disabled_prevents_production_readiness_without_openai_credentials_or_pricing(): void
     {
         $this->configureReadyDeployment();
         config([
@@ -944,9 +1001,9 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
         $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
 
-        $this->assertSame('not_applicable', $output['checks']['ai_mapping']);
-        $this->assertSame('not_applicable', $output['checks']['ai_cost']);
-        $this->assertSame(0, $exitCode);
+        $this->assertSame('fail', $output['checks']['ai_mapping']);
+        $this->assertSame('fail', $output['checks']['ai_cost']);
+        $this->assertSame(1, $exitCode);
 
         Http::assertNotSent(fn (Request $request): bool => $request->url() === 'https://api.openai.com/v1/responses');
     }
@@ -1008,6 +1065,57 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $this->assertSame(1, $exitCode);
     }
 
+    #[DataProvider('invalidStripePortalCancellationConfigurations')]
+    public function test_production_readiness_rejects_customer_portal_cancellation_settings_outside_the_published_policy(bool $cancellationEnabled, string $cancellationMode, string $prorationBehavior, bool $isLiveMode): void
+    {
+        $this->configureReadyDeployment(
+            stripePortalCancellationEnabled: $cancellationEnabled,
+            stripePortalCancellationMode: $cancellationMode,
+            stripePortalCancellationProrationBehavior: $prorationBehavior,
+            stripePortalLivemode: $isLiveMode,
+        );
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('fail', $output['checks']['stripe']);
+        $this->assertSame('stripe_customer_portal_cancellation_configuration_mismatch', $output['diagnostics']['stripe']);
+        $this->assertSame(1, $exitCode);
+    }
+
+    /** @return array<string, array{bool, string, string, bool}> */
+    public static function invalidStripePortalCancellationConfigurations(): array
+    {
+        return [
+            'cancellation disabled' => [false, 'at_period_end', 'none', true],
+            'immediate cancellation' => [true, 'immediately', 'none', true],
+            'prorated cancellation' => [true, 'at_period_end', 'create_prorations', true],
+            'test mode configuration' => [true, 'at_period_end', 'none', false],
+        ];
+    }
+
+    public function test_production_readiness_explains_when_stripe_denies_customer_portal_configuration_reading(): void
+    {
+        $this->configureReadyDeployment(stripePortalResponseStatus: 403);
+        $connection = $this->mock(Connection::class);
+        $connection->shouldReceive('getPdo')->once();
+        $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
+        DB::shouldReceive('connection')->twice()->andReturn($connection);
+
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('fail', $output['checks']['stripe']);
+        $this->assertSame('stripe_customer_portal_configuration_api_rejected_request', $output['diagnostics']['stripe']);
+        $this->assertSame(1, $exitCode);
+    }
+
     public function test_production_readiness_validates_the_configured_storage_addon_price(): void
     {
         $this->configureReadyDeployment();
@@ -1025,10 +1133,16 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame('pass', $output['checks']['stripe']);
-        $this->assertSame('fail', $output['checks']['release_scope']);
-        $this->assertSame(1, $exitCode);
+        $this->assertSame('pass', $output['checks']['release_scope']);
+        $this->assertSame('ready', $output['status']);
+        $this->assertSame(0, $exitCode);
 
         Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/v1/prices/price_storage_addon_unit_test'));
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://api.stripe.com/v1/billing_portal/configurations?')
+            && str_contains($request->url(), 'active=true')
+            && str_contains($request->url(), 'is_default=true')
+            && str_contains($request->url(), 'limit=1'));
     }
 
     public function test_production_readiness_requires_a_storage_addon_capacity_limit_for_the_1_0_scope(): void
@@ -1114,8 +1228,9 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame('pass', $output['checks']['stripe']);
-        $this->assertSame('fail', $output['checks']['release_scope']);
-        $this->assertSame(1, $exitCode);
+        $this->assertSame('pass', $output['checks']['release_scope']);
+        $this->assertSame('ready', $output['status']);
+        $this->assertSame(0, $exitCode);
     }
 
     public function test_it_accepts_enabled_idempotent_resend_with_a_configured_api_key(): void
@@ -1360,7 +1475,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         }
     }
 
-    public function test_it_uses_cached_mail_configuration_when_the_process_environment_has_no_key(): void
+    public function test_it_uses_cached_resend_domain_check_configuration_without_a_process_environment_key(): void
     {
         $this->setResendDomainCheckApiKey(null);
         config([
@@ -2423,9 +2538,41 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $connection->shouldReceive('getSchemaBuilder')->once()->andReturn($this->schemaBuilder);
         DB::shouldReceive('connection')->twice()->andReturn($connection);
 
-        $this->artisan('opsdeck:deployment-check', ['--json' => true])
-            ->expectsOutput('{"status":"not_ready","checks":{"environment":"pass","release_scope":"pass","app_key":"pass","debug":"pass","https_url":"pass","hsts":"pass","session_cookie_security":"pass","private_file_storage":"pass","production_logging":"pass","runtime_directories":"pass","php_extensions":"pass","database_driver":"pass","database_connection":"pass","database_migrations":"pass","database_backup_tool":"pass","database_restore_tool":"fail","backup_restore_target":"pass","queue":"pass","scheduler_heartbeat":"pass","cache_lock":"pass","mail":"pass","failure_alert":"pass","stripe":"pass","commercial_information":"pass","frontend_assets":"pass","ai_mapping":"pass","ai_cost":"pass"}}')
-            ->assertExitCode(1);
+        $this->withoutMockingConsoleOutput();
+        $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
+        $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('not_ready', $output['status']);
+        $this->assertSame([
+            'environment' => 'pass',
+            'release_scope' => 'pass',
+            'app_key' => 'pass',
+            'debug' => 'pass',
+            'https_url' => 'pass',
+            'hsts' => 'pass',
+            'session_cookie_security' => 'pass',
+            'private_file_storage' => 'pass',
+            'production_logging' => 'pass',
+            'runtime_directories' => 'pass',
+            'php_extensions' => 'pass',
+            'database_driver' => 'pass',
+            'database_connection' => 'pass',
+            'database_migrations' => 'pass',
+            'database_backup_tool' => 'pass',
+            'database_restore_tool' => 'fail',
+            'backup_restore_target' => 'pass',
+            'queue' => 'pass',
+            'scheduler_heartbeat' => 'pass',
+            'cache_lock' => 'pass',
+            'mail' => 'pass',
+            'failure_alert' => 'pass',
+            'stripe' => 'pass',
+            'commercial_information' => 'pass',
+            'frontend_assets' => 'pass',
+            'ai_mapping' => 'pass',
+            'ai_cost' => 'pass',
+        ], $output['checks']);
+        $this->assertSame(1, $exitCode);
     }
 
     public function test_it_fails_readiness_when_database_clients_are_present_but_their_versions_cannot_be_identified(): void
@@ -2542,7 +2689,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         Http::assertNothingSent();
     }
 
-    private function configureReadyDeployment(bool $hasDatabaseBackupTool = true, array $missingPhpExtensions = [], bool $hasDatabaseRestoreTool = true, bool $hasDatabaseCacheTables = true, bool $hasReadyRestoreTarget = true, bool $hasPendingMigrations = false, bool $hasMigrationRepository = true, bool $cacheLockAcquisitionSucceeds = true, bool $cacheLockReleaseSucceeds = true, bool $hasDatabaseQueueTable = true, bool $hasFailedJobsTable = true, int $stripePriceAmount = 9800, bool $hasFreshQueueWorker = true, bool $hasSafeQueueJobTimeout = true, string $stripePriceTaxBehavior = 'exclusive', bool $hasJapanTaxRegistration = true, bool $taxRegistrationOnSecondPage = false, ?string $stripeProductTaxCode = 'txcd_test_service', ?string $stripeDefaultTaxCode = 'txcd_test_default', string $stripeTaxSettingsStatus = 'active', string $resendDomainStatus = 'verified', string $resendSendingCapability = 'enabled', bool $resendDomainOnSecondPage = false, bool $databaseConnectionAvailable = true, bool $databaseClientVersionSupported = true, bool $hasFreshSchedulerHeartbeat = true, int $storageAddonPriceAmount = 100, ?string $storageAddonProductTaxCode = 'txcd_test_service', string $latestBackupStatus = 'ok', string $backupRestoreTestStatus = 'ok', ?string $backupRestoreTargetStatus = null): void
+    private function configureReadyDeployment(bool $hasDatabaseBackupTool = true, array $missingPhpExtensions = [], bool $hasDatabaseRestoreTool = true, bool $hasDatabaseCacheTables = true, bool $hasReadyRestoreTarget = true, bool $hasPendingMigrations = false, bool $hasMigrationRepository = true, bool $cacheLockAcquisitionSucceeds = true, bool $cacheLockReleaseSucceeds = true, bool $hasDatabaseQueueTable = true, bool $hasFailedJobsTable = true, int $stripePriceAmount = 9800, bool $hasFreshQueueWorker = true, bool $hasSafeQueueJobTimeout = true, string $stripePriceTaxBehavior = 'exclusive', bool $hasJapanTaxRegistration = true, bool $taxRegistrationOnSecondPage = false, ?string $stripeProductTaxCode = 'txcd_test_service', ?string $stripeDefaultTaxCode = 'txcd_test_default', string $stripeTaxSettingsStatus = 'active', string $resendDomainStatus = 'verified', string $resendSendingCapability = 'enabled', bool $resendDomainOnSecondPage = false, bool $databaseConnectionAvailable = true, bool $databaseClientVersionSupported = true, bool $hasFreshSchedulerHeartbeat = true, int $storageAddonPriceAmount = 100, ?string $storageAddonProductTaxCode = 'txcd_test_service', string $latestBackupStatus = 'ok', string $backupRestoreTestStatus = 'ok', ?string $backupRestoreTargetStatus = null, bool $stripePortalCancellationEnabled = true, string $stripePortalCancellationMode = 'at_period_end', string $stripePortalCancellationProrationBehavior = 'none', bool $stripePortalLivemode = true, int $stripePortalResponseStatus = 200): void
     {
         $this->app['env'] = 'production';
         config([
@@ -2553,7 +2700,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
             'opsdeck.release_features.impact_report' => false,
             'opsdeck.release_features.questionnaire_ai_draft' => false,
             'opsdeck.release_features.referrals' => false,
-            'opsdeck.release_features.storage_addon' => false,
+            'opsdeck.release_features.storage_addon' => true,
             'opsdeck.release_features.work_time_tracking' => false,
             'opsdeck.ai.enabled' => true,
             'opsdeck.ai.provider' => 'openai',
@@ -2723,6 +2870,23 @@ class OpsDeckDeploymentReadinessTest extends TestCase
                 'product' => ['id' => 'prod_storage_addon_unit_test', 'tax_code' => $storageAddonProductTaxCode],
                 'recurring' => ['interval' => 'month', 'interval_count' => 1],
             ], 200),
+            'api.stripe.com/v1/billing_portal/configurations*' => Http::response([
+                'object' => 'list',
+                'has_more' => false,
+                'data' => [[
+                    'id' => 'bpc_unit_test',
+                    'active' => true,
+                    'is_default' => true,
+                    'livemode' => $stripePortalLivemode,
+                    'features' => [
+                        'subscription_cancel' => [
+                            'enabled' => $stripePortalCancellationEnabled,
+                            'mode' => $stripePortalCancellationMode,
+                            'proration_behavior' => $stripePortalCancellationProrationBehavior,
+                        ],
+                    ],
+                ]],
+            ], $stripePortalResponseStatus),
             'api.stripe.com/v1/tax/settings' => Http::response([
                 'status' => $stripeTaxSettingsStatus,
                 'defaults' => ['tax_code' => $stripeDefaultTaxCode],

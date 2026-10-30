@@ -16,12 +16,15 @@ use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class EmployeeAuthorizationTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_cannot_create_employee_beyond_plan_limit(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

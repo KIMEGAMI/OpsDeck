@@ -11,6 +11,7 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -21,6 +22,8 @@ use Tests\TestCase;
 
 class EvidenceControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_can_store_evidence_on_the_private_disk(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

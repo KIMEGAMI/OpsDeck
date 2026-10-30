@@ -20,6 +20,7 @@ use App\Services\Import\GoogleSheetDiffPreviewPreparationService;
 use App\Services\Import\ImportMappingAnalysisService;
 use App\Services\Import\ImportPreviewPreparationService;
 use App\Services\ImportBatchExecutionService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -31,6 +32,8 @@ use Tests\TestCase;
 
 class GoogleSheetConnectionTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_release_scope_disables_google_sheets_routes_and_queued_preview_reads(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

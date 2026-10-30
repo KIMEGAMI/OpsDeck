@@ -8,11 +8,14 @@ use App\Models\Contract;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class RenewalReminderTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_viewer_can_see_overdue_and_upcoming_renewals(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

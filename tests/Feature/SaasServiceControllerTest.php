@@ -11,12 +11,15 @@ use App\Models\OrganizationMembership;
 use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class SaasServiceControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_saas_service_screens_show_japanese_status_labels(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

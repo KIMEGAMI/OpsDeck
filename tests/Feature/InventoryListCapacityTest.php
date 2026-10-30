@@ -9,11 +9,14 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\SaasService;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class InventoryListCapacityTest extends TestCase
 {
+    use RefreshDatabase;
+
     private const RECORD_COUNT = 100;
 
     private const PAGE_SIZE = 50;

@@ -63,6 +63,12 @@ if [[ " $* " == *" opsdeck:deployment-check "* ]]; then
     }
     printf '%s\n' '{"status":"ready","checks":{"test":"pass"}}'
 fi
+if [[ -n "${FAKE_FAIL_ARTISAN_COMMAND:-}" && " $* " == *" $FAKE_FAIL_ARTISAN_COMMAND "* ]]; then
+    exit 1
+fi
+if [[ "${FAKE_FAIL_ARTISAN_COMMAND:-}" == 'post-migration-backup' && "${2:-}" == 'opsdeck:backup' ]] && grep -q 'artisan migrate --force' "$FAKE_PHP_LOG"; then
+    exit 1
+fi
 MOCK_PHP
 
 chmod 755 "$mock_bin/sudo" "$php_bin"
@@ -130,12 +136,79 @@ second_sha='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 second_deployment_id='101-1'
 second_release="$application_root/releases/$second_sha-$second_deployment_id"
 make_release_archive "$second_sha" "$second_deployment_id"
+: > "$php_log"
 remote_deploy "$application_root" "$second_sha" "$second_deployment_id" "$php_bin"
 
 assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$second_release" ]] && printf true || printf false )" "Upgrade did not select the new release."
 assert_true "$( [[ "$(realpath -e -- "$application_root/previous")" == "$old_release" ]] && printf true || printf false )" "Upgrade did not preserve the previous release."
+backup_lines="$(grep -n 'opsdeck:backup --no-interaction' "$php_log" | cut -d: -f1)"
+[[ "$(printf '%s\n' "$backup_lines" | wc -l)" -eq 2 ]] || fail "Upgrade did not create pre- and post-migration backups."
+pre_migration_backup_line="$(printf '%s\n' "$backup_lines" | head -n 1)"
+post_migration_backup_line="$(printf '%s\n' "$backup_lines" | tail -n 1)"
+migration_line="$(grep -n 'artisan migrate --force' "$php_log" | head -n 1 | cut -d: -f1)"
+restore_test_line="$(grep -n 'opsdeck:backup:restore-test' "$php_log" | head -n 1 | cut -d: -f1)"
+if ! (( pre_migration_backup_line < migration_line && migration_line < post_migration_backup_line && post_migration_backup_line < restore_test_line )); then
+    fail "Upgrade did not back up before migrations and verify the post-migration restore in order."
+fi
+if grep -q 'opsdeck:scheduler:heartbeat' "$php_log"; then
+    fail "Upgrade unexpectedly recorded an initial scheduler heartbeat."
+fi
 remote_rollback "$application_root" "$php_bin" "$second_sha" "$second_deployment_id"
 assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_release" ]] && printf true || printf false )" "Upgrade rollback did not restore the prior release."
+
+third_sha='cccccccccccccccccccccccccccccccccccccccc'
+third_deployment_id='102-1'
+make_release_archive "$third_sha" "$third_deployment_id"
+: > "$php_log"
+if ( export FAKE_FAIL_ARTISAN_COMMAND='opsdeck:backup'; remote_deploy "$application_root" "$third_sha" "$third_deployment_id" "$php_bin" ); then
+    fail "Upgrade unexpectedly continued after its pre-migration backup failed."
+fi
+assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_release" ]] && printf true || printf false )" "Pre-migration backup failure switched the active release."
+grep -q 'opsdeck:backup --no-interaction' "$php_log" || fail "Pre-migration backup failure was not exercised."
+if grep -q 'artisan migrate --force' "$php_log"; then
+    fail "Migration ran after the pre-migration backup failed."
+fi
+
+fourth_sha='dddddddddddddddddddddddddddddddddddddddd'
+fourth_deployment_id='103-1'
+make_release_archive "$fourth_sha" "$fourth_deployment_id"
+: > "$php_log"
+if ( export FAKE_FAIL_ARTISAN_COMMAND='migrate'; remote_deploy "$application_root" "$fourth_sha" "$fourth_deployment_id" "$php_bin" ); then
+    fail "Upgrade unexpectedly continued after migration failed."
+fi
+assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_release" ]] && printf true || printf false )" "Migration failure switched the active release."
+grep -q 'artisan migrate --force' "$php_log" || fail "Migration failure was not exercised."
+if grep -q 'opsdeck:backup:restore-test' "$php_log"; then
+    fail "Restore test ran after migration failed."
+fi
+
+fifth_sha='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+fifth_deployment_id='104-1'
+make_release_archive "$fifth_sha" "$fifth_deployment_id"
+: > "$php_log"
+if ( export FAKE_FAIL_ARTISAN_COMMAND='post-migration-backup'; remote_deploy "$application_root" "$fifth_sha" "$fifth_deployment_id" "$php_bin" ); then
+    fail "Upgrade unexpectedly continued after its post-migration backup failed."
+fi
+assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_release" ]] && printf true || printf false )" "Post-migration backup failure switched the active release."
+backup_lines="$(grep -n 'opsdeck:backup --no-interaction' "$php_log" | cut -d: -f1)"
+[[ "$(printf '%s\n' "$backup_lines" | wc -l)" -eq 2 ]] || fail "The post-migration backup failure was not exercised after the pre-migration backup."
+if grep -q 'opsdeck:backup:restore-test' "$php_log"; then
+    fail "Restore test ran after the post-migration backup failed."
+fi
+
+sixth_sha='ffffffffffffffffffffffffffffffffffffffff'
+sixth_deployment_id='105-1'
+: > "$php_log"
+make_release_archive "$sixth_sha" "$sixth_deployment_id"
+if ( export FAKE_FAIL_ARTISAN_COMMAND='opsdeck:backup:restore-test'; remote_deploy "$application_root" "$sixth_sha" "$sixth_deployment_id" "$php_bin" ); then
+    fail "Upgrade unexpectedly continued after its post-migration restore test failed."
+fi
+assert_true "$( [[ "$(realpath -e -- "$application_root/current")" == "$old_release" ]] && printf true || printf false )" "Post-migration restore-test failure switched the active release."
+grep -q 'artisan migrate --force' "$php_log" || fail "Post-migration restore-test failure did not reach migration."
+grep -q 'opsdeck:backup:restore-test' "$php_log" || fail "Post-migration restore-test failure was not exercised."
+if grep -q 'opsdeck:deployment-check' "$php_log"; then
+    fail "Deployment readiness ran after the post-migration restore test failed."
+fi
 remote_prune "$application_root" 2
 assert_true "$( [[ -d "$old_release" && -d "$second_release" && ! -d "$first_release" ]] && printf true || printf false )" "Release cleanup did not preserve the current and previous releases."
 
@@ -183,4 +256,4 @@ fi
 grep -q 'VPS pre-deploy readiness checks failed' "$test_root/local-deploy-failure.log" || fail "Local deployment did not report the mocked VPS preflight failure."
 remaining_ssh_directory="$(find "$test_root" -mindepth 1 -maxdepth 1 -type d -name 'opsdeck-ssh.*' -print -quit)"
 [[ -z "$remaining_ssh_directory" ]] || fail "Local deployment did not clean its temporary SSH credentials after failure."
-printf '%s\n' 'PASS: first deploy readiness after activation, preflight, and rollback flows'
+printf '%s\n' 'PASS: initial and upgrade backup gates, failure paths, readiness, preflight, and rollback flows'

@@ -20,11 +20,14 @@ use App\Models\User;
 use App\Models\WorkTimeMeasurement;
 use App\Services\ContractRenewalWindow;
 use App\Services\ImpactReportMetricsService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class ImpactReportControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

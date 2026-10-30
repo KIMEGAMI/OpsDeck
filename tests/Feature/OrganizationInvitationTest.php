@@ -21,6 +21,7 @@ use App\Models\SaasService;
 use App\Models\User;
 use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
@@ -30,6 +31,8 @@ use Tests\TestCase;
 
 class OrganizationInvitationTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

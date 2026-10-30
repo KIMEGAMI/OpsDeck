@@ -16,6 +16,7 @@ use App\Models\OrganizationMembership;
 use App\Models\User;
 use App\Services\Import\ImportMappingAnalysisService;
 use App\Services\Import\ImportPreviewPreparationService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -27,6 +28,8 @@ use Tests\TestCase;
 
 class ImportSampleTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_member_can_download_employee_sample_csv(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

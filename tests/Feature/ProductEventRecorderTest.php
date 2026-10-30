@@ -6,6 +6,7 @@ use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\ProductEvent;
 use App\Services\ProductEventRecorder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -13,6 +14,8 @@ use Tests\TestCase;
 
 class ProductEventRecorderTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

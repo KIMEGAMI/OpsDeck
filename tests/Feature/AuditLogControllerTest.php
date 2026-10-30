@@ -8,11 +8,14 @@ use App\Models\AuditLog;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class AuditLogControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_audit_log_displays_japanese_operation_and_entity_labels(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

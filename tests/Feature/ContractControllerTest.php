@@ -11,11 +11,14 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\SaasService;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class ContractControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_contract_screens_show_japanese_status_and_billing_cycle_labels(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

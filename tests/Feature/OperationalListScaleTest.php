@@ -7,12 +7,15 @@ use App\Enums\MembershipStatus;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OperationalListScaleTest extends TestCase
 {
+    use RefreshDatabase;
+
     private const EMPLOYEE_COUNT = 200;
 
     private const ASSET_COUNT = 500;

@@ -11,11 +11,14 @@ use App\Models\RealizedSaving;
 use App\Models\User;
 use App\Models\WorkTimeMeasurement;
 use App\Services\WorkTimeMeasurementSummary;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class WorkTimeMeasurementControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

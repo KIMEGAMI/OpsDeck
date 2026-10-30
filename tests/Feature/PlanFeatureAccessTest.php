@@ -9,6 +9,7 @@ use App\Models\OrganizationMembership;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireQuestion;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -16,6 +17,8 @@ use Tests\TestCase;
 
 class PlanFeatureAccessTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_free_plan_cannot_open_premium_pages_by_direct_url(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

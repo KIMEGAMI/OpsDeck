@@ -25,6 +25,7 @@ use App\Services\Import\XlsxImportSource;
 use App\Services\ImportBatchExecutionService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
@@ -41,6 +42,8 @@ use ZipArchive;
 
 class ImportBatchControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();

@@ -10,15 +10,28 @@ class TestingEnvironmentIsolationTest extends TestCase
 {
     public function test_tests_use_isolated_database_and_service_drivers(): void
     {
-        $databasePath = config('database.connections.sqlite.database');
-
         $this->assertSame('testing', app()->environment());
-        $this->assertSame('sqlite', config('database.default'));
-        $this->assertIsString($databasePath);
-        $this->assertStringStartsWith(sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-phpunit-', $databasePath);
-        $this->assertStringEndsWith('.sqlite', $databasePath);
-        $this->assertFileExists($databasePath);
-        $this->assertNotSame(base_path('database/database.sqlite'), $databasePath);
+
+        $testDatabaseDriver = strtolower(trim((string) getenv('OPSDECK_TEST_DATABASE_DRIVER')));
+
+        if ($testDatabaseDriver === '') {
+            $databasePath = config('database.connections.sqlite.database');
+
+            $this->assertSame('sqlite', config('database.default'));
+            $this->assertIsString($databasePath);
+            $this->assertStringStartsWith(sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-phpunit-', $databasePath);
+            $this->assertStringEndsWith('.sqlite', $databasePath);
+            $this->assertFileExists($databasePath);
+            $this->assertNotSame(base_path('database/database.sqlite'), $databasePath);
+        } else {
+            $this->assertContains($testDatabaseDriver, ['mysql', 'mariadb']);
+            $this->assertSame($testDatabaseDriver, config('database.default'));
+            $this->assertSame('127.0.0.1', config("database.connections.{$testDatabaseDriver}.host"));
+            $this->assertSame('opsdeck_test', config("database.connections.{$testDatabaseDriver}.database"));
+            $this->assertSame('opsdeck_test', config("database.connections.{$testDatabaseDriver}.username"));
+            $this->assertSame(':memory:', config('database.connections.sqlite.database'));
+        }
+
         $this->assertFalse(config('app.debug'));
         $this->assertSame('array', config('cache.default'));
         $this->assertSame('array', config('mail.default'));

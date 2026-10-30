@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Services\BackupEncryptionService;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
@@ -13,6 +14,8 @@ use Tests\TestCase;
 
 class ImportSourceBackupTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
