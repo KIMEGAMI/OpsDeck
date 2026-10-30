@@ -3,9 +3,12 @@
 ## 1. 文書情報
 
 - 作成日：2026-10-15
+- 最終更新：2026-10-29
 - 対象：OpsDeck Premiumの会社別ファイル保存容量
 - 文書種別：`OPSDECK_PRODUCT_GROWTH_SPEC.md` を補完する追加仕様
-- 状態：仕様に基づくアプリ実装済み（2026-10-18）。価格・請求タイミング決定済み。Stripe本番商品設定と販売可能容量は未確認
+- 状態：アプリ実装済み。1GiBあたり月額100円（税別）・基本容量・アプリ全体上限は決定済み。Stripe本番商品設定と本番の販売可能容量は未確認
+
+> 2026-10-29更新：本書の旧「Free 100MiB／Premium 2,048MiB」とVPS 150GBを基準にした顧客数見積もりは、現在の容量方針ではありません。現在はFree 1GiB、Premium 10GiB、OpsDeck全体のアプリ上限50GiBです。顧客ファイルはOpsDeck専用の非公開Cloudflare R2バケットに保存し、VPS容量やローカルバックアップとは別に管理します。以下の旧VPS見積もりは履歴として扱い、顧客に販売する容量の根拠にしないでください。
 
 ## 2. 目的と決定済み方針
 
@@ -13,7 +16,7 @@
 
 ユーザー決定：保存済みファイルを容量対策として削除しない。Premium向けの容量追加を設計する。
 
-本書は既存のFree/Premium機能仕様を置き換えない。既存基本容量（Free 100MiB、Premium 2,048MiB）に対する追加購入部分だけを定義する。
+本書は既存のFree/Premium機能仕様を置き換えない。現在の基本容量（Free 1,024MiB、Premium 10,240MiB）に対する追加購入部分を定義する。
 
 ## 3. 現行実装の確認事項
 
@@ -23,7 +26,7 @@
 - 取込元ファイルは約5MiB、証跡ファイルは約10MiBが1ファイルの上限。
 - 使用率80%で画面に警告し、残容量を超える新規ファイル保存は拒否する。既存の記録・ファイルは自動削除しない。
 - `import_row_results`等のデータベース内履歴量は、現在の会社別ファイル容量には含めていない。
-- アプリには追加容量のPrice ID (`STRIPE_PRICE_STORAGE_ADDON_GIB`) 設定、購入・Subscription Schedule更新画面、次回更新日からの数量変更予約が実装済み。組織の現在・予約中の追加容量、Premium容量への加算、`invoice.paid`後の数量同期を扱い、支払前に容量を先行付与しない。Stripe Priceは有効な月額JPY 100円・税別であることを検証し、追加容量を有効にする本番準備チェックでは商品または既定の税コードも確認する。実際のStripe Dashboard上の商品/Price作成・本番Price ID登録は未確認。
+- アプリには追加容量のPrice ID設定、Premium新規申込時のCheckout選択、既存Premium契約のSubscription Schedule更新画面、次回更新日からの数量変更予約が実装済み。組織の現在・予約中の追加容量、Premium容量への加算、`invoice.paid`後の数量同期を扱い、支払前に容量を先行付与しない。Stripe Priceは有効な月額JPY 100円・税別であることを検証する。環境変数名はテスト用 `OPSDECK_STRIPE_TEST_PRICE_STORAGE_ADDON_GIB`、本番用 `OPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIB`。Stripe本番商品・Price・Webhook・税設定の実接続は未確認。
 - 運営管理の稼働状況画面と `php artisan opsdeck:health` は、バックアップ保存先が属するディスクの空き/総容量を既に表示している。ただし、それが契約の150GB領域と同じボリュームか、他サービスが使う容量がどれだけか、OpsDeckの顧客ファイルが何割かは判別しない。
 - 運営管理の稼働状況画面と通常表示の `php artisan opsdeck:health` には、OpsDeckの全組織にあるImport元ファイルと証跡の合計使用量を表示する。これは顧客データ保存量の計測であり、物理ディスク全体の空き容量や他サービスの使用量を示すものではない。CLIのJSON出力形式は維持する。
 - ユーザー提供のXServer画面では、VPS 4GBプラン、仮想4コア、NVMe 150GBと表示されている。2026-10-16に共有されたSSH出力では、Ubuntu 26.04.1 LTS、`df -hT /` の対象は `/dev/vda1`（ext4）、サイズ145G・使用8.6G・空き136G・使用率6%だった。これはルートファイルシステムの確認時点の値であり、他サービス・OS・DB・ログ・バックアップと共有する。OpsDeck専用に利用可能な容量や各サービスの使用量は判別できず、136G全量をOpsDeckの販売可能容量とはみなさない。画面上のNVMe 150GBと`df`の145Gとの差の理由は、この出力だけでは確認できない。
@@ -32,13 +35,25 @@
 - ユーザー申告では、このVPSで約10サービスを稼働させる予定。各サービスの実使用量とCPU/メモリ負荷の配分は未計測である。4GBメモリ・仮想4コアは全サービスで共有されるため、10サービスを同時運用できるかは負荷試験なしに判断しない。
 - 実機OSは、2026-10-16に共有された`/etc/os-release`の出力でUbuntu 26.04.1 LTSと確認済み。
 
-### 3.1 150GB共有容量の暫定見積もり
+### 3.1 2026-10-15時点のVPS共有容量見積もり（履歴・販売上限には不使用）
+
+この節の当初のVPS均等配分計算は、2026-10-15時点のローカルディスクを顧客ファイル容量の根拠と誤認しないため、現在は履歴情報としてのみ残す。OpsDeckの顧客ファイルは専用R2バケットに保存するため、VPSの150GB・約10サービスの割当から顧客のファイル上限や契約可能社数は算出しない。
+
+現行の容量制御は次のとおり。
+
+- Free基本容量：1,024MiB（1GiB）。
+- Premium基本容量：10,240MiB（10GiB）。
+- OpsDeck全体のアプリ側上限：51,200MiB（50GiB）。この値はCloudflare側のバケット制限や請求上限ではない。
+- 追加容量：1GiB単位、月額100円（税別）。`OPSDECK_STORAGE_ADDON_MAX_GIB` の設定値は組織ごとの上限であり、全組織の基本枠・使用量・申込済み数量を含めた空き容量により、実際に選択できる数量はさらに小さくなる場合がある。
+- Cloudflare R2 Standardの公式料金（2026-10-29確認）は月10GB-monthまでの保存と一定数のClass A/B操作が無料、超過分の保存は$0.015/GB-month、直接のEgressは無料。50GiBはアプリ側の使用許可上限であって課金停止上限ではない。OpsDeckだけで50GiBを30日間継続保存し、無料枠を他サービスが使わない仮定では、保存料は約$0.66/月（無料10GB-month控除後、GB-month単位の切上げ。操作料・税等は除く）。FurimaDeck等が同じCloudflareアカウントのR2を使う場合は、実際の請求はアカウント全体の利用量をDashboardで確認する。
+- OpsDeck本番ファイルは `opsdeck-prod-files`、開発ファイルは `opsdeck-dev-files` に分離する。FurimaDeckの画像データやVPS上のバックアップをOpsDeckの顧客ファイル容量に含めない。
+- R2は顧客ファイル保存先であり、本書はバックアップ先への複製を有効化する指示ではない。バックアップは別途決定されたローカル保管・復元手順で管理する。
 
 以下は、画面に表示されたNVMe 150GBを「10サービスで共有」「サービス間で均等配分」「20%を運用予備として確保」という計画上の仮定で計算する。実際の空き容量、バックアップ・DB・ログの増加、各サービスの使用量を確認してから販売可能量を決める。
 
 - 単純均等割り：150GB ÷ 10 = 15GB/サービス（予備領域を引く前）。
 - 20%を予備にする場合：150GB × 80% = 120GBを計画上の利用枠とし、均等なら12GB/サービス。
-- NVMeの公称150GBを十進GBとして扱うと、12GBは約11.18GiB（約11,444MiB）。既定の会社別上限（Free 100MiB、Premium 2,048MiB）を全社が使い切る場合の理論例：
+- NVMeの公称150GBを十進GBとして扱うと、12GBは約11.18GiB（約11,444MiB）。旧設定（Free 100MiB、Premium 2,048MiB）を全社が使い切る場合の理論例：
 
   | プラン構成 | 組織数 | 使用量上限の合計 |
   |---|---:|---:|
@@ -61,24 +76,24 @@
 - `app/Http/Controllers/StripeWebhookController.php`
 - `OPSDECK_PRODUCT_GROWTH_SPEC.md`
 
-## 4. 提案する商品仕様
+## 4. 決定済みの商品仕様
 
-| 項目 | 提案 |
+| 項目 | 決定・現行実装 |
 |---|---|
-| 購入対象 | Premium契約中の組織 |
+| 購入対象 | Premiumの新規申込時、またはPremium契約中の組織 |
 | Free利用者 | 容量追加購入ではなくPremiumへの変更を案内 |
-| 基本容量 | Premiumの2,048MiBを維持 |
+| 基本容量 | Free 1,024MiB（1GiB）、Premium 10,240MiB（10GiB） |
 | 追加単位 | 1契約単位あたり1,024MiB（1GiB） |
-| 追加上限 | 初期リリースでは購入数量の上限を設定する。具体値は未決定。OpsDeck用の共有ストレージ枠を確認するまでは追加購入を無効にする |
+| 追加上限 | `OPSDECK_STORAGE_ADDON_MAX_GIB` の設定上限は48GiB。実際の購入可能量はOpsDeck全体の50GiB上限と基本枠・使用量・既存予約から動的に制限する |
 | 料金 | 1GiBあたり月額100円（税別）。適用税額は別途加算 |
-| 課金 | Premium契約と同じStripe Subscriptionへの月次Recurring Subscription Itemとして追加する案 |
-| 追加容量の開始 | 申込後、次回更新日から。月途中の日割り請求・容量の先行付与は行わない |
+| 課金 | Premiumと同じStripe Subscriptionの月次Recurring Subscription Item。新規Premium Checkoutでは初回請求から選択分を請求する |
+| 追加容量の開始 | 新規Premium申込では決済成功後に反映。既存契約の数量変更は次回更新日から。既存契約の変更に日割り請求・容量の先行付与は行わない |
 | 減量・解約 | 申込後、次回更新日に反映。それまでは現在の容量を維持する |
 | データ保持 | 契約終了やダウングレードでも、容量超過を理由に保存済みデータを削除しない |
 
-容量計算案：
+容量計算：
 
-`組織の上限MiB = Premium基本容量MiB + 有効な追加容量数量 × 1,024MiB`
+`組織の上限MiB = プラン基本容量MiB + 有効な追加容量数量 × 1,024MiB`
 
 画面は「基本容量」「追加容量」「合計上限」「現在の使用量」「残り」をMiB/GiBで表示し、追加購入後の金額と反映条件を確定前に示す。
 
@@ -122,7 +137,7 @@
 
 ## 9. 実装受入条件
 
-1. Free 100MiB、Premium 2,048MiB、Premium追加容量数量を組織単位で正しく合算する。
+1. Free 1,024MiB、Premium 10,240MiB、Premium追加容量数量を組織単位で正しく合算し、OpsDeck全体の51,200MiB上限を超える販売を拒否する。
 2. 追加容量購入中・支払い未確定・Webhook未処理で未払い容量を先行付与しない。
 3. Stripe APIの重複・タイムアウト・Webhook再送・順不同・支払い失敗に対して容量や請求を二重反映しない。
 4. 組織境界とBilling権限をテストし、別組織の商品変更を防ぐ。
@@ -133,8 +148,8 @@
 
 ## 10. 未完了事項・外部設定
 
-- VPS上で他サービス・DB・ログ・バックアップと共有する容量からOpsDeck専用の上限を決め、その範囲で会社ごとの最大数量を設定する（未決定の間は販売無効）
-- Stripe Dashboardの追加商品/Price作成と本番Price ID登録、およびCustomer Portalの構成を確認する
+- 本番R2バケットの非公開設定、専用トークン範囲、書込・読取・削除・テナント分離を本番資格情報で確認する（この確認は開発バケット試験の代替にならない）
+- Stripe本番モードの商品/Price、Webhook、税設定、Customer Portalを確認し、Production readiness checkで一致を検証する。テストモードの確認を本番確認として扱わない
 - DB容量をプラットフォーム原価としてどう監視・予算化するか
 - 追加容量の定期照合で不一致が出た場合の運営担当者の確認・復旧手順を確定する
 
@@ -144,6 +159,9 @@
 
 ## 11. 公式資料
 
+- Cloudflare R2料金（2026-10-29確認）：https://developers.cloudflare.com/r2/pricing/
+- Cloudflare R2制限・GB/GiBの単位：https://developers.cloudflare.com/r2/platform/limits/
+- Cloudflare使用量ベースの請求と予算アラート：https://developers.cloudflare.com/billing/understand/usage-based-billing/
 - XServer VPS料金一覧：https://vps.xserver.ne.jp/price.php
 - XServer VPS料金改定（2026年9月1日実施）：https://vps.xserver.ne.jp/support/news_detail.php?view_id=19107
 - Stripe Subscription Item作成：https://docs.stripe.com/api/subscription_items/create

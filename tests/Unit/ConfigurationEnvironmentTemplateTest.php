@@ -7,6 +7,68 @@ use Tests\TestCase;
 
 class ConfigurationEnvironmentTemplateTest extends TestCase
 {
+    public function test_support_email_falls_back_when_contact_environment_variables_are_blank(): void
+    {
+        $variables = ['CONTACT_TO_ADDRESS', 'OPSDECK_SUPPORT_EMAIL'];
+        $originalValues = [];
+
+        foreach ($variables as $name) {
+            $originalValues[$name] = [
+                'process' => getenv($name),
+                'environment' => $_ENV[$name] ?? null,
+                'has_environment' => array_key_exists($name, $_ENV),
+                'server' => $_SERVER[$name] ?? null,
+                'has_server' => array_key_exists($name, $_SERVER),
+            ];
+        }
+
+        try {
+            foreach ($variables as $name) {
+                putenv($name.'=');
+                $_ENV[$name] = '';
+                $_SERVER[$name] = '';
+            }
+
+            $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+
+            self::assertSame('support@kimegami.jp', $configuration['support_email']);
+
+            putenv('OPSDECK_SUPPORT_EMAIL=legacy-support@example.test');
+            $_ENV['OPSDECK_SUPPORT_EMAIL'] = 'legacy-support@example.test';
+            $_SERVER['OPSDECK_SUPPORT_EMAIL'] = 'legacy-support@example.test';
+            $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+
+            self::assertSame('legacy-support@example.test', $configuration['support_email']);
+
+            putenv('CONTACT_TO_ADDRESS=contact@example.test');
+            $_ENV['CONTACT_TO_ADDRESS'] = 'contact@example.test';
+            $_SERVER['CONTACT_TO_ADDRESS'] = 'contact@example.test';
+            $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+
+            self::assertSame('contact@example.test', $configuration['support_email']);
+        } finally {
+            foreach ($originalValues as $name => $originalValue) {
+                if (is_string($originalValue['process'])) {
+                    putenv($name.'='.$originalValue['process']);
+                } else {
+                    putenv($name);
+                }
+
+                if ($originalValue['has_environment']) {
+                    $_ENV[$name] = $originalValue['environment'];
+                } else {
+                    unset($_ENV[$name]);
+                }
+
+                if ($originalValue['has_server']) {
+                    $_SERVER[$name] = $originalValue['server'];
+                } else {
+                    unset($_SERVER[$name]);
+                }
+            }
+        }
+    }
+
     public function test_enabling_resend_idempotent_mail_uses_the_api_without_renaming_mail_variables(): void
     {
         $mailPassword = Str::random();
@@ -131,6 +193,8 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
         preg_match('/^APP_URL=(?<value>.*)$/m', $environmentTemplate, $matches);
 
         self::assertSame('http://localhost:8007', trim($matches['value'] ?? ''));
+        preg_match('/^GOOGLE_LOGIN_REDIRECT_URI=(?<value>.*)$/m', $environmentTemplate, $redirectMatches);
+        self::assertSame('http://localhost:8007/auth/google/callback', trim($redirectMatches['value'] ?? ''));
         self::assertStringContainsString('php artisan serve --host=127.0.0.1 --port=8007', $readme);
     }
 
@@ -282,8 +346,8 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
         $environmentTemplate = file_get_contents(dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'.env.example');
         self::assertNotFalse($environmentTemplate);
 
-        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_QUOTA_FREE_MB=100$/m', $environmentTemplate);
-        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_QUOTA_PREMIUM_MB=2048$/m', $environmentTemplate);
+        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_QUOTA_FREE_MB=1024$/m', $environmentTemplate);
+        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_QUOTA_PREMIUM_MB=10240$/m', $environmentTemplate);
         self::assertMatchesRegularExpression('/^OPSDECK_PLATFORM_STORAGE_LIMIT_MIB=51200$/m', $environmentTemplate);
     }
 

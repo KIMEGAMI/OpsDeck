@@ -8,7 +8,10 @@ class StorageAddonCapacityService
 {
     private const BYTES_PER_GIBIBYTE = 1073741824;
 
-    public function __construct(private PlanAccessService $planAccessService) {}
+    public function __construct(
+        private PlanAccessService $planAccessService,
+        private OrganizationStorageQuotaService $storageQuotaService,
+    ) {}
 
     public function maximumQuantity(): ?int
     {
@@ -33,7 +36,7 @@ class StorageAddonCapacityService
             && $platformLimitMegabytes > 0;
     }
 
-    public function maximumCheckoutQuantity(): ?int
+    public function maximumCheckoutQuantity(?Organization $newPremiumOrganization = null): ?int
     {
         $maximumQuantity = $this->maximumQuantity();
         $platformLimitMegabytes = config('opsdeck.storage_quotas.platform_limit_megabytes');
@@ -52,59 +55,23 @@ class StorageAddonCapacityService
             return null;
         }
 
-        $platformLimitBytes = $platformLimitMegabytes * $bytesPerMegabyte;
         $basePremiumBytes = $premiumLimitMegabytes * $bytesPerMegabyte;
-        $reservedBytes = 0;
-        $organizations = Organization::query()
-            ->where('plan_code', config('opsdeck.premium_plan_code'))
-            ->select([
-                'id',
-                'plan_code',
-                'billing_status',
-                'billing_past_due_since',
-                'stripe_last_event_created_at',
-                'storage_addon_gib',
-                'storage_addon_pending_gib',
-            ])
-            ->cursor();
-
-        foreach ($organizations as $organization) {
-            if ($this->planAccessService->effectivePlanCode($organization) !== config('opsdeck.premium_plan_code')) {
-                continue;
-            }
-
-            $currentQuantity = max(0, (int) $organization->storage_addon_gib);
-            $committedQuantity = $organization->storage_addon_pending_gib === null
-                ? $currentQuantity
-                : max($currentQuantity, (int) $organization->storage_addon_pending_gib);
-
-            if ($committedQuantity > intdiv(PHP_INT_MAX - $basePremiumBytes, self::BYTES_PER_GIBIBYTE)) {
-                return 0;
-            }
-
-            $organizationReservation = $basePremiumBytes + ($committedQuantity * self::BYTES_PER_GIBIBYTE);
-            if ($organizationReservation > PHP_INT_MAX - $reservedBytes) {
-                return 0;
-            }
-
-            $reservedBytes += $organizationReservation;
+        $committedCapacityBytes = $this->committedPlatformCapacityBytes($newPremiumOrganization, null, true, $basePremiumBytes);
+        if ($committedCapacityBytes === null) {
+            return null;
         }
 
-        if ($reservedBytes > $platformLimitBytes) {
-            return 0;
+        $platformLimitBytes = $platformLimitMegabytes * $bytesPerMegabyte;
+        if ($committedCapacityBytes > $platformLimitBytes) {
+            return null;
         }
 
-        $remainingBytes = $platformLimitBytes - $reservedBytes;
-        if ($remainingBytes < $basePremiumBytes) {
-            return 0;
-        }
-
-        return min($maximumQuantity, intdiv($remainingBytes - $basePremiumBytes, self::BYTES_PER_GIBIBYTE));
+        return min($maximumQuantity, intdiv($platformLimitBytes - $committedCapacityBytes, self::BYTES_PER_GIBIBYTE));
     }
 
-    public function canStartPremiumSubscriptionWithAddon(int $targetQuantity): bool
+    public function canStartPremiumSubscriptionWithAddon(int $targetQuantity, ?Organization $newPremiumOrganization = null): bool
     {
-        $maximumCheckoutQuantity = $this->maximumCheckoutQuantity();
+        $maximumCheckoutQuantity = $this->maximumCheckoutQuantity($newPremiumOrganization);
 
         return $maximumCheckoutQuantity !== null
             && $targetQuantity >= 0
@@ -124,12 +91,30 @@ class StorageAddonCapacityService
         }
 
         $bytesPerMegabyte = (int) config('opsdeck.storage_quotas.bytes_per_megabyte');
-        $basePremiumBytes = (int) config('opsdeck.storage_quotas.plan_limit_megabytes.'.config('opsdeck.premium_plan_code')) * $bytesPerMegabyte;
-        $platformLimitBytes = $platformLimitMegabytes * $bytesPerMegabyte;
-        $reservedBytes = 0;
+        $premiumLimitMegabytes = (int) config('opsdeck.storage_quotas.plan_limit_megabytes.'.config('opsdeck.premium_plan_code'));
+        if ($premiumLimitMegabytes < 1 || $premiumLimitMegabytes > intdiv(PHP_INT_MAX, $bytesPerMegabyte)) {
+            return false;
+        }
 
+        $platformLimitBytes = $platformLimitMegabytes * $bytesPerMegabyte;
+        $basePremiumBytes = $premiumLimitMegabytes * $bytesPerMegabyte;
+        $committedCapacityBytes = $this->committedPlatformCapacityBytes($targetOrganization, $targetQuantity, false, $basePremiumBytes);
+
+        return $committedCapacityBytes !== null && $committedCapacityBytes <= $platformLimitBytes;
+    }
+
+    private function committedPlatformCapacityBytes(?Organization $targetOrganization, ?int $targetAddonQuantity, bool $targetIsNewPremium, int $basePremiumBytes): ?int
+    {
+        $premiumPlanCode = (string) config('opsdeck.premium_plan_code');
+        $now = now();
         $organizations = Organization::query()
-            ->where('plan_code', config('opsdeck.premium_plan_code'))
+            ->where(function ($query) use ($premiumPlanCode, $now): void {
+                $query->where('plan_code', $premiumPlanCode)
+                    ->orWhere(function ($reservationQuery) use ($now): void {
+                        $reservationQuery->whereNotNull('storage_addon_checkout_reserved_gib')
+                            ->where('storage_addon_checkout_reservation_expires_at', '>', $now);
+                    });
+            })
             ->select([
                 'id',
                 'plan_code',
@@ -138,31 +123,83 @@ class StorageAddonCapacityService
                 'stripe_last_event_created_at',
                 'storage_addon_gib',
                 'storage_addon_pending_gib',
+                'storage_addon_checkout_reserved_gib',
+                'storage_addon_checkout_reservation_expires_at',
             ])
             ->cursor();
+        $committedCapacityBytes = 0;
+        $committedUsageBytes = 0;
 
         foreach ($organizations as $organization) {
-            if ($this->planAccessService->effectivePlanCode($organization) !== config('opsdeck.premium_plan_code')) {
+            $isTarget = $targetOrganization !== null
+                && (int) $organization->getKey() === (int) $targetOrganization->getKey();
+            if ($isTarget && $targetIsNewPremium) {
+                continue;
+            }
+
+            $isPremium = $this->planAccessService->effectivePlanCode($organization) === $premiumPlanCode;
+            $hasActiveCheckoutReservation = $organization->storage_addon_checkout_reserved_gib !== null
+                && $organization->storage_addon_checkout_reservation_expires_at !== null
+                && $organization->storage_addon_checkout_reservation_expires_at->isFuture();
+            if (! $isPremium && ! $hasActiveCheckoutReservation) {
                 continue;
             }
 
             $currentQuantity = max(0, (int) $organization->storage_addon_gib);
-            $committedQuantity = $organization->storage_addon_pending_gib === null
-                ? $currentQuantity
-                : max($currentQuantity, (int) $organization->storage_addon_pending_gib);
+            $committedQuantity = $isPremium
+                ? ($organization->storage_addon_pending_gib === null
+                    ? $currentQuantity
+                    : max($currentQuantity, (int) $organization->storage_addon_pending_gib))
+                : max(0, (int) $organization->storage_addon_checkout_reserved_gib);
 
-            if ((int) $organization->getKey() === (int) $targetOrganization->getKey()) {
-                $committedQuantity = max($currentQuantity, $targetQuantity);
+            if ($hasActiveCheckoutReservation) {
+                $committedQuantity = max($committedQuantity, (int) $organization->storage_addon_checkout_reserved_gib);
+            }
+            if ($isTarget && $targetAddonQuantity !== null) {
+                $committedQuantity = max($currentQuantity, $targetAddonQuantity);
+            }
+            if ($committedQuantity > intdiv(PHP_INT_MAX - $basePremiumBytes, self::BYTES_PER_GIBIBYTE)) {
+                return null;
             }
 
-            $organizationReservation = $basePremiumBytes + ($committedQuantity * self::BYTES_PER_GIBIBYTE);
-            if ($organizationReservation > PHP_INT_MAX - $reservedBytes) {
-                return false;
+            $organizationUsedBytes = $this->storageQuotaService->summary($organization)['used_bytes'];
+            $organizationCommitmentBytes = max(
+                $basePremiumBytes + ($committedQuantity * self::BYTES_PER_GIBIBYTE),
+                $organizationUsedBytes,
+            );
+            if ($organizationCommitmentBytes > PHP_INT_MAX - $committedCapacityBytes
+                || $organizationUsedBytes > PHP_INT_MAX - $committedUsageBytes) {
+                return null;
             }
 
-            $reservedBytes += $organizationReservation;
+            $committedCapacityBytes += $organizationCommitmentBytes;
+            $committedUsageBytes += $organizationUsedBytes;
         }
 
-        return $reservedBytes <= $platformLimitBytes;
+        if ($targetIsNewPremium) {
+            $targetUsedBytes = $targetOrganization === null
+                ? 0
+                : $this->storageQuotaService->summary($targetOrganization)['used_bytes'];
+            $targetCommitmentBytes = max($basePremiumBytes, $targetUsedBytes);
+            if ($targetCommitmentBytes > PHP_INT_MAX - $committedCapacityBytes
+                || $targetUsedBytes > PHP_INT_MAX - $committedUsageBytes) {
+                return null;
+            }
+
+            $committedCapacityBytes += $targetCommitmentBytes;
+            $committedUsageBytes += $targetUsedBytes;
+        }
+
+        $platformUsedBytes = $this->storageQuotaService->platformUsageSummary()['used_bytes'];
+        if ($committedUsageBytes > $platformUsedBytes) {
+            return null;
+        }
+
+        $unreservedUsageBytes = $platformUsedBytes - $committedUsageBytes;
+        if ($unreservedUsageBytes > PHP_INT_MAX - $committedCapacityBytes) {
+            return null;
+        }
+
+        return $committedCapacityBytes + $unreservedUsageBytes;
     }
 }

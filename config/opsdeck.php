@@ -1,12 +1,19 @@
 <?php
 
 $maximumXlsxRows = max(1, (int) env('OPSDECK_XLSX_MAX_ROWS', 20000));
+$maximumXlsxColumns = max(1, (int) env('OPSDECK_XLSX_MAX_COLUMNS', 512));
+$maximumImportColumns = max(1, (int) env('OPSDECK_IMPORT_MAX_COLUMNS', $maximumXlsxColumns));
 $aiPremiumMonthlyBudgetJpy = max(0, (int) env('OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY', 500));
 $billingEnabled = filter_var(env('OPSDECK_BILLING_ENABLED', false), FILTER_VALIDATE_BOOLEAN);
 $localBackupRetentionDays = filter_var(env('OPSDECK_BACKUP_LOCAL_RETENTION_DAYS', 30), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 $localBackupRetentionDays = $localBackupRetentionDays === false ? 30 : $localBackupRetentionDays;
 $aiModelPrices = json_decode((string) env('OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS', '{}'), true);
 $aiModelPrices = is_array($aiModelPrices) ? $aiModelPrices : [];
+$aiLongContextPricing = [
+    'input_token_threshold' => 272000,
+    'input_cache_rate_multiplier' => 2.0,
+    'output_rate_multiplier' => 1.5,
+];
 $importDateFields = [
     'employees' => ['joined_at', 'left_at'],
     'assets' => ['purchased_at', 'warranty_until'],
@@ -43,7 +50,9 @@ return [
         'restore_connection' => env('OPSDECK_BACKUP_RESTORE_CONNECTION', 'backup_restore'),
     ],
     'admin_mail_from_address' => env('OPSDECK_ADMIN_MAIL_FROM_ADDRESS', 'info@kimegami.jp'),
-    'support_email' => env('CONTACT_TO_ADDRESS', env('OPSDECK_SUPPORT_EMAIL', 'support@kimegami.jp')),
+    'support_email' => trim((string) env('CONTACT_TO_ADDRESS'))
+        ?: trim((string) env('OPSDECK_SUPPORT_EMAIL'))
+        ?: 'support@kimegami.jp',
     'security' => [
         'hsts_max_age_seconds' => max(0, (int) env('OPSDECK_SECURITY_HSTS_MAX_AGE_SECONDS', 31536000)),
     ],
@@ -55,6 +64,7 @@ return [
         'https_url' => '公開URL',
         'hsts' => 'HSTS設定',
         'session_cookie_security' => 'ログイン情報の保護',
+        'google_login_callback' => 'Googleログイン戻り先',
         'private_file_storage' => 'ファイルの非公開設定',
         'production_logging' => '本番ログ',
         'runtime_directories' => '実行時の保存先書込権限',
@@ -128,8 +138,8 @@ return [
             'other' => 'その他',
         ],
     ],
-    'legal_last_updated' => env('OPSDECK_LEGAL_LAST_UPDATED', '2026年9月27日'),
-    'privacy_policy_last_updated' => env('OPSDECK_PRIVACY_POLICY_LAST_UPDATED', '2026年10月16日'),
+    'legal_last_updated' => env('OPSDECK_LEGAL_LAST_UPDATED', '2026年10月29日'),
+    'privacy_policy_last_updated' => env('OPSDECK_PRIVACY_POLICY_LAST_UPDATED', '2026年10月28日'),
     'invitation_expiry_days' => (int) env('OPSDECK_INVITATION_EXPIRY_DAYS', 7),
     'invitations' => [
         'create_attempts_per_minute' => max(1, (int) env('OPSDECK_INVITATION_CREATE_ATTEMPTS_PER_MINUTE', 5)),
@@ -147,11 +157,13 @@ return [
         'bytes_per_megabyte' => 1024 * 1024,
         'mebibytes_per_gibibyte' => 1024,
         'storage_addon_monthly_price_jpy' => 100,
+        'capacity_display_cache_ttl_seconds' => 15,
+        'checkout_reservation_grace_seconds' => 3600,
         'platform_limit_megabytes' => filter_var(env('OPSDECK_PLATFORM_STORAGE_LIMIT_MIB'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null,
         'storage_addon_max_gib' => filter_var(env('OPSDECK_STORAGE_ADDON_MAX_GIB', 48), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null,
         'plan_limit_megabytes' => [
-            'free' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_FREE_MB', 100)),
-            'premium' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_PREMIUM_MB', 2048)),
+            'free' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_FREE_MB', 1024)),
+            'premium' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_PREMIUM_MB', 10240)),
         ],
         'warning_percentage' => 80,
         'lock_seconds' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_LOCK_SECONDS', 180)),
@@ -333,6 +345,10 @@ return [
         ],
         'tokens_per_million' => 1000000,
         'model_prices_per_million_tokens' => $aiModelPrices,
+        'long_context_pricing' => [
+            'gpt-6-luna' => $aiLongContextPricing,
+            'gpt-6.1-sol' => $aiLongContextPricing,
+        ],
         'usd_to_jpy_rate' => env('OPSDECK_AI_USD_TO_JPY_RATE'),
     ],
     'validation' => [
@@ -442,13 +458,14 @@ return [
         'legacy_disk' => env('OPSDECK_LEGACY_IMPORT_DISK', 'local'),
         'max_size_kilobytes' => (int) env('OPSDECK_IMPORT_MAX_SIZE_KILOBYTES', 5120),
         'max_rows' => max(1, (int) env('OPSDECK_IMPORT_MAX_ROWS', 20000)),
+        'max_columns' => $maximumImportColumns,
         'default_header_row_number' => 1,
         'max_header_row_number' => max(1, (int) env('OPSDECK_IMPORT_MAX_HEADER_ROW_NUMBER', 100)),
         'xlsx_max_uncompressed_xml_kilobytes' => max(1, (int) env('OPSDECK_XLSX_MAX_UNCOMPRESSED_XML_KILOBYTES', 16384)),
         'xlsx_max_archive_entries' => max(1, (int) env('OPSDECK_XLSX_MAX_ARCHIVE_ENTRIES', 2000)),
         'xlsx_max_rows' => $maximumXlsxRows,
         'max_source_row_number' => max(1, (int) env('OPSDECK_IMPORT_MAX_SOURCE_ROW_NUMBER', $maximumXlsxRows)),
-        'xlsx_max_columns' => max(1, (int) env('OPSDECK_XLSX_MAX_COLUMNS', 512)),
+        'xlsx_max_columns' => $maximumXlsxColumns,
         'xlsx_max_cells' => max(1, (int) env('OPSDECK_XLSX_MAX_CELLS', 50000)),
         'allowed_extensions' => ['csv', 'txt', 'xlsx'],
         'async_threshold_rows' => max(1, (int) env('OPSDECK_IMPORT_ASYNC_THRESHOLD_ROWS', 500)),

@@ -25,6 +25,7 @@
         @if (is_array(session('status')) && session('status.storage_addon_scheduled'))
             <p role="status">追加容量の変更を{{ session('status.effective_at') }}に予約しました。次回更新までは現在の容量を維持します。予定数量：{{ number_format((int) session('status.quantity')) }}GiB</p>
         @endif
+        @error('checkout')<p class="errors" role="alert">{{ $message }}</p>@enderror
         <dl>
             <dt>現在のプラン</dt><dd>{{ $currentPlan }}</dd>
             <dt>契約状態</dt><dd>{{ $billingStatus }}</dd>
@@ -118,7 +119,7 @@
         @if ($organization->stripe_customer_id)
             <form method="post" action="{{ route('billing.portal') }}">@csrf<button type="submit">{{ $organization->billing_status === 'past_due' ? '支払い方法・請求状況を確認する' : 'Customer Portalを開く' }}</button></form>
         @endif
-        @if ($checkoutAvailable && $effectivePlanCode !== config('opsdeck.premium_plan_code') && ! in_array($organization->billing_status, ['active', 'trialing', 'past_due'], true))
+        @if ($checkoutAvailable && $effectivePlanCode !== config('opsdeck.premium_plan_code') && ! in_array($organization->billing_status, ['active', 'trialing', 'past_due'], true) && $checkoutPremiumCapacityAvailable)
             <form method="post" action="{{ route('billing.checkout') }}">
                 @csrf
                 @if (config('opsdeck.release_features.storage_addon') && $checkoutStorageAddonMaximumQuantity !== null && $checkoutStorageAddonMaximumQuantity > 0)
@@ -135,8 +136,12 @@
                 @elseif (config('opsdeck.release_features.storage_addon') && $checkoutStorageAddonMaximumQuantity === 0)
                     <p class="muted">今回の申し込みで選べる追加容量はありません。Premiumの申し込みは続けられます。</p>
                 @endif
+                <p id="checkout-policy-help">Premiumは1か月ごとに自動更新されます。解約は次回更新日前にBilling画面のCustomer Portalで手続きできます。解約後も次回更新日までは利用でき、決済済み期間の利用料は日割り返金しません（法令上返金が必要となる場合を除きます）。<a href="{{ route('legal.terms') }}">利用規約</a>と<a href="{{ route('legal.commercial-transactions') }}">特定商取引法に基づく表記</a>をご確認ください。</p>
                 <button type="submit">Stripe Checkoutを開始</button>
             </form>
+        @endif
+        @if ($checkoutAvailable && ! $checkoutPremiumCapacityAvailable && $effectivePlanCode !== config('opsdeck.premium_plan_code') && ! in_array($organization->billing_status, ['active', 'trialing', 'past_due'], true))
+            <p class="muted">保存容量の空き状況を確認できないため、Premiumの新規申込みを一時停止しています。時間をおいて再度ご確認ください。</p>
         @endif
         <p class="muted">契約状態の確定はStripe Webhookの受信結果に基づきます。</p>
     </section>
