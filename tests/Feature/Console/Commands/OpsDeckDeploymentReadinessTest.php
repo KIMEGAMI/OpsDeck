@@ -1000,7 +1000,7 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         Http::assertNotSent(fn (Request $request): bool => $request->url() === 'https://api.openai.com/v1/responses');
     }
 
-    public function test_ai_disabled_prevents_production_readiness_without_openai_credentials_or_pricing(): void
+    public function test_ai_disabled_allows_production_readiness_without_openai_credentials_or_pricing(): void
     {
         $this->configureReadyDeployment();
         config([
@@ -1018,9 +1018,9 @@ class OpsDeckDeploymentReadinessTest extends TestCase
         $exitCode = $this->artisan('opsdeck:deployment-check', ['--json' => true]);
         $output = json_decode(trim($this->app[Kernel::class]->output()), true, flags: JSON_THROW_ON_ERROR);
 
-        $this->assertSame('fail', $output['checks']['ai_mapping']);
-        $this->assertSame('fail', $output['checks']['ai_cost']);
-        $this->assertSame(1, $exitCode);
+        $this->assertSame('not_applicable', $output['checks']['ai_mapping']);
+        $this->assertSame('not_applicable', $output['checks']['ai_cost']);
+        $this->assertSame(0, $exitCode);
 
         Http::assertNotSent(fn (Request $request): bool => $request->url() === 'https://api.openai.com/v1/responses');
     }

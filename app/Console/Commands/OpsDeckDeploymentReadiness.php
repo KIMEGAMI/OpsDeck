@@ -203,12 +203,11 @@ class OpsDeckDeploymentReadiness extends Command
             $this->checks['google_login_callback'] = $googleLoginCallbackReadiness->matchesApplicationUrl() ? 'pass' : 'fail';
         }
         $aiEnabled = config('opsdeck.ai.enabled') === true;
-        $aiUnavailableStatus = app()->environment('production') ? 'fail' : 'not_applicable';
         $this->checks['ai_mapping'] = ! $aiEnabled
-            ? $aiUnavailableStatus
+            ? 'not_applicable'
             : ($this->hasAiMappingConfiguration() ? 'pass' : 'fail');
         $this->checks['ai_cost'] = ! $aiEnabled
-            ? $aiUnavailableStatus
+            ? 'not_applicable'
             : ($this->hasAiCostConfiguration($aiModelPricing) ? 'pass' : 'fail');
         if (app()->environment('production') && config('opsdeck.storage_quotas.platform_limit_megabytes') === null) {
             $this->checks['platform_storage_capacity'] = 'fail';
