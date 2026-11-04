@@ -50,7 +50,6 @@ class OnboardingControllerTest extends TestCase
             ->assertSee('これから')
             ->assertSee('契約の更新期限を1件確認する')
             ->assertSee('セキュリティの確認項目を1つ確認する')
-            ->assertSee('更新のお知らせ、セキュリティ管理項目')
             ->assertSee('会社の基本情報を確認する')
             ->assertSee('一緒に使う人を招待する')
             ->assertDontSee('完了として記録');
@@ -409,8 +408,8 @@ class OnboardingControllerTest extends TestCase
         $this->actingAs($user)->withSession($session)
             ->get(route('onboarding.index'))
             ->assertSee('7/7 完了')
-            ->assertSee('無料プラン（Free）の初期設定が完了')
-            ->assertDontSee('導入完了です。');
+            ->assertSee('導入完了')
+            ->assertSee('日々の更新期限・コスト・セキュリティ状態を確認できます。');
 
         $this->assertDatabaseHas('product_events', [
             'organization_id' => $organization->id,
