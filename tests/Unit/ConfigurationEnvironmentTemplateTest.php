@@ -7,6 +7,61 @@ use Tests\TestCase;
 
 class ConfigurationEnvironmentTemplateTest extends TestCase
 {
+    public function test_billing_can_be_enabled_for_tests_but_stays_disabled_in_production(): void
+    {
+        $variables = ['APP_ENV', 'OPSDECK_BILLING_ENABLED'];
+        $originalValues = [];
+
+        foreach ($variables as $name) {
+            $originalValues[$name] = [
+                'process' => getenv($name),
+                'environment' => $_ENV[$name] ?? null,
+                'has_environment' => array_key_exists($name, $_ENV),
+                'server' => $_SERVER[$name] ?? null,
+                'has_server' => array_key_exists($name, $_SERVER),
+            ];
+        }
+
+        try {
+            foreach (['APP_ENV' => 'production', 'OPSDECK_BILLING_ENABLED' => 'true'] as $name => $value) {
+                putenv($name.'='.$value);
+                $_ENV[$name] = $value;
+                $_SERVER[$name] = $value;
+            }
+
+            $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+
+            self::assertFalse($configuration['billing']['enabled']);
+
+            putenv('APP_ENV=testing');
+            $_ENV['APP_ENV'] = 'testing';
+            $_SERVER['APP_ENV'] = 'testing';
+            $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+
+            self::assertTrue($configuration['billing']['enabled']);
+        } finally {
+            foreach ($originalValues as $name => $originalValue) {
+                if (is_string($originalValue['process'])) {
+                    putenv($name.'='.$originalValue['process']);
+                } else {
+                    putenv($name);
+                }
+
+                if ($originalValue['has_environment']) {
+                    $_ENV[$name] = $originalValue['environment'];
+                } else {
+                    unset($_ENV[$name]);
+                }
+
+                if ($originalValue['has_server']) {
+                    $_SERVER[$name] = $originalValue['server'];
+                } else {
+                    unset($_SERVER[$name]);
+                }
+            }
+        }
+    }
+
     public function test_support_email_falls_back_when_contact_environment_variables_are_blank(): void
     {
         $variables = ['CONTACT_TO_ADDRESS', 'OPSDECK_SUPPORT_EMAIL'];

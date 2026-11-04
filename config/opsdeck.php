@@ -6,7 +6,8 @@ $maximumImportColumns = max(1, (int) env('OPSDECK_IMPORT_MAX_COLUMNS', $maximumX
 $aiMonthlyBudgetJpy = max(0, (int) env('OPSDECK_AI_MONTHLY_BUDGET_JPY', env('OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY', 500)));
 $aiDailyRequestLimit = 3;
 $aiModel = 'gpt-6-luna';
-$billingEnabled = false;
+$billingEnabled = env('APP_ENV') === 'testing'
+    && filter_var(env('OPSDECK_BILLING_ENABLED', false), FILTER_VALIDATE_BOOLEAN);
 $organizationStorageQuotaGibibytes = 5;
 $mebibytesPerGibibyte = 1024;
 $baseStorageQuotaMegabytes = $organizationStorageQuotaGibibytes * $mebibytesPerGibibyte;
