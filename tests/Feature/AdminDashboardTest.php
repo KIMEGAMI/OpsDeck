@@ -418,6 +418,7 @@ class AdminDashboardTest extends TestCase
         File::put($backupDirectory.DIRECTORY_SEPARATOR.'database.sql', 'backup');
         File::put($backupDirectory.DIRECTORY_SEPARATOR.'manifest.json', json_encode(['created_at' => now()->toIso8601String(), 'database' => ['driver' => 'mysql', 'file' => 'database.sql'], 'evidence_files' => []], JSON_THROW_ON_ERROR));
         config(['opsdeck.backup.path' => $backupRoot, 'opsdeck.storage_quotas.platform_limit_megabytes' => 1]);
+        config(['opsdeck.release_features.storage_addon' => true]);
         DB::table('storage_addon_reconciliation_runs')->insert([
             'status' => 'mismatch',
             'organizations_checked' => 1,

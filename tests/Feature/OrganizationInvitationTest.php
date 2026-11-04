@@ -18,6 +18,7 @@ use App\Models\OrganizationInvitation;
 use App\Models\OrganizationMembership;
 use App\Models\ProductEvent;
 use App\Models\SaasService;
+use App\Models\SecurityControl;
 use App\Models\User;
 use App\Services\ResendIdempotencyKeyFactory;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
@@ -315,6 +316,21 @@ class OrganizationInvitationTest extends TestCase
             'completed_at' => now(),
             'completed_by' => $owner->id,
         ]);
+        OnboardingStep::query()->create([
+            'organization_id' => $organization->id,
+            'step_key' => 'renewal_checked',
+            'completed_at' => now(),
+            'completed_by' => $owner->id,
+        ]);
+        SecurityControl::query()->create([
+            'organization_id' => $organization->id,
+            'control_code' => 'ONBOARDING-SECURITY',
+            'title' => '導入時のセキュリティ確認',
+            'category' => 'access',
+            'description' => '初回確認',
+            'status' => 'unknown',
+            'last_reviewed_at' => now(),
+        ]);
         SaasService::query()->create([
             'organization_id' => $organization->id,
             'name' => 'Onboarding SaaS',
@@ -551,6 +567,7 @@ class OrganizationInvitationTest extends TestCase
 
     public function test_free_plan_cannot_invite_an_additional_administrator(): void
     {
+        config(['opsdeck.billing.enabled' => false, 'opsdeck.plans.free.limits.administrators' => 1]);
         Queue::fake();
         [$owner, $organization] = $this->owner();
         $email = 'limited-admin-'.Str::uuid().'@example.test';
@@ -586,6 +603,7 @@ class OrganizationInvitationTest extends TestCase
 
     public function test_free_plan_rechecks_administrator_limit_when_an_invitation_is_accepted(): void
     {
+        config(['opsdeck.billing.enabled' => false, 'opsdeck.plans.free.limits.administrators' => 1]);
         [$owner, $organization] = $this->owner();
         $email = 'late-admin-'.Str::uuid().'@example.test';
         $token = Str::random(64);

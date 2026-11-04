@@ -616,7 +616,7 @@ class StripeWebhookControllerTest extends TestCase
         $organization->refresh();
         $this->assertSame(1, $organization->storage_addon_gib);
         $this->assertSame(3, $organization->storage_addon_pending_gib);
-        $this->assertSame('11 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
     }
 
     public function test_unknown_subscription_price_does_not_grant_a_plan(): void
@@ -800,7 +800,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertNull($organization->storage_addon_pending_gib);
         $this->assertNull($organization->storage_addon_effective_at);
         $storageQuota = app(OrganizationStorageQuotaService::class)->summary($organization);
-        $this->assertSame('1 GiB', $storageQuota['limit_display']);
+        $this->assertSame('5 GiB', $storageQuota['limit_display']);
         $this->assertSame(0, $storageQuota['addon_gib']);
         $this->assertTrue(Storage::disk($diskName)->exists($existingFilePath));
         $this->assertDatabaseHas('evidence', ['id' => $evidence->id]);
@@ -851,7 +851,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertSame('premium', $organization->plan_code);
         $this->assertTrue($organization->billing_cancel_at_period_end);
         $this->assertSame($periodEnd, $organization->billing_cancel_at?->timestamp);
-        $this->assertSame('12 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
 
         $this->postSignedStripeEvent([
             'id' => 'evt_cancel_reversed_'.Str::uuid(),
@@ -873,7 +873,7 @@ class StripeWebhookControllerTest extends TestCase
         $organization->refresh();
         $this->assertFalse($organization->billing_cancel_at_period_end);
         $this->assertNull($organization->billing_cancel_at);
-        $this->assertSame('12 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
     }
 
     public function test_older_or_previous_subscription_events_do_not_revert_current_state(): void
@@ -1140,7 +1140,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertSame(3, $organization->storage_addon_gib);
         $this->assertNull($organization->storage_addon_pending_gib);
         $this->assertNull($organization->storage_addon_effective_at);
-        $this->assertSame('13 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
 
         $olderPaymentFailureEvent = [
             'id' => 'evt_old_payment_failure_after_recovery_'.Str::uuid(),

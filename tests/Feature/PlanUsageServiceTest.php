@@ -20,6 +20,7 @@ class PlanUsageServiceTest extends TestCase
 
     public function test_usage_service_marks_warning_boundary_and_counts_only_active_or_invited_administrators(): void
     {
+        Config::set('opsdeck.billing.enabled', false);
         Config::set('opsdeck.plans.free.limits.employees', 5);
         Config::set('opsdeck.plans.free.limits.administrators', 2);
         [$organization, $owner] = $this->organization();
@@ -78,6 +79,7 @@ class PlanUsageServiceTest extends TestCase
 
     public function test_pending_administrator_invitation_reserves_and_displays_a_plan_seat(): void
     {
+        Config::set('opsdeck.plans.free.limits.administrators', 1);
         [$organization, $owner] = $this->organization();
         $invitedAdmin = User::factory()->create(['email' => 'reserved-admin-'.uniqid().'@example.test']);
         OrganizationInvitation::query()->create(['organization_id' => $organization->id, 'invited_by' => $owner->id, 'email' => $invitedAdmin->email, 'role' => MembershipRole::Admin, 'token_hash' => hash('sha256', $invitedAdmin->email), 'expires_at' => now()->addDay()]);
@@ -107,7 +109,7 @@ class PlanUsageServiceTest extends TestCase
     private function organization(): array
     {
         $user = User::factory()->create(['email' => 'plan-owner-'.uniqid().'@example.test']);
-        $organization = Organization::query()->create(['name' => 'Plan usage', 'slug' => 'plan-usage-'.uniqid(), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $organization = Organization::query()->create(['name' => 'Plan usage', 'slug' => 'plan-usage-'.uniqid(), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.free_plan_code'), 'billing_status' => 'inactive']);
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
 
         return [$organization, $user];

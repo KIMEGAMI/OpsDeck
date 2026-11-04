@@ -18,6 +18,7 @@ class PlanFeatureAccessTest extends TestCase
 
     public function test_all_plan_prices_are_zero_and_the_free_entitlements_match_legacy_premium(): void
     {
+        config(['opsdeck.billing.enabled' => false]);
         $freePlan = config('opsdeck.plans.free');
         $legacyPlan = config('opsdeck.plans.premium');
 

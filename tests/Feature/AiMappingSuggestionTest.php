@@ -174,7 +174,7 @@ class AiMappingSuggestionTest extends TestCase
     public function test_it_returns_validated_ai_mapping_and_logs_usage(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
-        config(['opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
+        config(['opsdeck.billing.enabled' => false, 'opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
         $organization = Organization::query()->create(['name' => 'AI '.Str::random(8), 'slug' => 'ai-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => config('opsdeck.default_billing_status'), 'ai_enabled' => true]);
         Http::fake(['api.openai.com/v1/responses' => Http::response([
             'status' => 'completed',
@@ -210,6 +210,7 @@ class AiMappingSuggestionTest extends TestCase
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config([
+            'opsdeck.billing.enabled' => false,
             'opsdeck.ai.enabled' => true,
             'opsdeck.ai.provider' => 'openai',
             'opsdeck.ai.api_key' => 'test-key',
@@ -601,7 +602,7 @@ class AiMappingSuggestionTest extends TestCase
     public function test_uncertain_mapping_uses_only_luna_and_keeps_human_review_required(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
-        config(['opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
+        config(['opsdeck.billing.enabled' => false, 'opsdeck.ai.enabled' => true, 'opsdeck.ai.provider' => 'openai', 'opsdeck.ai.api_key' => 'test-key']);
         $organization = Organization::query()->create(['name' => 'AI escalation '.Str::random(8), 'slug' => 'ai-escalation-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => config('opsdeck.default_billing_status'), 'ai_enabled' => true]);
         $responseFor = static fn (array $suggestions): array => [
             'status' => 'completed',
@@ -943,6 +944,7 @@ class AiMappingSuggestionTest extends TestCase
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config([
+            'opsdeck.billing.enabled' => false,
             'opsdeck.ai.enabled' => true,
             'opsdeck.ai.provider' => 'openai',
             'opsdeck.ai.api_key' => 'test-key',

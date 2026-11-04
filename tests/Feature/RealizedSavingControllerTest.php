@@ -173,7 +173,7 @@ class RealizedSavingControllerTest extends TestCase
         $this->assertDatabaseMissing('realized_savings', ['organization_id' => $organization->id]);
     }
 
-    public function test_free_plan_cannot_record_or_view_realized_savings_even_without_evidence(): void
+    public function test_free_plan_can_record_and_view_realized_savings_with_evidence(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
@@ -192,30 +192,19 @@ class RealizedSavingControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
-            ->assertDontSee('関連する保存済み資料（任意）');
+            ->assertSee('関連する保存済み資料（任意）');
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('realized-savings.store'), $this->validInput(['evidence_id' => $evidence->id]))
-            ->assertForbidden();
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('realized-savings.store'), $this->validInput())
-            ->assertForbidden();
-
-        $existingSaving = RealizedSaving::factory()->create([
+            ->assertRedirect(route('costs.dashboard'));
+        $this->assertDatabaseHas('realized_savings', [
             'organization_id' => $organization->id,
             'created_by' => $user->id,
-            'description' => 'Free plan hidden saving history',
+            'evidence_id' => $evidence->id,
         ]);
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('realized-savings.void', $existingSaving), ['reason' => 'Attempted Free plan change'])
-            ->assertForbidden();
-
-        $this->assertSame(1, $organization->realizedSavings()->count());
-        $this->assertNull($existingSaving->fresh()->voided_at);
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
-            ->assertDontSee('記録された削減実績')
-            ->assertDontSee('Free plan hidden saving history');
+            ->assertSee('記録された削減実績');
     }
 
     public function test_cost_dashboard_and_void_route_do_not_expose_another_organizations_record(): void

@@ -36,7 +36,7 @@ class RenewalReminderTest extends TestCase
             ->assertSee(route('contracts.show', Contract::query()->where('contract_name', 'Cancellation deadline only')->first()), false);
     }
 
-    public function test_free_plan_cannot_open_renewal_reminders_by_direct_url(): void
+    public function test_free_plan_can_open_renewal_reminders_by_direct_url(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         $suffix = Str::lower(Str::random(8));
@@ -46,7 +46,7 @@ class RenewalReminderTest extends TestCase
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('reminders.renewals'))
-            ->assertForbidden();
+            ->assertOk();
     }
 
     public function test_reminder_uses_the_earliest_relevant_date_when_both_dates_are_set(): void

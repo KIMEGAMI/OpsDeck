@@ -124,6 +124,7 @@ class OrganizationMemberControllerTest extends TestCase
 
     public function test_free_plan_prevents_promoting_a_member_to_administrator_over_the_limit(): void
     {
+        config(['opsdeck.billing.enabled' => false, 'opsdeck.plans.free.limits.administrators' => 1]);
         [$owner, $organization] = $this->member(MembershipRole::Owner);
         $target = User::factory()->create(['email' => 'promote-'.Str::uuid().'@example.test']);
         $membership = OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $target->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);

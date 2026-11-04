@@ -147,7 +147,7 @@ class AdminProductMetricsControllerTest extends TestCase
     {
         $admin = User::factory()->create(['email' => 'metrics-limits-'.Str::uuid().'@example.test']);
         config(['opsdeck.platform_admin_emails' => [$admin->email], 'opsdeck.plans.free.limits.employees' => 1, 'opsdeck.plans.premium.limits.employees' => 2, 'opsdeck.pagination.per_page' => 1]);
-        $organization = Organization::query()->create(['name' => 'Metrics Limits '.Str::random(8), 'slug' => 'metrics-limits-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        $organization = Organization::query()->create(['name' => 'Metrics Limits '.Str::random(8), 'slug' => 'metrics-limits-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.free_plan_code'), 'billing_status' => 'inactive']);
         Employee::query()->create(['organization_id' => $organization->id, 'name' => '上限社員', 'employment_status' => 'active']);
         $premiumOrganization = Organization::query()->create(['name' => 'Metrics Premium '.Str::random(8), 'slug' => 'metrics-premium-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => 'premium', 'billing_status' => config('opsdeck.default_billing_status')]);
         Employee::query()->create(['organization_id' => $premiumOrganization->id, 'name' => 'Premium社員', 'employment_status' => 'active']);
@@ -161,8 +161,8 @@ class AdminProductMetricsControllerTest extends TestCase
     public function test_plan_limit_metrics_include_pending_administrator_invitations(): void
     {
         $admin = User::factory()->create(['email' => 'metrics-admin-invite-'.Str::uuid().'@example.test']);
-        config(['opsdeck.platform_admin_emails' => [$admin->email]]);
-        $organization = Organization::query()->create(['name' => 'Metrics Admin Seat '.Str::random(8), 'slug' => 'metrics-admin-seat-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
+        config(['opsdeck.platform_admin_emails' => [$admin->email], 'opsdeck.plans.free.limits.administrators' => 2]);
+        $organization = Organization::query()->create(['name' => 'Metrics Admin Seat '.Str::random(8), 'slug' => 'metrics-admin-seat-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.free_plan_code'), 'billing_status' => 'inactive']);
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $admin->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
         OrganizationInvitation::query()->create(['organization_id' => $organization->id, 'invited_by' => $admin->id, 'email' => 'pending-admin-'.Str::uuid().'@example.test', 'role' => MembershipRole::Admin, 'token_hash' => hash('sha256', Str::uuid()->toString()), 'expires_at' => now()->addDay()]);
 

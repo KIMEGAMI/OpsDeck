@@ -29,8 +29,11 @@ class BillingControllerTest extends TestCase
 
         config([
             'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
             'opsdeck.plans.premium.monthly_price_jpy' => 9800,
             'opsdeck.storage_quotas.storage_addon_monthly_price_jpy' => 100,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
         ]);
     }
 
@@ -41,6 +44,7 @@ class BillingControllerTest extends TestCase
         $organization->update(['stripe_customer_id' => 'cus_free_mode_test']);
         config([
             'opsdeck.billing.enabled' => false,
+            'opsdeck.release_features.storage_addon' => false,
             'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
             'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
             'services.stripe.secret' => 'sk_test_free_mode',
@@ -1722,7 +1726,7 @@ class BillingControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('追加容量の申込みは現在準備中です。')
+            ->assertSee('共有保存枠とStripe設定を確認できるまで変更できません。')
             ->assertDontSee(route('billing.storage-addon.update'), false);
 
         Http::assertNothingSent();
@@ -1784,7 +1788,7 @@ class BillingControllerTest extends TestCase
             ->get(route('billing.index'))
             ->assertOk()
             ->assertSee('月額100円（税別）')
-            ->assertSee('11.0GiB')
+            ->assertSee('6.0GiB')
             ->assertSee('data-storage-addon-quantity', false)
             ->assertSee('data-storage-addon-capacity-warning', false);
     }

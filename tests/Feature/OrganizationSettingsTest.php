@@ -131,8 +131,8 @@ class OrganizationSettingsTest extends TestCase
             ->get(route('settings.organization'))
             ->assertOk()
             ->assertSee('会社の保存容量')
-            ->assertSee('現在 0.1 GiB ／ 上限 10 GiB（1%）')
-            ->assertSee('あと約 9.9 GiB 保存できます。');
+            ->assertSee('現在 0.1 GiB ／ 上限 5 GiB（2%）')
+            ->assertSee('あと約 4.9 GiB 保存できます。');
     }
 
     public function test_ai_settings_show_the_free_luna_daily_limit_without_customer_pricing(): void

@@ -110,7 +110,7 @@ class RecoveryGuideControllerTest extends TestCase
             ->get(route('help.recovery', 'ai'))
             ->assertOk()
             ->assertSee('AIの候補や回答案が使えないとき')
-            ->assertSee('手入力で作成できます')
+            ->assertSee('列の対応付けは手入力でできます')
             ->assertSee('会社の設定を管理する担当者（Owner）に確認してください。')
             ->assertSee(route('support.create'))
             ->assertDontSee(route('settings.organization'))

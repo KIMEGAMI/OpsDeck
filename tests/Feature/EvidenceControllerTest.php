@@ -286,8 +286,9 @@ class EvidenceControllerTest extends TestCase
             ->assertSee('取込元ファイルと証跡ファイルの合計です。登録した社員や資産などの件数は、ここには含まれません。')
             ->assertSee('保存容量の上限に達しました。新しいファイルをアップロードできません。')
             ->assertSee('すでに登録したデータとファイルは削除されません。')
-            ->assertSee('容量についてサポートへ相談してください')
-            ->assertSee(route('support.create', ['category' => 'billing']));
+            ->assertSee('不要な取込ファイルや証跡ファイルを整理してください。')
+            ->assertSee('追加容量は提供していません。')
+            ->assertDontSee(route('support.create', ['category' => 'billing']));
 
         $this->followingRedirects()->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->from(route('evidence.create'))

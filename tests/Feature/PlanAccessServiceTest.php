@@ -57,6 +57,7 @@ class PlanAccessServiceTest extends TestCase
 
     public function test_active_legacy_plan_codes_receive_the_free_entitlements(): void
     {
+        config(['opsdeck.billing.enabled' => false]);
         $activeOrganization = $this->organization(['billing_status' => 'active', 'billing_past_due_since' => now()->subDays(8)]);
         $unknownStartOrganization = $this->organization(['billing_past_due_since' => null, 'stripe_last_event_created_at' => null]);
         $planAccess = app(PlanAccessService::class);

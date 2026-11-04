@@ -369,7 +369,7 @@ class OpsDeckBPlusAcceptanceTest extends TestCase
         $this->withSession($session)
             ->get(route('imports.create', ['target_type' => 'employees']))
             ->assertOk()
-            ->assertSee('FreeでもCSV/TXTから実データを登録できます。');
+            ->assertSee('まずファイルの内容を確認します。');
 
         $uploadResponse = $this->withSession($session)->post(route('imports.store'), [
             'target_type' => 'employees',
