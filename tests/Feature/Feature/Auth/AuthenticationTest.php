@@ -35,7 +35,7 @@ class AuthenticationTest extends TestCase
             ->assertDontSee('aria-pressed', false);
     }
 
-    public function test_login_page_explains_google_is_for_registered_linked_accounts(): void
+    public function test_login_page_hides_google_login_even_when_callback_is_ready(): void
     {
         config([
             'app.url' => 'https://opsdeck.example.test',
@@ -45,10 +45,9 @@ class AuthenticationTest extends TestCase
 
         $this->get('https://opsdeck.example.test/login')
             ->assertOk()
-            ->assertSee('Googleでログイン')
-            ->assertSee('Googleログインは、すでにOpsDeckに登録し、Googleアカウントを連携した方が使えます。')
-            ->assertSee('初めて利用する場合は、先に「組織を新規登録」から登録してください。')
-            ->assertSee('登録後、個人設定からGoogleアカウントを連携できます。');
+            ->assertDontSee('Google')
+            ->assertSee('メールアドレス')
+            ->assertSee('パスワード');
     }
 
     public function test_login_page_hides_google_login_when_callback_origin_does_not_match_application(): void
@@ -61,9 +60,9 @@ class AuthenticationTest extends TestCase
 
         $this->get('/login')
             ->assertOk()
-            ->assertDontSee('Googleでログイン')
-            ->assertSee('Googleログインは現在利用できません。')
-            ->assertSee('メールアドレスとパスワードでログインしてください。')
+            ->assertDontSee('Google')
+            ->assertSee('メールアドレス')
+            ->assertSee('パスワード')
             ->assertSee(route('login.store'));
     }
 

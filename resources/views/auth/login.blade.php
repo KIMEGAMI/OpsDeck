@@ -5,12 +5,6 @@
         @if (session('status'))
             <p role="status">{{ session('status') }}</p>
         @endif
-        @if ($googleLoginAvailable)
-            <p><a class="auth-provider-button" href="{{ route('login.google.redirect') }}">Googleでログイン</a></p>
-            <p class="muted">Googleログインは、すでにOpsDeckに登録し、Googleアカウントを連携した方が使えます。初めて利用する場合は、先に「組織を新規登録」から登録してください。登録後、個人設定からGoogleアカウントを連携できます。</p>
-        @elseif ($googleLoginEnabled)
-            <p class="muted" role="status">Googleログインは現在利用できません。メールアドレスとパスワードでログインしてください。</p>
-        @endif
         <form method="post" action="{{ route('login.store') }}">
             @csrf
             <label for="email">メールアドレス</label>

@@ -4,22 +4,15 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
-use App\Services\GoogleLoginCallbackReadiness;
 use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\View\View;
 
 class AuthenticatedSessionController extends Controller
 {
-    public function create(Request $request, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): View
+    public function create(): View
     {
-        $googleLoginEnabled = config('services.google.login_enabled') === true;
-
-        return view('auth.login', [
-            'googleLoginEnabled' => $googleLoginEnabled,
-            'googleLoginAvailable' => $googleLoginEnabled && $googleLoginCallbackReadiness->matchesRequestUrl($request),
-        ]);
+        return view('auth.login');
     }
 
     public function store(LoginRequest $request): RedirectResponse
