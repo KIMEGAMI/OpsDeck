@@ -190,8 +190,6 @@ class CostDashboardTest extends TestCase
         $saasService = SaasService::query()->create(['organization_id' => $organization->id, 'name' => 'Unused SaaS '.$suffix, 'status' => 'active']);
         Contract::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $saasService->id, 'vendor_name' => 'SaaS vendor', 'contract_name' => 'Unused annual service', 'contract_type' => 'service', 'billing_cycle' => 'annual', 'amount' => 120000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
         Contract::query()->create(['organization_id' => $organization->id, 'saas_service_id' => $saasService->id, 'vendor_name' => 'Low-cost SaaS vendor', 'contract_name' => 'Unused low-cost service', 'contract_type' => 'service', 'billing_cycle' => 'annual', 'amount' => 1000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
-        $premiumAnnualFeeJpy = (int) config('opsdeck.plans.'.config('opsdeck.premium_plan_code').'.monthly_price_jpy') * ContractMonthlyCostCalculator::MONTHS_PER_YEAR;
-
         $this->actingAs($user)
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
@@ -204,10 +202,10 @@ class CostDashboardTest extends TestCase
             ->assertSee('Unused low-cost service')
             ->assertSee('121,000.00')
             ->assertSee('契約更新時に金額を見直す候補：0円')
-            ->assertSee('有料プラン（Premium）料金との比較（年額・税別）')
-            ->assertSee('有料プランの年間料金：'.number_format($premiumAnnualFeeJpy).'円')
-            ->assertSee('現在の削減候補額は年間料金を'.number_format(121000 - $premiumAnnualFeeJpy).'円上回る概算です。')
-            ->assertSee('実現済みの削減額や料金回収を保証するものではありません。');
+            ->assertSee('削減候補の年間金額（概算）')
+            ->assertDontSee('Premium')
+            ->assertDontSee('有料プラン')
+            ->assertSee('実際に削減できる金額は、利用状況や契約条件を担当者が確認してください。');
     }
 
     public function test_unused_saas_estimate_includes_retired_only_assignments_but_excludes_active_and_shared_accounts(): void
@@ -293,14 +291,13 @@ class CostDashboardTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Viewer, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
         Contract::query()->create(['organization_id' => $organization->id, 'vendor_name' => 'Invalid assumption vendor', 'contract_name' => 'Renewal contract', 'contract_type' => 'service', 'billing_cycle' => 'annual', 'amount' => 120000, 'currency' => 'JPY', 'auto_renew' => true, 'status' => 'active', 'renewal_date' => today()->addDays(10)]);
         Asset::query()->create(['organization_id' => $organization->id, 'asset_number' => 'INVALID-ASSUMPTION-'.$suffix, 'asset_type' => 'pc', 'status' => 'in_stock']);
-        $premiumAnnualFeeJpy = (int) config('opsdeck.plans.'.config('opsdeck.premium_plan_code').'.monthly_price_jpy') * ContractMonthlyCostCalculator::MONTHS_PER_YEAR;
-
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
             ->assertSee('契約更新時に金額を見直す候補：0円')
             ->assertSee('利用状況を確認する端末：0円')
-            ->assertSee('現在の削減候補額は年間料金に'.number_format($premiumAnnualFeeJpy).'円届かない概算です。')
+            ->assertSee('削減候補の年間金額（概算）')
+            ->assertDontSee('Premium')
             ->assertSee('更新見直し率の設定が0〜100%の範囲外', false)
             ->assertSee('未使用端末の月額設定が負数', false)
             ->assertSee('role="alert"', false);
@@ -405,7 +402,7 @@ class CostDashboardTest extends TestCase
             ->assertDontSee('更新前に確認する契約（1件）');
     }
 
-    public function test_free_plan_keeps_basic_costs_but_hides_premium_savings_and_renewal_opportunities(): void
+    public function test_free_plan_includes_current_savings_and_renewal_features(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         $suffix = Str::lower(Str::random(8));
@@ -421,12 +418,12 @@ class CostDashboardTest extends TestCase
             ->assertSee('契約の月額費用')
             ->assertSee('JPYは日本円、USDは米ドルです。異なる通貨は合算していません。')
             ->assertSee('<dt>JPY</dt><dd>10,000.00</dd>', false)
-            ->assertSee('削減候補の概算、削減実績の記録、契約更新のお知らせは有料プラン（Premium）で利用できます。')
+            ->assertSee('削減候補の年間金額（概算）')
             ->assertDontSee('作業時間短縮の参考値')
-            ->assertSee('有料プランの相談は、組織の契約担当者にご依頼ください。')
-            ->assertDontSee('削減候補の年間金額（概算）')
-            ->assertDontSee(ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内に確認が必要な契約期限')
-            ->assertDontSee('<td>Renewal soon</td>', false);
+            ->assertSee(ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内に確認が必要な契約期限')
+            ->assertSee('Renewal soon')
+            ->assertDontSee('Premium')
+            ->assertDontSee('有料プラン');
     }
 
     public function test_empty_renewal_alert_state_uses_the_same_window_as_the_heading(): void

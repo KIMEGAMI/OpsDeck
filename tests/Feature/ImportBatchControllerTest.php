@@ -517,8 +517,17 @@ class ImportBatchControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', $batch))
             ->assertOk()
-            ->assertSee('AI候補はPremiumプランで利用できます。')
+            ->assertSee('この組織ではAIの提案を使えません。')
             ->assertDontSee('選んだ一覧の列名をAIへ送って候補を作る');
+
+        $organization->update(['ai_enabled' => true]);
+        config(['opsdeck.ai.usd_to_jpy_rate' => 150]);
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.mapping', $batch))
+            ->assertOk()
+            ->assertSee('GPT-6 Lunaのみを使用し')
+            ->assertSee('1組織あたり1日3回まで利用できます')
+            ->assertSee('選んだ一覧の列名をAIへ送って候補を作る');
 
         $organization->update(['plan_code' => config('opsdeck.premium_plan_code'), 'billing_status' => 'active', 'ai_enabled' => false]);
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
@@ -532,7 +541,7 @@ class ImportBatchControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', $batch))
             ->assertOk()
-            ->assertSee('AIサービスの接続設定がないため、今は候補を取得できません。')
+            ->assertSee('AI接続または費用設定がないため、今は候補を取得できません。')
             ->assertDontSee('選んだ一覧の列名をAIへ送って候補を作る');
 
         config(['opsdeck.ai.enabled' => true]);
@@ -688,6 +697,7 @@ class ImportBatchControllerTest extends TestCase
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
+        config(['opsdeck.release_features.google_sheets' => false]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.create'))
@@ -698,6 +708,8 @@ class ImportBatchControllerTest extends TestCase
             ->assertSee('href="#import-upload-form"', false)
             ->assertSee('id="import-upload-form"', false)
             ->assertSee('見本を登録せずに操作を試せます。')
+            ->assertSee('上限 5 GiB')
+            ->assertSee('組織ごとの上限は5 GiB固定です。追加容量は提供していません。')
             ->assertSee('<a href="'.route('imports.samples.preview', 'employees').'">社員のサンプルを登録せずに確認する</a>', false)
             ->assertSee('<summary>Excel・社内管理表を取り込む詳しい手順とサンプル</summary>', false)
             ->assertSee('取込履歴・元ファイル・行ごとの確認結果は、あとで見直したり取込を取り消したりできるよう、期限を設けず保存します。')
@@ -713,23 +725,19 @@ class ImportBatchControllerTest extends TestCase
             ->assertSee('列の名前が書かれた最初の行')
             ->assertSee('列の名前が書かれた最後の行')
             ->assertSee('データが始まる行（空欄でOK）')
-            ->assertSee('このプランで選べる形式はCSV / TXTです。')
-            ->assertSee('Excel（.xlsx）を直接選ぶにはPremiumが必要です。')
-            ->assertSee('古い形式のExcel（.xls）も使えません。')
-            ->assertSee('FreeでもCSV/TXTから実データを登録できます。')
-            ->assertSee('社員20名、資産50件、SaaSサービス10件まで登録できます。')
+            ->assertSee('古い形式のExcel（.xls）は使えません。')
+            ->assertSee('使える形式：CSV / TXT / Excel（.xlsx）。')
             ->assertSee('<details>', false)
             ->assertDontSee('<details open', false)
             ->assertSee('<summary>表の上にタイトルなどがある場合（通常は設定不要）</summary>', false)
-            ->assertDontSee('XLSXファイル')
             ->assertSee('最後に取込を実行します。結果はいつでも履歴から確認できます。')
             ->assertSee('1回に確認できるのは最大20,000行')
             ->assertSee('列名が1行目にあり、そのすぐ下からデータが始まる表なら、ここは変更しなくて大丈夫です。')
             ->assertSee('内容を確認する（まだ登録しません）')
             ->assertSee('今使っている社員名簿。後で履歴を見たとき、何の表か分かる名前にしてください。')
             ->assertDontSee('2026年10月')
-            ->assertSee('Excelファイルを使う場合')
-            ->assertSee('CSV UTF-8')
+            ->assertDontSee('Excelファイルを使う場合')
+            ->assertDontSee('CSV UTF-8')
             ->assertSee('この時点では会社のデータは登録・変更されません。')
             ->assertSee('どの列を「社員名」「部署」などとして扱うか選びます。')
             ->assertSee('実際の会社データは入っていません。');
@@ -1089,34 +1097,43 @@ class ImportBatchControllerTest extends TestCase
             ->assertDontSee('Excelファイルを使う場合');
     }
 
-    public function test_free_plan_cannot_upload_xlsx_preview(): void
+    public function test_free_plan_can_upload_xlsx_for_preview(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         Storage::fake(config('opsdeck.import.disk'));
         [$user, $organization] = $this->member(MembershipRole::Operator);
+        $xlsxSource = \Mockery::mock(XlsxImportSource::class);
+        $xlsxSource->shouldReceive('sheets')->once()->andReturn(['社員一覧']);
+        $this->app->instance(XlsxImportSource::class, $xlsxSource);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.store'), [
                 'source_name' => 'XLSX preview',
-                'file' => UploadedFile::fake()->create('employees.xlsx', 1, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+                'file' => UploadedFile::fake()->createWithContent('employees.xlsx', 'workbook fixture'),
             ])
-            ->assertForbidden();
+            ->assertRedirect();
 
-        $this->assertDatabaseMissing('import_batches', ['organization_id' => $organization->id]);
+        $this->assertDatabaseHas('import_batches', [
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'status' => 'sheet_selection',
+        ]);
     }
 
-    public function test_free_plan_cannot_retry_an_xlsx_import_after_downgrade(): void
+    public function test_free_plan_can_retry_an_xlsx_preview(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
         $failedBatch = ImportBatch::query()->create(['organization_id' => $organization->id, 'source_type' => 'xlsx', 'source_name' => 'failed-import', 'source_file_path' => 'imports/'.$organization->id.'/failed.xlsx', 'status' => 'failed']);
+        Queue::fake([PrepareImportPreview::class]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.retry', $failedBatch), ['confirm' => '1'])
-            ->assertForbidden();
+            ->assertRedirect(route('imports.show', $failedBatch));
 
         $this->assertSame(1, ImportBatch::query()->where('organization_id', $organization->id)->count());
-        $this->assertSame('failed', $failedBatch->refresh()->status);
+        $this->assertSame('previewing', $failedBatch->refresh()->status);
+        Queue::assertPushed(PrepareImportPreview::class, fn (PrepareImportPreview $job): bool => $job->importBatchId === $failedBatch->id);
     }
 
     public function test_free_plan_can_import_csv_up_to_its_employee_limit_and_reports_excess_rows(): void
@@ -1165,7 +1182,7 @@ class ImportBatchControllerTest extends TestCase
         $this->assertStringContainsString('上限（1件）', $limitError);
     }
 
-    public function test_free_plan_cannot_execute_a_premium_only_import_target(): void
+    public function test_free_plan_can_execute_a_security_controls_import_target(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
@@ -1186,15 +1203,19 @@ class ImportBatchControllerTest extends TestCase
         ]);
         $batch->update(['mapping_id' => (string) $mapping->id]);
 
+        $executionService = \Mockery::mock(ImportBatchExecutionService::class);
+        $executionService->shouldReceive('execute')->once()->with($batch->id, $user->id, 'ready');
+        $this->app->instance(ImportBatchExecutionService::class, $executionService);
+
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.execute', $batch), ['confirm' => '1'])
-            ->assertForbidden();
+            ->assertRedirect(route('imports.show', $batch));
 
         $this->assertSame('ready', $batch->refresh()->status);
         $this->assertDatabaseMissing('security_controls', ['organization_id' => $organization->id]);
     }
 
-    public function test_free_plan_cannot_execute_xlsx_batch_created_before_downgrade(): void
+    public function test_free_plan_can_execute_an_xlsx_batch(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member(MembershipRole::Operator);
@@ -1215,9 +1236,13 @@ class ImportBatchControllerTest extends TestCase
         ]);
         $batch->update(['mapping_id' => (string) $mapping->id]);
 
+        $executionService = \Mockery::mock(ImportBatchExecutionService::class);
+        $executionService->shouldReceive('execute')->once()->with($batch->id, $user->id, 'ready');
+        $this->app->instance(ImportBatchExecutionService::class, $executionService);
+
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('imports.execute', $batch), ['confirm' => '1'])
-            ->assertForbidden();
+            ->assertRedirect(route('imports.show', $batch));
 
         $this->assertSame('ready', $batch->refresh()->status);
         $this->assertSame(0, Employee::query()->where('organization_id', $organization->id)->count());

@@ -136,7 +136,7 @@
                 @elseif (config('opsdeck.release_features.storage_addon') && $checkoutStorageAddonMaximumQuantity === 0)
                     <p class="muted">今回の申し込みで選べる追加容量はありません。Premiumの申し込みは続けられます。</p>
                 @endif
-                <p id="checkout-policy-help">Premiumは1か月ごとに自動更新されます。解約は次回更新日前にBilling画面のCustomer Portalで手続きできます。解約後も次回更新日までは利用でき、決済済み期間の利用料は日割り返金しません（法令上返金が必要となる場合を除きます）。<a href="{{ route('legal.terms') }}">利用規約</a>と<a href="{{ route('legal.commercial-transactions') }}">特定商取引法に基づく表記</a>をご確認ください。</p>
+                <p id="checkout-policy-help">Premiumは1か月ごとに自動更新されます。解約は次回更新日前にBilling画面のCustomer Portalで手続きできます。解約後も次回更新日までは利用でき、決済済み期間の利用料は日割り返金しません（法令上返金が必要となる場合を除きます）。<a href="{{ route('legal.terms') }}">利用規約</a>をご確認ください。</p>
                 <button type="submit">Stripe Checkoutを開始</button>
             </form>
         @endif

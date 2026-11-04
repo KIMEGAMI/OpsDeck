@@ -40,9 +40,18 @@ class ImportMappingSuggestionService
         }
         $fastReservation = $this->budgetService->reserve($organization, $userId, $fastModel, $providerHeaders, $targetType, $targetFields);
         if ($fastReservation === null) {
-            $this->budgetService->recordBlocked($organization, $userId, $fastModel, $this->budgetBlockReason($organization, $fastModel));
+            $blockReason = $this->budgetBlockReason($organization, $fastModel);
+            $this->budgetService->recordBlocked($organization, $userId, $fastModel, $blockReason);
+            $reason = $blockReason === 'daily_request_limit_exceeded'
+                ? '本日のAI候補回数の上限（'.number_format((int) config('opsdeck.ai.daily_request_limit')).'回/組織）に達しました。明日以降に再度お試しいただくか、手動で列を設定してください。'
+                : 'AI月額上限または費用設定によりAI候補を利用できません。列名を確認して手動で設定してください。';
 
-            return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => 'AI月額上限または費用設定によりAI候補を利用できません。列名を確認して手動で設定してください。', 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
+            return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => $reason, 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
+        }
+        if (! $this->budgetService->markProviderRequestAttempted($fastReservation)) {
+            $this->budgetService->recordBlocked($organization, $userId, $fastModel, 'provider_unavailable');
+
+            return array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => 'AIサービスの利用枠を確保できませんでした。列名を確認して手動で設定してください。', 'requires_review' => true, 'question' => null, 'source' => 'fallback']);
         }
         try {
             $result = $this->provider->suggestColumnMapping($providerHeaders, $targetType, $targetFields, $fastModel, (string) config('opsdeck.ai.reasoning_effort'));
@@ -111,6 +120,11 @@ class ImportMappingSuggestionService
             $escalationReservation = $this->budgetService->reserve($organization, $userId, $escalationModel, $escalationProviderHeaders, $targetType, $targetFields);
             if ($escalationReservation === null) {
                 $this->budgetService->recordBlocked($organization, $userId, $escalationModel, $this->budgetBlockReason($organization, $escalationModel));
+
+                return array_map(fn (array $suggestion): array => $suggestion + ['source' => $suggestion['field'] === null ? 'none' : 'ai'], $suggestions);
+            }
+            if (! $this->budgetService->markProviderRequestAttempted($escalationReservation)) {
+                $this->budgetService->recordBlocked($organization, $userId, $escalationModel, 'provider_unavailable');
 
                 return array_map(fn (array $suggestion): array => $suggestion + ['source' => $suggestion['field'] === null ? 'none' : 'ai'], $suggestions);
             }
@@ -198,6 +212,11 @@ class ImportMappingSuggestionService
 
     private function budgetBlockReason(Organization $organization, string $model): string
     {
+        $usageSummary = $this->budgetService->usageSummary($organization);
+        if ($usageSummary['requests_remaining'] === 0) {
+            return 'daily_request_limit_exceeded';
+        }
+
         $plan = app(PlanAccessService::class)->effectivePlanCode($organization);
         $rate = config('opsdeck.ai.usd_to_jpy_rate');
         $modelPrices = config('opsdeck.ai.model_prices_per_million_tokens', []);

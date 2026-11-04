@@ -170,12 +170,15 @@ class StorageQuotaPlatformUsageTest extends TestCase
         $this->assertSame('0.0 GiB', $summary['used_display']);
     }
 
-    public function test_company_storage_summary_displays_binary_capacity_units(): void
+    public function test_company_storage_summary_uses_fixed_five_gib_capacity_without_addons(): void
     {
         $organization = Organization::factory()->create();
         $service = app(OrganizationStorageQuotaService::class);
 
-        $this->assertSame('1 GiB', $service->summary($organization)['limit_display']);
+        $freeSummary = $service->summary($organization);
+        $this->assertSame('5 GiB', $freeSummary['limit_display']);
+        $this->assertSame(5 * 1024 * (int) config('opsdeck.storage_quotas.bytes_per_megabyte'), $freeSummary['limit_bytes']);
+        $this->assertSame(0, $freeSummary['addon_gib']);
 
         $organization->update([
             'plan_code' => config('opsdeck.premium_plan_code'),
@@ -186,17 +189,17 @@ class StorageQuotaPlatformUsageTest extends TestCase
         ]);
         $premiumSummary = $service->summary($organization);
 
-        $this->assertSame('12 GiB', $premiumSummary['limit_display']);
+        $this->assertSame('5 GiB', $premiumSummary['limit_display']);
         $this->assertSame('0.0 GiB', $premiumSummary['used_display']);
-        $this->assertSame('12.0 GiB', $premiumSummary['remaining_display']);
-        $this->assertSame(2, $premiumSummary['addon_gib']);
-        $this->assertSame(3, $premiumSummary['pending_addon_gib']);
-        $this->assertNotNull($premiumSummary['addon_effective_at_display']);
+        $this->assertSame('5.0 GiB', $premiumSummary['remaining_display']);
+        $this->assertSame(0, $premiumSummary['addon_gib']);
+        $this->assertNull($premiumSummary['pending_addon_gib']);
+        $this->assertNull($premiumSummary['addon_effective_at_display']);
 
         $organization->update(['billing_status' => 'cancelled']);
         $freeSummary = $service->summary($organization);
 
-        $this->assertSame('1 GiB', $freeSummary['limit_display']);
+        $this->assertSame('5 GiB', $freeSummary['limit_display']);
         $this->assertSame(0, $freeSummary['addon_gib']);
     }
 
@@ -204,7 +207,6 @@ class StorageQuotaPlatformUsageTest extends TestCase
     {
         config([
             'opsdeck.release_features.storage_addon' => false,
-            'opsdeck.storage_quotas.plan_limit_megabytes.premium' => 2,
         ]);
         $organization = Organization::factory()->create([
             'plan_code' => config('opsdeck.premium_plan_code'),
@@ -216,7 +218,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
         $service = app(OrganizationStorageQuotaService::class);
         $summary = $service->summary($organization);
 
-        $this->assertSame(2 * (int) config('opsdeck.storage_quotas.bytes_per_megabyte'), $summary['limit_bytes']);
+        $this->assertSame(5 * self::MEBIBYTES_PER_GIBIBYTE * (int) config('opsdeck.storage_quotas.bytes_per_megabyte'), $summary['limit_bytes']);
         $this->assertSame(0, $summary['addon_limit_bytes']);
         $this->assertSame(0, $summary['addon_gib']);
         $this->assertNull($summary['pending_addon_gib']);
@@ -308,6 +310,10 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_storage_addon_sale_reserves_current_and_pending_premium_capacity(): void
     {
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+        ]);
         $baselineCapacity = $this->currentPlatformCapacityCommitments();
         $targetOrganization = Organization::factory()->create([
             'plan_code' => config('opsdeck.premium_plan_code'),
@@ -337,6 +343,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_premium_checkout_reserves_free_organization_usage_but_includes_target_files_in_its_new_quota(): void
     {
+        config(['opsdeck.billing.enabled' => true]);
         $baselineCapacity = $this->currentPlatformCapacityCommitments();
         $targetOrganization = Organization::factory()->create(['plan_code' => config('opsdeck.free_plan_code')]);
         $otherOrganization = Organization::factory()->create(['plan_code' => config('opsdeck.free_plan_code')]);
@@ -374,6 +381,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_checkout_capacity_includes_other_unexpired_premium_checkout_reservations(): void
     {
+        config(['opsdeck.billing.enabled' => true]);
         $reservedOrganization = Organization::factory()->create([
             'plan_code' => config('opsdeck.free_plan_code'),
             'storage_addon_checkout_reserved_gib' => 2,
@@ -383,7 +391,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
         config([
             'opsdeck.release_features.storage_addon' => true,
             'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
-            'opsdeck.storage_quotas.platform_limit_megabytes' => 25 * self::MEBIBYTES_PER_GIBIBYTE,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 15 * self::MEBIBYTES_PER_GIBIBYTE,
         ]);
         $service = app(StorageAddonCapacityService::class);
 
@@ -396,6 +404,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_platform_capacity_preserves_each_premium_organizations_actual_overage(): void
     {
+        config(['opsdeck.billing.enabled' => true]);
         $overQuotaOrganization = Organization::factory()->create([
             'plan_code' => config('opsdeck.premium_plan_code'),
             'billing_status' => 'active',
@@ -422,7 +431,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
         config([
             'opsdeck.release_features.storage_addon' => true,
             'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
-            'opsdeck.storage_quotas.platform_limit_megabytes' => 30 * self::MEBIBYTES_PER_GIBIBYTE,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 3 * $premiumBaseQuotaMegabytes,
         ]);
 
         $this->assertFalse(app(StorageAddonCapacityService::class)->canSchedule($targetOrganization, 0));
@@ -430,6 +439,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_storage_addon_schedule_accounts_for_files_used_by_free_organizations(): void
     {
+        config(['opsdeck.billing.enabled' => true]);
         $baselineCapacity = $this->currentPlatformCapacityCommitments();
         $premiumOrganization = Organization::factory()->create([
             'plan_code' => config('opsdeck.premium_plan_code'),
@@ -461,6 +471,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_premium_checkout_reserves_free_organization_usage_above_premium_base_quota(): void
     {
+        config(['opsdeck.billing.enabled' => true]);
         $baselineCapacity = $this->currentPlatformCapacityCommitments();
         $targetOrganization = Organization::factory()->create(['plan_code' => config('opsdeck.free_plan_code')]);
         $premiumBaseQuotaMegabytes = (int) config('opsdeck.storage_quotas.plan_limit_megabytes.'.config('opsdeck.premium_plan_code'));
@@ -489,6 +500,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_storage_addon_schedule_counts_existing_premium_files_above_their_reserved_quota(): void
     {
+        config(['opsdeck.billing.enabled' => true]);
         $baselineCapacity = $this->currentPlatformCapacityCommitments();
         $premiumOrganization = Organization::factory()->create([
             'plan_code' => config('opsdeck.premium_plan_code'),
@@ -522,6 +534,10 @@ class StorageQuotaPlatformUsageTest extends TestCase
 
     public function test_storage_addon_decrease_does_not_release_platform_capacity_before_renewal(): void
     {
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+        ]);
         $baselineCapacity = $this->currentPlatformCapacityCommitments();
         $targetOrganization = Organization::factory()->create([
             'plan_code' => config('opsdeck.premium_plan_code'),
@@ -551,7 +567,7 @@ class StorageQuotaPlatformUsageTest extends TestCase
         $summary = app(OrganizationStorageQuotaService::class)->summary($decreasingOrganization);
         $this->assertSame(3, $summary['addon_gib']);
         $this->assertSame(1, $summary['pending_addon_gib']);
-        $this->assertSame(13 * $bytesPerGibibyte, $summary['limit_bytes']);
+        $this->assertSame(8 * $bytesPerGibibyte, $summary['limit_bytes']);
     }
 
     public function test_storage_addon_sale_stays_disabled_without_a_dedicated_capacity_limit(): void

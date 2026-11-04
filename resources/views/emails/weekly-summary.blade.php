@@ -8,7 +8,7 @@
 <p><a href="{{ route('weekly-summary.show', ['organization_id' => $organization->id]) }}">直近7日間のまとめとメール設定を確認する</a></p>
 <p>ログイン後、この組織のまとめメールの受信設定を変更できます。管理者のお知らせメールは別に設定できます。</p>
 <h2>今も確認が必要な項目</h2>
-@if (! ($summary['renewal_alerts_enabled'] ?? true) && ! ($summary['security_alerts_enabled'] ?? true))<p>無料プランでは、契約の更新期限やセキュリティ項目は表示していません。</p>@endif
+@if (! ($summary['renewal_alerts_enabled'] ?? true) && ! ($summary['security_alerts_enabled'] ?? true))<p>現在利用できる範囲では、確認が必要な項目はありません。</p>@endif
 <ul>
     @if ($summary['renewal_alerts_enabled'] ?? true)<li><a href="{{ route('reminders.renewals') }}">{{ \App\Services\ContractRenewalWindow::ALERT_WINDOW_DAYS }}日以内に確認が必要な契約期限</a>：{{ $summary['renewals'] }}件</li>@endif
     @if ($summary['security_alerts_enabled'] ?? true)

@@ -12,22 +12,10 @@
         <p class="muted" role="note">取込履歴・元ファイル・行ごとの確認結果は、あとで見直したり取込を取り消したりできるよう、期限を設けず保存します。取り込む範囲を確認し、業務に不要な個人情報は含めないでください。</p>
         <x-storage-quota :quota="$storageQuota" />
         @unless ($capabilities['xlsx_preview'])
-            <p class="muted">FreeでもCSV/TXTから実データを登録できます。社員{{ number_format(config('opsdeck.plans.free.limits.employees')) }}名、資産{{ number_format(config('opsdeck.plans.free.limits.assets')) }}件、SaaSサービス{{ number_format(config('opsdeck.plans.free.limits.saas_services')) }}件まで登録できます。上限を超えた行は登録されず、エラーとして確認できます。PremiumではXLSXとセキュリティ管理項目・証跡・質問票の取込に対応します。Google Sheets連携は1.0の対象外です。
-                @if ($canManageBilling)
-                    <a href="{{ route('billing.index') }}">Free / Premiumの違いを見る</a>
-                @else
-                    Premium機能の契約については組織Ownerにご相談ください。
-                @endif
-            </p>
+            <p class="muted">現在公開中の機能は無料です。CSV/TXTとXLSXに対応し、社員{{ number_format(config('opsdeck.plans.free.limits.employees')) }}名、資産{{ number_format(config('opsdeck.plans.free.limits.assets')) }}件、SaaSサービス{{ number_format(config('opsdeck.plans.free.limits.saas_services')) }}件まで登録できます。Google Sheets連携は現在提供していません。</p>
         @endunless
         @unless ($capabilities['import_execution'])
-            <p class="muted">このプランでは内容の確認まで利用できます。会社のデータに登録・反映するには、利用可能なプランが必要です。
-                @if ($canManageBilling)
-                    <a href="{{ route('billing.index') }}">Free / Premiumの違いを見る</a>
-                @else
-                    Premium契約については組織Ownerにご相談ください。
-                @endif
-            </p>
+            <p class="muted">この機能は現在利用できません。利用できる機能をご利用ください。</p>
         @endunless
         <p class="muted">1回に確認できるのは最大{{ number_format(config('opsdeck.import.max_rows')) }}行、ファイルは最大{{ number_format(config('opsdeck.import.max_size_kilobytes')) }}KBです。上限を超えるときは、表を分けてください。</p>
         <h2>まずは3つだけ</h2>
@@ -50,12 +38,7 @@
                     <li>最後に取込を実行します。結果はいつでも履歴から確認できます。</li>
                 @else
                     <li>
-                        このプランではファイルの確認まで利用できます。会社のデータへの反映は別のプランが必要です。
-                        @if ($canManageBilling)
-                            <a href="{{ route('billing.index') }}">Free / Premiumの違いを確認</a>
-                        @else
-                            Premium契約の相談は組織Ownerにご依頼ください。
-                        @endif
+                        この機能は現在利用できません。画面に表示されている機能をご利用ください。
                     </li>
                 @endif
             </ol>
@@ -99,7 +82,7 @@
             @if ($capabilities['xlsx_preview'])
                 <p class="muted">使える形式：CSV / TXT / Excel（.xlsx）。古い形式のExcel（.xls）は使えません。Excelに複数のシートがある場合は、次の画面で取り込むシートを選べます。</p>
             @else
-                <p class="muted">このプランで選べる形式はCSV / TXTです。Excel（.xlsx）を直接選ぶにはPremiumが必要です。古い形式のExcel（.xls）も使えません。元のExcelを残し、コピーした表をCSV UTF-8で保存してください。</p>
+                <p class="muted">現在利用できる形式はCSV / TXTです。Excel（.xlsx）を使う場合は、元のExcelを残し、コピーした表をCSV UTF-8で保存してください。古い形式のExcel（.xls）は使えません。</p>
             @endif
             <input id="file" type="file" name="file" accept="{{ $capabilities['xlsx_preview'] ? '.csv,.txt,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : '.csv,.txt,text/csv,text/plain' }}" required @error('file') aria-invalid="true" aria-describedby="file-help file-error" @else aria-describedby="file-help" @enderror>
             <x-field-error field="file" />

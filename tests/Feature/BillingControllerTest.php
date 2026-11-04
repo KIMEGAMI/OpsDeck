@@ -23,6 +23,17 @@ class BillingControllerTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.plans.premium.monthly_price_jpy' => 9800,
+            'opsdeck.storage_quotas.storage_addon_monthly_price_jpy' => 100,
+        ]);
+    }
+
     public function test_free_only_mode_hides_paid_offers_and_blocks_all_stripe_mutations(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -41,14 +52,15 @@ class BillingControllerTest extends TestCase
 
         $this->get('/')
             ->assertOk()
-            ->assertSee('現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
-            ->assertDontSee('Premiumに申し込む')
-            ->assertDontSee('9,800円');
+            ->assertSee('OpsDeckの機能を、すべて無料で公開中')
+            ->assertSee('月額0円')
+            ->assertDontSee('Premium')
+            ->assertDontSee('Stripe Checkout');
 
         $this->actingAs($user)->withSession($session)
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('月額0円のFreeのみ')
+            ->assertSee('現在、月額0円で公開しています')
             ->assertDontSee('9,800円')
             ->assertDontSee('Stripe Checkoutを開始')
             ->assertDontSee('Customer Portalを開く');
@@ -1436,25 +1448,19 @@ class BillingControllerTest extends TestCase
             ->assertSeeInOrder(['XLSXプレビュー', '利用可', '—']);
     }
 
-    public function test_free_member_can_choose_storage_addon_quantity_for_premium_checkout(): void
+    public function test_billing_page_does_not_link_to_removed_commercial_transactions_page(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
         config([
-            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
-            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
-            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+            'opsdeck.release_features.storage_addon' => false,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => null,
         ]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('name="storage_addon_gib"', false)
-            ->assertSee('1GiB（追加 月額100円・税別）', false)
-            ->assertSee('選択した追加料金はPremiumの初回請求から加算され')
-            ->assertSee('Premiumは1か月ごとに自動更新されます。解約は次回更新日前にBilling画面のCustomer Portalで手続きできます。')
-            ->assertSee('解約後も次回更新日までは利用でき、決済済み期間の利用料は日割り返金しません')
-            ->assertSee(route('legal.terms'))
-            ->assertSee(route('legal.commercial-transactions'));
+            ->assertSee('利用規約')
+            ->assertDontSee('特定商取引法に基づく表記');
     }
 
     public function test_billing_page_labels_cover_every_configured_plan_capability(): void

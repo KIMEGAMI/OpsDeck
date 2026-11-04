@@ -13,10 +13,10 @@
             <input id="company_size" name="company_size" type="number" min="1" value="{{ old('company_size', $organization->company_size) }}">
             @if ($aiEnabledAvailable)
                 <label><input name="ai_enabled" type="hidden" value="0"><input name="ai_enabled" type="checkbox" value="1" style="width:auto" @checked(old('ai_enabled', $organization->ai_enabled))> AI補助を有効にする</label>
-                <p class="muted">AI候補の費用は、組織のタイムゾーンにおける月ごとに{{ number_format((int) config('opsdeck.ai.monthly_budget_jpy.premium')) }}円相当の推定上限で制御します。換算レート・モデル単価が未設定の場合はAIを呼び出しません。OpenAIへの請求はUSDのため、この円額は設定レートで換算した目安です。実際の円換算額は為替や決済条件で変わることがあります。</p>
+                <p class="muted">AI候補はGPT-6 Lunaのみを使用し、1組織あたり1日3回までです。利用者への追加料金はありません。AIを利用するにはサービス側の接続設定が必要です。個人情報を含む列名は匿名化してから利用してください。</p>
             @else
                 <input name="ai_enabled" type="hidden" value="0">
-                <p class="muted">AI列マッピング候補はPremiumプラン限定です。FreeプランではAIへデータを送信しません。</p>
+                <p class="muted">AI列マッピング候補は現在利用できません。</p>
             @endif
             <h2>削減見積の会社別前提</h2>
             <p class="muted">未設定の場合は共通初期値（更新見直し率{{ config('opsdeck.cost_savings.renewal_negotiation_rate') * 100 }}%、未使用端末{{ number_format(config('opsdeck.cost_savings.unused_asset_monthly_jpy')) }}円/月）を使います。実績値ではなく見積用の仮定です。</p>
@@ -32,7 +32,7 @@
         <x-storage-quota :quota="$storageQuota" />
 
         <h2>プラン利用状況</h2>
-        <p class="muted">現在の契約プランに応じた利用上限です。上限に近づいた場合は、不要なデータの整理または契約プランの見直しをご検討ください。</p>
+        <p class="muted">無料公開での登録上限です。上限に近づいた場合は、不要なデータを整理してください。</p>
         <table>
             <thead>
                 <tr><th scope="col">項目</th><th scope="col">利用数</th><th scope="col">上限</th><th scope="col">利用率</th><th scope="col">状態</th></tr>

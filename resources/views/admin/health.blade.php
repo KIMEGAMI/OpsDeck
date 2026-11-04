@@ -27,33 +27,41 @@
             <dt>バックグラウンド処理を動かすプログラム</dt><dd>{{ match ($queueWorkerStatus) { 'ok' => '稼働中（待機中を含む）', 'stale' => '停止中または未起動', 'invalid' => '設定不整合（本番で即時実行方式を使用中）', 'unknown' => '未確認（監視対象外の処理方式）', default => '対象外（開発環境の即時実行方式）' } }}</dd>
             <dt>Stripeからの契約通知で処理エラーになった件数</dt><dd>{{ $webhookErrors }}件</dd>
             <dt>受信後に処理待ちとなっているStripe契約通知</dt><dd>{{ $staleWebhooks }}件</dd>
-            <dt>追加容量のStripe定期照合</dt><dd>{{ $storageAddonReconciliationStatus }}</dd>
-            <dt>追加容量の最終照合日時</dt><dd>{{ $storageAddonReconciliationCheckedAt }}</dd>
-            @if ($storageAddonReconciliation !== null)
-                <dt>照合した会社</dt><dd>{{ number_format((int) $storageAddonReconciliation->organizations_checked) }}社</dd>
-                <dt>契約と容量の差異</dt><dd>{{ number_format((int) $storageAddonReconciliation->mismatch_count) }}件</dd>
-                <dt>確認できなかった契約</dt><dd>{{ number_format((int) $storageAddonReconciliation->unavailable_count) }}件</dd>
-                @if ($storageAddonMismatchOrganizationIds !== [])
-                    <dt>差異がある組織ID</dt><dd>{{ implode('、', array_map(static fn (mixed $organizationId): string => number_format((int) $organizationId), $storageAddonMismatchOrganizationIds)) }}</dd>
+            @if (config('opsdeck.release_features.storage_addon'))
+                <dt>追加容量のStripe定期照合</dt><dd>{{ $storageAddonReconciliationStatus }}</dd>
+                <dt>追加容量の最終照合日時</dt><dd>{{ $storageAddonReconciliationCheckedAt }}</dd>
+                @if ($storageAddonReconciliation !== null)
+                    <dt>照合した会社</dt><dd>{{ number_format((int) $storageAddonReconciliation->organizations_checked) }}社</dd>
+                    <dt>契約と容量の差異</dt><dd>{{ number_format((int) $storageAddonReconciliation->mismatch_count) }}件</dd>
+                    <dt>確認できなかった契約</dt><dd>{{ number_format((int) $storageAddonReconciliation->unavailable_count) }}件</dd>
+                    @if ($storageAddonMismatchOrganizationIds !== [])
+                        <dt>差異がある組織ID</dt><dd>{{ implode('、', array_map(static fn (mixed $organizationId): string => number_format((int) $organizationId), $storageAddonMismatchOrganizationIds)) }}</dd>
+                    @endif
+                    @if ($storageAddonUnavailableOrganizationIds !== [])
+                        <dt>確認できなかった組織ID</dt><dd>{{ implode('、', array_map(static fn (mixed $organizationId): string => number_format((int) $organizationId), $storageAddonUnavailableOrganizationIds)) }}</dd>
+                    @endif
                 @endif
-                @if ($storageAddonUnavailableOrganizationIds !== [])
-                    <dt>確認できなかった組織ID</dt><dd>{{ implode('、', array_map(static fn (mixed $organizationId): string => number_format((int) $organizationId), $storageAddonUnavailableOrganizationIds)) }}</dd>
-                @endif
+            @else
+                <dt>組織ごとの保存容量</dt><dd>固定・追加容量の提供なし</dd>
             @endif
             <dt>長時間止まっているデータ取込の件数</dt><dd>{{ $staleImportBatches }}</dd>
         </dl>
         <p class="muted">処理エラーは、Stripeから通知を受け取った後にアプリ側の処理が失敗した状態です。処理待ちが設定時間を超えた場合も含め、件数や対応手順は<a href="{{ route('admin.queue-errors') }}">バックグラウンド処理・Stripe通知のエラー</a>で確認できます。</p>
-        <p class="muted">追加容量は毎月Stripe契約と照合します。差異がある場合、この画面に対象組織IDが表示され、定期処理の実行結果が「要確認」になります。運営担当者はStripeと該当会社の契約を確認し、Webhookの再処理または手動調査を行ってください。照合処理は契約や容量を自動変更しません。</p>
-        <details>
-            <summary>追加容量の差異が出た場合の確認手順</summary>
-            <ol>
-                <li>この画面の状態と組織IDを控えます。顧客名、メールアドレス、秘密値はログや問い合わせに貼り付けないでください。</li>
-                <li>Stripeの管理画面で該当する契約を確認し、契約状態、Premiumと追加容量のPrice・数量、次回更新日の予約内容をOpsDeck側の契約と照合します。</li>
-                <li>Stripe通知の処理待ち・失敗がある場合は、<a href="{{ route('admin.queue-errors') }}">バックグラウンド処理・Stripe通知のエラー</a>で確認します。Workerと支払い結果を確認できるまで再試行しないでください。</li>
-                <li>Stripe側と通知処理の状態を確認した後、サーバーで <code>php artisan opsdeck:storage-addon:reconcile</code> を実行して再確認します。このコマンドは照合結果を記録しますが、契約や容量を変更しません。</li>
-                <li>差異が残る、または確認できない場合は、容量の値を直接変更せず運営責任者へ引き継ぎます。保存済みファイルの削除や手動変更は行いません。</li>
-            </ol>
-        </details>
+        @if (config('opsdeck.release_features.storage_addon'))
+            <p class="muted">追加容量は毎月Stripe契約と照合します。差異がある場合、この画面に対象組織IDが表示され、定期処理の実行結果が「要確認」になります。運営担当者はStripeと該当会社の契約を確認し、Webhookの再処理または手動調査を行ってください。照合処理は契約や容量を自動変更しません。</p>
+            <details>
+                <summary>追加容量の差異が出た場合の確認手順</summary>
+                <ol>
+                    <li>この画面の状態と組織IDを控えます。顧客名、メールアドレス、秘密値はログや問い合わせに貼り付けないでください。</li>
+                    <li>Stripeの管理画面で該当する契約を確認し、契約状態、Premiumと追加容量のPrice・数量、次回更新日の予約内容をOpsDeck側の契約と照合します。</li>
+                    <li>Stripe通知の処理待ち・失敗がある場合は、<a href="{{ route('admin.queue-errors') }}">バックグラウンド処理・Stripe通知のエラー</a>で確認します。Workerと支払い結果を確認できるまで再試行しないでください。</li>
+                    <li>Stripe側と通知処理の状態を確認した後、サーバーで <code>php artisan opsdeck:storage-addon:reconcile</code> を実行して再確認します。このコマンドは照合結果を記録しますが、契約や容量を変更しません。</li>
+                    <li>差異が残る、または確認できない場合は、容量の値を直接変更せず運営責任者へ引き継ぎます。保存済みファイルの削除や手動変更は行いません。</li>
+                </ol>
+            </details>
+        @else
+            <p class="muted">組織ごとの保存容量は固定です。追加容量の販売・Stripe定期照合は行っていません。</p>
+        @endif
         <p class="muted">DB容量はMySQL/MariaDBの表と索引の概算です。実ディスクの空き容量やバックアップ容量とは異なります。今後作成するDB・証跡・取込元のバックアップは、実行サーバー内の設定されたローカル保存先に保存し、R2へ複製しません。既定では暗号化されません。新しいバックアップ全体の作成と検証が成功した後、{{ config('opsdeck.backup.local_retention_days', 30) }}日を過ぎた世代のうちローカル検証に成功したものを整理します。方針導入前の世代は自動削除しません。保存先の空き容量を定期的に確認してください。顧客ファイル保存量はImport元ファイルと証跡の合計です。OpsDeck以外のサービスは含みません。</p>
         @php
             $queueWorkerConnection = (string) config('queue.default');

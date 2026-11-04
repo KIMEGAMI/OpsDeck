@@ -62,7 +62,7 @@ class DashboardTest extends TestCase
             ->assertSee('<nav class="dashboard-links" aria-label="よく使う機能">', false)
             ->assertSee('直近7日間のまとめを見る')
             ->assertSee('メールが届かないとき')
-            ->assertSee('プラン・お支払い')
+            ->assertSee('無料公開について')
             ->assertSee('@media (max-width: 48rem)', false)
             ->assertSee('repeat(2, minmax(0, 1fr))', false);
         $this->assertMatchesRegularExpression(
@@ -146,7 +146,7 @@ class DashboardTest extends TestCase
         $this->assertDatabaseMissing('product_events', ['organization_id' => $organization->id, 'event_key' => 'first_dashboard_action_completed']);
     }
 
-    public function test_free_dashboard_explains_that_priority_checks_are_limited_by_plan(): void
+    public function test_free_dashboard_shows_available_checks_without_paid_plan_upsell(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->ownerOrganization();
@@ -156,9 +156,10 @@ class DashboardTest extends TestCase
             ->get(route('dashboard'))
             ->assertOk()
             ->assertSee('このプランで確認できる範囲では、優先対応が必要な項目はありません。')
-            ->assertSee('更新期限の確認、書類の保管、セキュリティ確認、質問票は有料プラン（Premium）で利用できます。')
+            ->assertDontSee('Premium')
+            ->assertDontSee('有料プラン')
             ->assertSee(route('billing.index'))
-            ->assertSee('プランと料金を確認');
+            ->assertSee('無料公開について');
     }
 
     public function test_free_dashboard_does_not_show_billing_link_to_non_owner_members(): void
@@ -177,8 +178,8 @@ class DashboardTest extends TestCase
         $this->actingAs($viewer)->withSession(['current_organization_id' => $organization->id])
             ->get(route('dashboard'))
             ->assertOk()
-            ->assertSee('更新期限の確認、書類の保管、セキュリティ確認、質問票は有料プラン（Premium）で利用できます。')
-            ->assertSee('プランの確認は組織Ownerにご相談ください。')
+            ->assertDontSee('Premium')
+            ->assertDontSee('有料プラン')
             ->assertDontSee(route('billing.index'));
     }
 

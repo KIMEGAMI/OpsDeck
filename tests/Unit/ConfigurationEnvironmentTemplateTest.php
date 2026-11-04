@@ -295,7 +295,7 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
         self::assertMatchesRegularExpression('/^OPENAI_API_ENDPOINT=https:\/\/api\.openai\.com\/v1\/responses$/m', $environmentTemplate);
     }
 
-    public function test_storage_addon_stays_disabled_by_default_but_can_be_explicitly_enabled(): void
+    public function test_storage_addon_remains_disabled_when_legacy_environment_flag_is_enabled(): void
     {
         $name = 'OPSDECK_RELEASE_STORAGE_ADDON';
         $originalProcessValue = getenv($name);
@@ -314,7 +314,8 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
             $_ENV[$name] = 'true';
             $_SERVER[$name] = 'true';
             $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
-            self::assertSame(true, $configuration['release_features']['storage_addon']);
+            self::assertSame(false, $configuration['release_features']['storage_addon']);
+            self::assertNull($configuration['storage_quotas']['storage_addon_max_gib']);
         } finally {
             if (is_string($originalProcessValue)) {
                 putenv($name.'='.$originalProcessValue);
@@ -338,7 +339,7 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
         $environmentTemplate = file_get_contents(dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'.env.example');
         self::assertNotFalse($environmentTemplate);
         self::assertMatchesRegularExpression('/^OPSDECK_RELEASE_STORAGE_ADDON=false$/m', $environmentTemplate);
-        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_ADDON_MAX_GIB=48$/m', $environmentTemplate);
+        self::assertStringContainsString('追加容量機能は常に無効です。', $environmentTemplate);
     }
 
     public function test_storage_quota_template_matches_the_approved_release_capacity_limits(): void
@@ -346,9 +347,66 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
         $environmentTemplate = file_get_contents(dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'.env.example');
         self::assertNotFalse($environmentTemplate);
 
-        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_QUOTA_FREE_MB=1024$/m', $environmentTemplate);
-        self::assertMatchesRegularExpression('/^OPSDECK_STORAGE_QUOTA_PREMIUM_MB=10240$/m', $environmentTemplate);
+        self::assertMatchesRegularExpression('/^# 組織ごとの保存容量は5GiB（5,120MiB）固定です。追加容量は提供していません。$/m', $environmentTemplate);
+        self::assertMatchesRegularExpression('/^# OPSDECK_STORAGE_QUOTA_MB=10240$/m', $environmentTemplate);
         self::assertMatchesRegularExpression('/^OPSDECK_PLATFORM_STORAGE_LIMIT_MIB=51200$/m', $environmentTemplate);
+
+        $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+        self::assertSame(5120, $configuration['storage_quotas']['plan_limit_megabytes']['free']);
+        self::assertSame(5120, $configuration['storage_quotas']['plan_limit_megabytes']['premium']);
+    }
+
+    public function test_legacy_quota_and_addon_environment_values_cannot_change_fixed_capacity(): void
+    {
+        $overrides = [
+            'OPSDECK_STORAGE_QUOTA_MB' => '20480',
+            'OPSDECK_STORAGE_QUOTA_PREMIUM_MB' => '30720',
+            'OPSDECK_STORAGE_ADDON_MAX_GIB' => '48',
+            'OPSDECK_RELEASE_STORAGE_ADDON' => 'true',
+        ];
+        $originalValues = [];
+
+        foreach ($overrides as $name => $value) {
+            $originalValues[$name] = [
+                'process' => getenv($name),
+                'environment_exists' => array_key_exists($name, $_ENV),
+                'environment' => $_ENV[$name] ?? null,
+                'server_exists' => array_key_exists($name, $_SERVER),
+                'server' => $_SERVER[$name] ?? null,
+            ];
+            putenv($name.'='.$value);
+            $_ENV[$name] = $value;
+            $_SERVER[$name] = $value;
+        }
+
+        try {
+            $configuration = require dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'opsdeck.php';
+
+            self::assertSame(5120, $configuration['storage_quotas']['plan_limit_megabytes']['free']);
+            self::assertSame(5120, $configuration['storage_quotas']['plan_limit_megabytes']['premium']);
+            self::assertFalse($configuration['release_features']['storage_addon']);
+            self::assertNull($configuration['storage_quotas']['storage_addon_max_gib']);
+        } finally {
+            foreach ($originalValues as $name => $value) {
+                if (is_string($value['process'])) {
+                    putenv($name.'='.$value['process']);
+                } else {
+                    putenv($name);
+                }
+
+                if ($value['environment_exists']) {
+                    $_ENV[$name] = $value['environment'];
+                } else {
+                    unset($_ENV[$name]);
+                }
+
+                if ($value['server_exists']) {
+                    $_SERVER[$name] = $value['server'];
+                } else {
+                    unset($_SERVER[$name]);
+                }
+            }
+        }
     }
 
     public function test_opsdeck_environment_variables_are_documented_in_the_environment_template(): void
@@ -370,7 +428,7 @@ class ConfigurationEnvironmentTemplateTest extends TestCase
 
         $environmentTemplate = file_get_contents($projectRoot.DIRECTORY_SEPARATOR.'.env.example');
         self::assertNotFalse($environmentTemplate);
-        preg_match_all('/^(?<name>OPSDECK_[A-Z0-9_]+)=/m', $environmentTemplate, $documentedMatches);
+        preg_match_all('/^#?\s*(?<name>OPSDECK_[A-Z0-9_]+)=/m', $environmentTemplate, $documentedMatches);
         $undocumentedVariables = array_values(array_diff(array_unique($referencedVariables), $documentedMatches['name']));
         sort($undocumentedVariables);
 

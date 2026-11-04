@@ -190,7 +190,7 @@ class OpsDeckDeploymentReadiness extends Command
                 ? 'unverified'
                 : ($this->hasProductionFailureAlert($productionMailTransportReady) ? 'pass' : 'fail'),
             'stripe' => ! $billingEnabled
-                ? (app()->environment('production') ? 'fail' : 'not_applicable')
+                ? 'not_applicable'
                 : ($skipStripeVerification ? 'unverified' : ($this->hasProductionStripeCredentials() ? 'pass' : 'fail')),
             'commercial_information' => app()->environment('production') && $billingEnabled
                 ? (app(CommercialInformationReadiness::class)->isConfigured() ? 'pass' : 'fail')
@@ -327,7 +327,7 @@ class OpsDeckDeploymentReadiness extends Command
             $maximumRestoreTestAgeDays = max(1, (int) config('opsdeck.backup.restore_test_max_age_days'));
             $guidance = match ($check) {
                 'environment' => '環境変数 APP_ENV を production に設定する',
-                'release_scope' => '1.0に必要な追加容量を有効化し、対象外機能を無効にする: OPSDECK_RELEASE_STORAGE_ADDON=true、OPSDECK_RELEASE_GOOGLE_SHEETS=false、OPSDECK_RELEASE_IMPACT_REPORT=false、OPSDECK_RELEASE_QUESTIONNAIRE_AI_DRAFT=false、OPSDECK_RELEASE_REFERRALS=false、OPSDECK_RELEASE_WORK_TIME_TRACKING=false',
+                'release_scope' => '組織ごとの保存容量を固定し、追加容量販売を無効にしたうえで対象外機能を無効にする: OPSDECK_RELEASE_GOOGLE_SHEETS=false、OPSDECK_RELEASE_IMPACT_REPORT=false、OPSDECK_RELEASE_QUESTIONNAIRE_AI_DRAFT=false、OPSDECK_RELEASE_REFERRALS=false、OPSDECK_RELEASE_WORK_TIME_TRACKING=false',
                 'app_key' => 'Laravelの暗号方式に合う APP_KEY を安全に生成して設定する',
                 'debug' => '環境変数 APP_DEBUG を false に設定する',
                 'https_url' => '環境変数 APP_URL に https:// から始まる公開URLを設定する',
@@ -1305,7 +1305,7 @@ class OpsDeckDeploymentReadiness extends Command
 
     private function hasRequiredReleaseScope(): bool
     {
-        if (app()->environment('production') && config('opsdeck.release_features.storage_addon') !== true) {
+        if (config('opsdeck.release_features.storage_addon') !== false) {
             return false;
         }
 

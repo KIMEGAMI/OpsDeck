@@ -47,7 +47,7 @@ class WorkTimeMeasurementControllerTest extends TestCase
             ->assertOk()
             ->assertDontSee('作業時間の変化')
             ->assertSee('保存した一覧と週次まとめを確認し、権限のある管理者がCSVを書き出す流れ')
-            ->assertSee('CSV書き出しはPremiumです。高度な導入効果レポートは1.0の公開対象外です。');
+            ->assertSee('現在利用できるCSV書き出しは無料です。導入効果レポートは現在提供していません。');
         $this->assertStringNotContainsString('導入効果レポート', file_get_contents(public_path('feature-guides/report-flow.svg')));
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('work-time-measurements.store'), $this->validInput())
@@ -185,7 +185,7 @@ class WorkTimeMeasurementControllerTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['entity_id' => $measurement->id, 'action' => AuditLog::WorkTimeMeasurementVoided]);
     }
 
-    public function test_viewer_and_free_plan_cannot_record_work_time_measurements(): void
+    public function test_viewer_cannot_record_but_free_operator_can_record_work_time_measurements(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$viewer, $organization] = $this->member(MembershipRole::Viewer);
@@ -203,15 +203,11 @@ class WorkTimeMeasurementControllerTest extends TestCase
         $this->actingAs($operator)->withSession(['current_organization_id' => $freeOrganization->id])
             ->get(route('costs.dashboard'))
             ->assertOk()
-            ->assertDontSee('作業時間の変化（担当者が入力した参考値）');
+            ->assertSee('作業時間の変化（担当者が入力した参考値）');
         $this->actingAs($operator)->withSession(['current_organization_id' => $freeOrganization->id])
             ->post(route('work-time-measurements.store'), $this->validInput())
-            ->assertForbidden();
-        $this->assertSame(0, $freeOrganization->workTimeMeasurements()->count());
-        $this->assertDatabaseMissing('product_events', [
-            'organization_id' => $freeOrganization->id,
-            'event_key' => 'first_dashboard_action_completed',
-        ]);
+            ->assertRedirect(route('costs.dashboard'));
+        $this->assertSame(1, $freeOrganization->workTimeMeasurements()->count());
     }
 
     public function test_member_cannot_see_or_void_another_organizations_work_time_record(): void

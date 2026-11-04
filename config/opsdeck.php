@@ -3,8 +3,23 @@
 $maximumXlsxRows = max(1, (int) env('OPSDECK_XLSX_MAX_ROWS', 20000));
 $maximumXlsxColumns = max(1, (int) env('OPSDECK_XLSX_MAX_COLUMNS', 512));
 $maximumImportColumns = max(1, (int) env('OPSDECK_IMPORT_MAX_COLUMNS', $maximumXlsxColumns));
-$aiPremiumMonthlyBudgetJpy = max(0, (int) env('OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY', 500));
-$billingEnabled = filter_var(env('OPSDECK_BILLING_ENABLED', false), FILTER_VALIDATE_BOOLEAN);
+$aiMonthlyBudgetJpy = max(0, (int) env('OPSDECK_AI_MONTHLY_BUDGET_JPY', env('OPSDECK_AI_PREMIUM_MONTHLY_BUDGET_JPY', 500)));
+$aiDailyRequestLimit = 3;
+$aiModel = 'gpt-6-luna';
+$billingEnabled = false;
+$organizationStorageQuotaGibibytes = 5;
+$mebibytesPerGibibyte = 1024;
+$baseStorageQuotaMegabytes = $organizationStorageQuotaGibibytes * $mebibytesPerGibibyte;
+$storageAddonEnabled = false;
+$freePlanLimits = [
+    'employees' => max(1, (int) env('OPSDECK_LIMIT_EMPLOYEES', 200)),
+    'assets' => max(1, (int) env('OPSDECK_LIMIT_ASSETS', 500)),
+    'saas_services' => max(1, (int) env('OPSDECK_LIMIT_SAAS_SERVICES', 100)),
+    'administrators' => max(1, (int) env('OPSDECK_LIMIT_ADMINISTRATORS', 5)),
+];
+$limitWarningPercentage = max(0, min(100, (int) env('OPSDECK_LIMIT_WARNING_PERCENTAGE', 80)));
+$freePlanCapabilities = ['xlsx_preview' => true, 'google_sheets' => true, 'import_execution' => true, 'ai_column_mapping' => true, 'renewal_alerts' => true, 'savings_opportunities' => true, 'realized_savings' => true, 'work_time_tracking' => true, 'security_controls' => true, 'evidence' => true, 'questionnaires' => true, 'exports' => true, 'impact_report' => true];
+$freePlanFeatures = ['CSV / XLSX Import', 'AI列マッピング候補（GPT-6 Luna・1日'.$aiDailyRequestLimit.'回/組織）', '削減候補の概算・削減実績の記録', '更新・セキュリティアラート', '証跡・質問票・CSV Export'];
 $localBackupRetentionDays = filter_var(env('OPSDECK_BACKUP_LOCAL_RETENTION_DAYS', 30), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 $localBackupRetentionDays = $localBackupRetentionDays === false ? 30 : $localBackupRetentionDays;
 $aiModelPrices = json_decode((string) env('OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS', '{}'), true);
@@ -155,15 +170,15 @@ return [
     ],
     'storage_quotas' => [
         'bytes_per_megabyte' => 1024 * 1024,
-        'mebibytes_per_gibibyte' => 1024,
-        'storage_addon_monthly_price_jpy' => 100,
+        'mebibytes_per_gibibyte' => $mebibytesPerGibibyte,
+        'storage_addon_monthly_price_jpy' => 0,
         'capacity_display_cache_ttl_seconds' => 15,
         'checkout_reservation_grace_seconds' => 3600,
         'platform_limit_megabytes' => filter_var(env('OPSDECK_PLATFORM_STORAGE_LIMIT_MIB'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null,
-        'storage_addon_max_gib' => filter_var(env('OPSDECK_STORAGE_ADDON_MAX_GIB', 48), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null,
+        'storage_addon_max_gib' => null,
         'plan_limit_megabytes' => [
-            'free' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_FREE_MB', 1024)),
-            'premium' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_PREMIUM_MB', 10240)),
+            'free' => $baseStorageQuotaMegabytes,
+            'premium' => $baseStorageQuotaMegabytes,
         ],
         'warning_percentage' => 80,
         'lock_seconds' => max(1, (int) env('OPSDECK_STORAGE_QUOTA_LOCK_SECONDS', 180)),
@@ -193,9 +208,9 @@ return [
     'recovery_guides' => [
         'import' => ['title' => 'Excelなどの取込で困ったとき', 'steps' => ['取込履歴を開き、失敗した行数と状態を確認してください', '元のファイルはそのまま残し、コピーを開いて列名と必須項目を確認してください', '内容を直したコピーを使い、確認画面からもう一度取り込んでください']],
         'google_oauth' => ['title' => 'Googleスプレッドシートに接続できないとき', 'steps' => ['Googleアカウントとの接続状態を確認してください', '一度接続を解除してから、もう一度接続してください', '対象シートを開ける権限と、シート名を確認してください'], 'release_feature' => 'google_sheets'],
-        'ai' => ['title' => 'AIの候補や回答案が使えないとき', 'steps' => ['AIを使わなくても、列の対応付けや質問票の回答案は手入力で作成できます', '組織のAI設定と有料プランの利用状況を、組織の管理担当者に確認してください', '解決しない場合は、取込ファイルやAPIキーを送らず、画面名と発生日時をお問い合わせフォームから連絡してください']],
+        'ai' => ['title' => 'AIの候補や回答案が使えないとき', 'steps' => ['AIを使わなくても、列の対応付けは手入力でできます', '組織のAI設定とサービス側の接続状況を確認してください。AI候補は1組織あたり1日3回までです', '解決しない場合は、取込ファイルやAPIキーを送らず、画面名と発生日時をお問い合わせフォームから連絡してください']],
         'email' => ['title' => 'メールが届かないとき', 'steps' => ['直近7日間のまとめ・お知らせメールの設定画面で、受信設定を確認してください', '登録したメールアドレスの迷惑メールフォルダーも確認してください', 'メールの重複を防ぐため、再送を繰り返さず、メールの種類と発生日時をお問い合わせフォームから連絡してください']],
-        'stripe' => ['title' => 'プラン・お支払いで困ったとき', 'steps' => ['プラン・お支払い画面で、現在の契約状態を確認してください', '支払い後も状態が変わらない場合は、受付番号と発生日時を添えてお問い合わせください', 'カード番号やセキュリティコードは、メールやお問い合わせフォームに書かないでください']],
+        'stripe' => ['title' => '無料公開について問い合わせるとき', 'steps' => ['現在、OpsDeckは無料で公開しており、決済機能は停止しています', '請求や決済に関する不明な通知が届いた場合は、通知内容と発生日時を添えてサポートに連絡してください', 'カード番号やセキュリティコードは、メールやお問い合わせフォームに書かないでください']],
     ],
     'default_timezone' => env('OPSDECK_DEFAULT_TIMEZONE', config('app.timezone')),
     'default_plan_code' => $billingEnabled ? env('OPSDECK_DEFAULT_PLAN_CODE', 'free') : 'free',
@@ -240,23 +255,23 @@ return [
         'impact_report' => filter_var(env('OPSDECK_RELEASE_IMPACT_REPORT', false), FILTER_VALIDATE_BOOLEAN),
         'questionnaire_ai_draft' => filter_var(env('OPSDECK_RELEASE_QUESTIONNAIRE_AI_DRAFT', false), FILTER_VALIDATE_BOOLEAN),
         'referrals' => filter_var(env('OPSDECK_RELEASE_REFERRALS', false), FILTER_VALIDATE_BOOLEAN),
-        'storage_addon' => filter_var(env('OPSDECK_RELEASE_STORAGE_ADDON', false), FILTER_VALIDATE_BOOLEAN),
+        'storage_addon' => $storageAddonEnabled,
         'work_time_tracking' => filter_var(env('OPSDECK_RELEASE_WORK_TIME_TRACKING', false), FILTER_VALIDATE_BOOLEAN),
     ],
     'plans' => [
         'free' => [
             'label' => 'Free',
             'monthly_price_jpy' => 0,
-            'limits' => ['employees' => 20, 'assets' => 50, 'saas_services' => 10, 'administrators' => 1],
-            'capabilities' => ['xlsx_preview' => false, 'google_sheets' => false, 'import_execution' => true, 'ai_column_mapping' => false, 'renewal_alerts' => false, 'savings_opportunities' => false, 'realized_savings' => false, 'work_time_tracking' => false, 'security_controls' => false, 'evidence' => false, 'questionnaires' => false, 'exports' => false, 'impact_report' => false],
-            'features' => ['CSV/TXTの実データ取込（登録上限まで）', '基本ダッシュボード', 'コスト集計'],
+            'limits' => $freePlanLimits,
+            'capabilities' => $freePlanCapabilities,
+            'features' => $freePlanFeatures,
         ],
         'premium' => [
-            'label' => 'Premium',
-            'monthly_price_jpy' => 9800,
-            'limits' => ['employees' => 200, 'assets' => 500, 'saas_services' => 100, 'administrators' => 5],
-            'capabilities' => ['xlsx_preview' => true, 'google_sheets' => true, 'import_execution' => true, 'ai_column_mapping' => true, 'renewal_alerts' => true, 'savings_opportunities' => true, 'realized_savings' => true, 'work_time_tracking' => true, 'security_controls' => true, 'evidence' => true, 'questionnaires' => true, 'exports' => true, 'impact_report' => true],
-            'features' => ['CSV / XLSX Import', 'AI列マッピング候補（月'.number_format($aiPremiumMonthlyBudgetJpy).'円相当まで）', '削減候補の概算・削減実績の記録', '更新・セキュリティアラート', '証跡・質問票・CSV Export'],
+            'label' => 'Free（互換用）',
+            'monthly_price_jpy' => 0,
+            'limits' => $freePlanLimits,
+            'capabilities' => $freePlanCapabilities,
+            'features' => $freePlanFeatures,
         ],
     ],
     'plan_capability_labels' => [
@@ -308,11 +323,8 @@ return [
     ],
     'slug_suffix_length' => (int) env('OPSDECK_SLUG_SUFFIX_LENGTH', 8),
     'limits' => [
-        'employees' => (int) env('OPSDECK_LIMIT_EMPLOYEES', 200),
-        'assets' => (int) env('OPSDECK_LIMIT_ASSETS', 500),
-        'saas_services' => (int) env('OPSDECK_LIMIT_SAAS_SERVICES', 100),
-        'administrators' => (int) env('OPSDECK_LIMIT_ADMINISTRATORS', 5),
-        'warning_percentage' => (int) env('OPSDECK_LIMIT_WARNING_PERCENTAGE', 80),
+        ...$freePlanLimits,
+        'warning_percentage' => $limitWarningPercentage,
     ],
     'auth' => [
         'max_login_attempts' => (int) env('OPSDECK_MAX_LOGIN_ATTEMPTS', 5),
@@ -327,21 +339,21 @@ return [
         'endpoint' => env('OPENAI_API_ENDPOINT', 'https://api.openai.com/v1/responses'),
         'timeout_seconds' => max(1, (int) env('OPSDECK_AI_TIMEOUT_SECONDS', 15)),
         'reasoning_effort' => env('OPSDECK_AI_REASONING_EFFORT', 'none'),
-        'escalation_enabled' => filter_var(env('OPSDECK_AI_ESCALATION_ENABLED', true), FILTER_VALIDATE_BOOL),
-        'escalation_reasoning_effort' => env('OPSDECK_AI_ESCALATION_REASONING_EFFORT', 'medium'),
+        'escalation_enabled' => false,
         'max_output_tokens' => max(1, (int) env('OPSDECK_AI_MAX_OUTPUT_TOKENS', 1200)),
         'monthly_budget_reservation_ttl_minutes' => max(1, (int) env('OPSDECK_AI_BUDGET_RESERVATION_TTL_MINUTES', 2)),
         'estimated_input_overhead_tokens' => max(0, (int) env('OPSDECK_AI_ESTIMATED_INPUT_OVERHEAD_TOKENS', 4096)),
         'input_token_estimate_multiplier' => max(1, (int) env('OPSDECK_AI_INPUT_TOKEN_ESTIMATE_MULTIPLIER', 4)),
-        'monthly_budget_jpy' => ['free' => 0, 'premium' => $aiPremiumMonthlyBudgetJpy],
-        'legacy_monthly_budget_jpy' => $aiPremiumMonthlyBudgetJpy,
+        'monthly_budget_jpy' => ['free' => $aiMonthlyBudgetJpy, 'premium' => $aiMonthlyBudgetJpy],
+        'legacy_monthly_budget_jpy' => $aiMonthlyBudgetJpy,
+        'daily_request_limit' => $aiDailyRequestLimit,
         'mapping_suggestions_max_attempts' => max(1, (int) env('OPSDECK_AI_MAPPING_SUGGESTIONS_MAX_ATTEMPTS', 5)),
         'mapping_suggestion_decay_seconds' => max(1, (int) env('OPSDECK_AI_MAPPING_SUGGESTION_DECAY_SECONDS', 60)),
         'mapping_reason_max_length' => max(1, (int) env('OPSDECK_AI_MAPPING_REASON_MAX_LENGTH', 160)),
         'models' => [
-            'fast' => env('AI_MODEL_FAST', 'gpt-6-luna'),
-            'standard' => env('AI_MODEL_STANDARD', 'gpt-6.1-sol'),
-            'deep' => env('AI_MODEL_DEEP', 'gpt-6.1-sol'),
+            'fast' => $aiModel,
+            'standard' => $aiModel,
+            'deep' => $aiModel,
         ],
         'tokens_per_million' => 1000000,
         'model_prices_per_million_tokens' => $aiModelPrices,

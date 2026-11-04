@@ -69,16 +69,16 @@
         <section class="landing-results{{ config('opsdeck.release_features.work_time_tracking') ? '' : ' landing-results-single' }}" aria-label="{{ config('opsdeck.release_features.work_time_tracking') ? '費用と作業時間の効果' : '費用の見直し効果' }}">
             <article class="landing-result">
                 <h2>「いくら見直せる？」を、自社データから。</h2>
-                <p><span class="landing-feature-label">Premium</span></p>
+                <p><span class="landing-feature-label">無料公開中</span></p>
                 <p class="landing-result-highlight">年間の見直し候補額を、契約と利用状況から試算。</p>
                 <p>更新が近い契約、利用者が登録されていないクラウドサービス、対象となる未割当端末を一覧で確認。担当者が詳細と契約条件を確かめ、次のアクションを判断できます。</p>
                 <p class="landing-note">金額は入力情報と設定条件に基づく候補額です。削減実績や削減保証ではありません。</p>
-                <p><a href="#landing-pricing-title">Premiumの機能・料金を見る</a></p>
+                <p><a href="#landing-pricing-title">無料で使える機能を見る</a></p>
             </article>
             @if (config('opsdeck.release_features.work_time_tracking'))
                 <article class="landing-result">
                     <h2>「作業時間がどれだけ変わった？」を、前後の記録で。</h2>
-                    <p><span class="landing-feature-label">Premium</span></p>
+                    <p><span class="landing-feature-label">無料公開中</span></p>
                     <p>改善前・改善後の作業時間と、月あたりの回数を記録すると、月間の時間差を参考値として計算できます。</p>
                     <div class="landing-time-example" aria-label="作業時間の入力例">
                         入力例：1回30分から10分に短縮し、月4回行う場合
@@ -94,7 +94,7 @@
             <div class="landing-grid">
                 <article class="landing-tile">
                     <h3>1. 今の管理表を活用</h3>
-                    <p>社員、端末、クラウドサービス、契約などの表から始められます。FreeはCSV/TXT、PremiumはXLSXから取り込めます。古いExcel形式（.xls）とGoogle Sheets連携は1.0では対象外です。</p>
+                    <p>社員、端末、クラウドサービス、契約などの表から始められます。CSV/TXTとExcel（.xlsx）に対応しています。古いExcel形式（.xls）とGoogle Sheets連携は現在対象外です。</p>
                 </article>
                 <article class="landing-tile">
                     <h3>2. 確認してから登録</h3>
@@ -123,12 +123,12 @@
                     <p>取込履歴、確認済みの削減実績、週次サマリーで、状況を振り返れます。</p>
                 </article>
             </div>
-            <p class="landing-note">一部の取込形式・更新通知・セキュリティ機能・CSV書き出し機能はPremiumで利用できます。</p>
+            <p class="landing-note">現在公開している機能はすべて無料で利用できます。Google Sheets連携など、まだ提供していない機能は対象外です。</p>
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-savings-title">
             <h2 id="landing-savings-title">見直し候補を、3つの切り口で具体化</h2>
-            <p class="landing-note">Premiumでは、登録された契約・クラウドサービス・端末と、組織ごとの設定条件から年間候補額を試算します。何を確認すべきかも一覧でたどれます。</p>
+            <p class="landing-note">登録された契約・クラウドサービス・端末と、組織ごとの設定条件から年間候補額を試算します。何を確認すべきかも一覧でたどれます。</p>
             <div class="landing-grid">
                 <article class="landing-tile">
                     <h3>更新が近い契約</h3>
@@ -147,50 +147,30 @@
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-pricing-title">
-            @if (config('opsdeck.billing.enabled'))
-                <h2 id="landing-pricing-title">まずFreeで整理。もっと深く見直すならPremium。</h2>
-                <p class="landing-note">台帳の一元管理から始めて、必要に応じて費用候補の試算、更新通知、セキュリティ対応へ広げられます。</p>
-            @else
-                <h2 id="landing-pricing-title">無料のFreeプランから始められます。</h2>
-                <p class="landing-note">現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。</p>
-            @endif
+            <h2 id="landing-pricing-title">OpsDeckの機能を、すべて無料で公開中</h2>
+            <p class="landing-note">プランによる機能制限や追加料金はありません。現在提供中の機能を無料で利用できます。</p>
             <div class="landing-pricing">
                 <article class="landing-plan">
-                    <h3>Free</h3>
-                    <p class="landing-price">{{ number_format((int) $plans['free']['monthly_price_jpy']) }}円</p>
+                    <h3>OpsDeck</h3>
+                    <p class="landing-price">月額0円</p>
                     <ul>
                         <li>社員{{ number_format((int) $plans['free']['limits']['employees']) }}名・端末{{ number_format((int) $plans['free']['limits']['assets']) }}台・SaaS{{ number_format((int) $plans['free']['limits']['saas_services']) }}件まで</li>
                         @foreach ($plans['free']['features'] as $feature)
                             <li>{{ $feature }}</li>
                         @endforeach
-                        <li>管理者{{ number_format((int) $plans['free']['limits']['administrators']) }}名</li>
+                        <li>管理者{{ number_format((int) $plans['free']['limits']['administrators']) }}名まで</li>
+                        <li>月額料金・追加容量料金・自動課金なし</li>
                     </ul>
-                    <a class="landing-button" href="{{ route('register') }}">Freeで始める</a>
+                    <a class="landing-button" href="{{ route('register') }}">無料で始める</a>
                 </article>
-                @if (config('opsdeck.billing.enabled'))
-                    <article class="landing-plan landing-plan-premium">
-                        <h3>Premium</h3>
-                        <p class="landing-price">月額{{ number_format((int) $plans['premium']['monthly_price_jpy']) }}円（税別）</p>
-                        <ul>
-                            <li>社員{{ number_format((int) $plans['premium']['limits']['employees']) }}名・端末{{ number_format((int) $plans['premium']['limits']['assets']) }}台・SaaS{{ number_format((int) $plans['premium']['limits']['saas_services']) }}件まで</li>
-                            @foreach ($plans['premium']['features'] as $feature)
-                                <li>{{ $feature }}</li>
-                            @endforeach
-                            <li>管理者{{ number_format((int) $plans['premium']['limits']['administrators']) }}名まで</li>
-                        </ul>
-                        <a class="landing-button" href="{{ route('register') }}">Premiumに申し込む（登録後）</a>
-                    </article>
-                @endif
             </div>
-            @if (config('opsdeck.billing.enabled'))
-                <p class="landing-note">適用税額を加算し、申込前にStripe Checkoutでお支払い総額を表示します。削減候補額は入力情報と設定条件に基づく試算であり、実際の削減を保証するものではありません。</p>
-            @endif
+            <p class="landing-note">削減候補額は入力情報と設定条件に基づく試算です。実際の削減を保証するものではありません。</p>
         </section>
 
         <section class="card landing-section" aria-labelledby="landing-scope-title">
             <h2 id="landing-scope-title">OpsDeckがすること・しないこと</h2>
             <p class="landing-note">OpsDeckはIT資産や契約を整理し、期限と対応状況を追うための運用台帳です。MDM／EDR、端末の遠隔操作、社内システムそのものの置き換えは提供しません。既存のExcel形式が分からない場合は、サンプルとプレビューから確認できます。</p>
-            <p><a href="{{ route('help.index') }}">サービスのFAQを見る</a>　<a href="{{ route('legal.commercial-transactions') }}">特定商取引法に基づく表記</a></p>
+            <p><a href="{{ route('help.index') }}">サービスのFAQを見る</a></p>
             <p>お問い合わせ：<a href="mailto:{{ config('opsdeck.support_email') }}">{{ config('opsdeck.support_email') }}</a></p>
         </section>
     </div>

@@ -15,12 +15,4 @@ class LegalController extends Controller
     {
         return view('legal.privacy');
     }
-
-    public function commercialTransactions(): View
-    {
-        return view('legal.commercial-transactions', [
-            'contactEmail' => config('opsdeck.support_email'),
-            'seller' => config('opsdeck.commercial_information'),
-        ]);
-    }
 }

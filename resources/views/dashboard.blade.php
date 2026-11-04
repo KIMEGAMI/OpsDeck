@@ -42,13 +42,7 @@
             @endif
                 </ol>
                 @if ($hasUnavailablePriorityFeatures)
-                    <p class="muted">更新期限の確認、書類の保管、セキュリティ確認、質問票は有料プラン（Premium）で利用できます。
-                        @if ($canManageBilling)
-                            <a href="{{ route('billing.index') }}">プランと料金を確認</a>
-                        @else
-                            プランの確認は組織Ownerにご相談ください。
-                        @endif
-                    </p>
+                    <p class="muted">一部の機能は現在提供していません。利用できる機能は無料でご利用いただけます。</p>
                 @endif
             </section>
             <details class="dashboard-panel">
@@ -111,7 +105,7 @@
             @if (request()->attributes->get('currentMembership')?->role?->value === 'owner')
                 <p><a href="{{ route('settings.organization') }}">組織設定で利用状況を確認</a></p>
             @else
-                <p class="muted">上限の変更や契約プランの見直しは、組織Ownerにご依頼ください。</p>
+                <p class="muted">不要な登録データの整理について、組織Ownerにご依頼ください。</p>
             @endif
             <p><a href="mailto:{{ config('opsdeck.support_email') }}">利用上限について問い合わせる</a></p>
             </section>
@@ -130,10 +124,9 @@
         @include('dashboard-announcements', ['announcements' => $announcements])
     </div>
     <footer class="dashboard-legal-footer">
-        <nav aria-label="規約と運営情報">
+        <nav aria-label="規約とプライバシー">
             <a href="{{ route('legal.privacy') }}">プライバシーポリシー</a>
             <a href="{{ route('legal.terms') }}">利用規約</a>
-            <a href="{{ route('legal.commercial-transactions') }}">特定商取引法に基づく表記</a>
         </nav>
     </footer>
 </x-layouts.app>

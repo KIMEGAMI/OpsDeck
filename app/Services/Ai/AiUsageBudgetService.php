@@ -16,34 +16,60 @@ class AiUsageBudgetService
     public function __construct(private AiModelPricing $modelPricing) {}
 
     /**
-     * @return array{budget_jpy: int, spent_jpy: int, reserved_jpy: int, remaining_jpy: int}|null
+     * @return array{budget_jpy: int, cost_tracking_available: bool, spent_jpy: int|null, reserved_jpy: int|null, remaining_jpy: int|null, daily_request_limit: int, requests_used: int, requests_pending: int, requests_remaining: int}
      */
-    public function monthlySummary(Organization $organization): ?array
+    public function usageSummary(Organization $organization): array
     {
         $plan = app(PlanAccessService::class)->effectivePlanCode($organization);
         $budgetJpy = (int) config("opsdeck.ai.monthly_budget_jpy.{$plan}", $plan === config('opsdeck.legacy_plan_code') ? config('opsdeck.ai.legacy_monthly_budget_jpy') : 0);
         $rate = config('opsdeck.ai.usd_to_jpy_rate');
-        if ($budgetJpy <= 0 || ! is_numeric($rate) || (float) $rate <= 0) {
-            return null;
+        $monthStart = now($organization->timezone)->startOfMonth()->setTimezone(config('app.timezone'));
+        $costTrackingAvailable = $budgetJpy > 0 && is_numeric($rate) && (float) $rate > 0;
+        $spentJpy = null;
+        $reservedJpy = null;
+        if ($costTrackingAvailable) {
+            $spentUsd = (float) AiUsageLog::query()
+                ->where('organization_id', $organization->id)
+                ->where('created_at', '>=', $monthStart)
+                ->sum('estimated_cost_usd');
+            $reservedUsd = (float) AiUsageReservation::query()
+                ->where('organization_id', $organization->id)
+                ->where('expires_at', '>', now())
+                ->sum('reserved_cost_usd');
+            $spentJpy = (int) round($spentUsd * (float) $rate);
+            $reservedJpy = (int) round($reservedUsd * (float) $rate);
         }
 
-        $monthStart = now($organization->timezone)->startOfMonth()->setTimezone(config('app.timezone'));
-        $spentUsd = (float) AiUsageLog::query()
+        $requestLimit = (int) config('opsdeck.ai.daily_request_limit');
+        $localNow = now($organization->timezone);
+        $dayStart = $localNow->copy()->startOfDay()->setTimezone(config('app.timezone'));
+        $nextDayStart = $localNow->copy()->addDay()->startOfDay()->setTimezone(config('app.timezone'));
+        $requestsUsed = AiUsageLog::query()
             ->where('organization_id', $organization->id)
-            ->where('created_at', '>=', $monthStart)
-            ->sum('estimated_cost_usd');
-        $reservedUsd = (float) AiUsageReservation::query()
+            ->where('provider_requested_at', '>=', $dayStart)
+            ->where('provider_requested_at', '<', $nextDayStart)
+            ->where('provider_request_attempted', true)
+            ->count() + AiUsageReservation::query()
+            ->where('organization_id', $organization->id)
+            ->where('provider_requested_at', '>=', $dayStart)
+            ->where('provider_requested_at', '<', $nextDayStart)
+            ->where('expires_at', '<=', now())
+            ->count();
+        $requestsPending = AiUsageReservation::query()
             ->where('organization_id', $organization->id)
             ->where('expires_at', '>', now())
-            ->sum('reserved_cost_usd');
-        $spentJpy = (int) round($spentUsd * (float) $rate);
-        $reservedJpy = (int) round($reservedUsd * (float) $rate);
+            ->count();
 
         return [
             'budget_jpy' => $budgetJpy,
+            'cost_tracking_available' => $costTrackingAvailable,
             'spent_jpy' => $spentJpy,
             'reserved_jpy' => $reservedJpy,
-            'remaining_jpy' => max(0, $budgetJpy - $spentJpy - $reservedJpy),
+            'remaining_jpy' => $costTrackingAvailable ? max(0, $budgetJpy - $spentJpy - $reservedJpy) : null,
+            'daily_request_limit' => $requestLimit,
+            'requests_used' => $requestsUsed,
+            'requests_pending' => $requestsPending,
+            'requests_remaining' => max(0, $requestLimit - $requestsUsed - $requestsPending),
         ];
     }
 
@@ -84,14 +110,45 @@ class AiUsageBudgetService
         $providerTimeoutMinutes = (int) ceil((int) config('opsdeck.ai.timeout_seconds') / 60)
             + self::RESERVATION_SETTLEMENT_BUFFER_MINUTES;
         $reservationTtlMinutes = max($configuredReservationTtlMinutes, $providerTimeoutMinutes);
+        $requestLimit = (int) config('opsdeck.ai.daily_request_limit');
+        $localNow = now($organization->timezone);
+        $dayStart = $localNow->copy()->startOfDay()->setTimezone(config('app.timezone'));
+        $nextDayStart = $localNow->copy()->addDay()->startOfDay()->setTimezone(config('app.timezone'));
+        $monthStart = $localNow->copy()->startOfMonth()->setTimezone(config('app.timezone'));
 
-        return DB::transaction(function () use ($organization, $userId, $model, $maximumCostUsd, $monthlyBudgetUsd, $reservationTtlMinutes): ?AiUsageReservation {
+        return DB::transaction(function () use ($organization, $userId, $model, $maximumCostUsd, $monthlyBudgetUsd, $reservationTtlMinutes, $requestLimit, $dayStart, $nextDayStart, $monthStart): ?AiUsageReservation {
             Organization::query()->whereKey($organization->id)->lockForUpdate()->firstOrFail();
-            AiUsageReservation::query()->where('organization_id', $organization->id)->where('expires_at', '<=', now())->delete();
+            AiUsageReservation::query()
+                ->where('organization_id', $organization->id)
+                ->where('expires_at', '<=', now())
+                ->where(function ($query) use ($dayStart): void {
+                    $query->whereNull('provider_requested_at')
+                        ->orWhere('provider_requested_at', '<', $dayStart);
+                })
+                ->delete();
 
-            $monthStart = now($organization->timezone)->startOfMonth()->setTimezone(config('app.timezone'));
+            $dailyRequests = AiUsageLog::query()
+                ->where('organization_id', $organization->id)
+                ->where('provider_requested_at', '>=', $dayStart)
+                ->where('provider_requested_at', '<', $nextDayStart)
+                ->where('provider_request_attempted', true)
+                ->count();
+            $expiredAttemptedRequests = AiUsageReservation::query()
+                ->where('organization_id', $organization->id)
+                ->where('provider_requested_at', '>=', $dayStart)
+                ->where('provider_requested_at', '<', $nextDayStart)
+                ->where('expires_at', '<=', now())
+                ->count();
+            $pendingRequests = AiUsageReservation::query()
+                ->where('organization_id', $organization->id)
+                ->where('expires_at', '>', now())
+                ->count();
+            if ($dailyRequests + $expiredAttemptedRequests + $pendingRequests >= $requestLimit) {
+                return null;
+            }
+
             $spentUsd = (float) AiUsageLog::query()->where('organization_id', $organization->id)->where('created_at', '>=', $monthStart)->sum('estimated_cost_usd');
-            $reservedUsd = (float) AiUsageReservation::query()->where('organization_id', $organization->id)->sum('reserved_cost_usd');
+            $reservedUsd = (float) AiUsageReservation::query()->where('organization_id', $organization->id)->where('expires_at', '>', now())->sum('reserved_cost_usd');
             if ($spentUsd + $reservedUsd + $maximumCostUsd > $monthlyBudgetUsd) {
                 return null;
             }
@@ -104,6 +161,22 @@ class AiUsageBudgetService
                 'reserved_cost_usd' => $maximumCostUsd,
                 'expires_at' => now()->addMinutes($reservationTtlMinutes),
             ]);
+        });
+    }
+
+    public function markProviderRequestAttempted(AiUsageReservation $reservation): bool
+    {
+        return DB::transaction(function () use ($reservation): bool {
+            $lockedReservation = AiUsageReservation::query()->whereKey($reservation->id)->lockForUpdate()->first();
+            if ($lockedReservation === null) {
+                return false;
+            }
+
+            if ($lockedReservation->provider_requested_at === null) {
+                $lockedReservation->forceFill(['provider_requested_at' => now()])->save();
+            }
+
+            return true;
         });
     }
 
@@ -150,6 +223,8 @@ class AiUsageBudgetService
                 'estimated_cost_usd' => $costUsd,
                 'estimated_cost_jpy' => is_numeric($rate) && (float) $rate > 0 ? round($costUsd * (float) $rate, 2) : 0,
                 'success' => $success,
+                'provider_request_attempted' => true,
+                'provider_requested_at' => $lockedReservation->provider_requested_at ?? now(),
                 'error_code' => ! $success ? ($errorCode ?? 'provider_unavailable') : ($hasPricing ? null : 'pricing_unavailable'),
             ]);
             $lockedReservation->delete();
@@ -169,6 +244,8 @@ class AiUsageBudgetService
             'estimated_cost_usd' => 0,
             'estimated_cost_jpy' => 0,
             'success' => false,
+            'provider_request_attempted' => false,
+            'provider_requested_at' => null,
             'error_code' => $errorCode,
         ]);
     }

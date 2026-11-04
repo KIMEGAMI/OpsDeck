@@ -372,10 +372,10 @@ class AdminAnnouncementControllerTest extends TestCase
 
         $response->assertOk()
             ->assertSee('重要なお知らせ')
-            ->assertSeeInOrder(['全利用者に表示されます。', '規約と運営情報', 'プライバシーポリシー', '利用規約', '特定商取引法に基づく表記'])
+            ->assertSeeInOrder(['全利用者に表示されます。', '規約とプライバシー', 'プライバシーポリシー', '利用規約'])
             ->assertSee(route('legal.privacy'), false)
             ->assertSee(route('legal.terms'), false)
-            ->assertSee(route('legal.commercial-transactions'), false);
+            ->assertDontSee('特定商取引法に基づく表記');
     }
 
     public function test_admin_can_target_announcement_and_user_can_mark_it_read(): void

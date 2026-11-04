@@ -135,9 +135,9 @@
                 @if ($errors->has('plan_limit'))
                     @php($currentOrganization = request()->attributes->get('currentOrganization'))
                     @if ($currentOrganization instanceof \App\Models\Organization && auth()->user()?->can('manageBilling', $currentOrganization))
-                        <p><a href="{{ route('billing.index') }}">料金プランと上限を確認する</a></p>
+                        <p><a href="{{ route('billing.index') }}">無料公開と利用上限を確認する</a></p>
                     @else
-                        <p class="muted">プラン変更は組織Ownerのみ行えます。Ownerに相談してください。</p>
+                        <p class="muted">利用上限を超えた場合は、不要な登録データを整理してください。</p>
                     @endif
                 @endif
             </div>

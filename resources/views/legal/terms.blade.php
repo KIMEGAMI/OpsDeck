@@ -22,22 +22,11 @@
             <li>サービスの解析、複製、リバースエンジニアリング、脆弱性の無断検査。</li>
         </ul>
 
-        <h2>5. プランと料金</h2>
-        @if (config('opsdeck.billing.enabled'))
-            <p>Freeプランは月額0円です。Premiumは会社単位で月額{{ number_format((int) config('opsdeck.plans.premium.monthly_price_jpy')) }}円（税別）です。適用される税額を加えた支払総額は、申込み前に決済画面で表示します。</p>
-        @else
-            <p>現在は月額0円のFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。</p>
-        @endif
-        @if (config('opsdeck.billing.enabled') && config('opsdeck.release_features.storage_addon'))
-            <p>申込画面で追加容量を選択できる場合、追加料金は1GiBあたり月額{{ number_format((int) config('opsdeck.storage_quotas.storage_addon_monthly_price_jpy')) }}円（税別）です。選択分はPremiumの初回請求から加算され、以後も月額で請求されます。税額を含む金額は決済画面で確認してください。</p>
-        @endif
+        <h2>5. 利用料金</h2>
+        <p>OpsDeckは現在、月額利用料・プラン料金・追加容量料金を請求せず、無料で提供しています。プランによる機能差はありません。今後、利用料金や提供条件を変更する場合は、事前にサービス上でお知らせします。</p>
 
         <h2>6. 支払いと解約</h2>
-        @if (config('opsdeck.billing.enabled'))
-            <p>有料プランの支払いはStripeが提供する決済機能を通じて行います。契約は月ごとに更新されます。解約は次回更新日前にBilling画面から案内されるCustomer Portalで手続きしてください。解約手続後も次回更新日までは利用でき、契約は次回更新日に終了します。決済済み期間の利用料は日割りで返金しません。ただし、法令上返金が必要となる場合を除きます。</p>
-        @else
-            <p>現在は有料プランの申込みを停止しています。Premiumが提供される場合の支払条件は、申込画面に表示する内容をご確認ください。</p>
-        @endif
+        <p>OpsDeckから新しい有料契約や決済を申し込むことはできません。過去に登録したStripe契約が残っている場合、この画面から契約状態の確認や解約はできません。契約が残っている場合はStripe側で状態を確認するか、<a href="mailto:{{ config('opsdeck.support_email') }}">サポートへお問い合わせください</a>。インターネット接続など、利用者が別途契約している通信サービスの費用は利用者の負担です。</p>
 
         <h2>7. 外部サービスとAI機能</h2>
         <p>決済、メール配信、ファイル保存、Google Sheets連携、AI列マッピング等の機能では、各機能に必要な範囲で外部サービスを利用します。AIの提案は誤る場合があるため、利用者は内容を確認・修正してから取り込みを実行してください。外部サービスの利用には、各社の規約が適用される場合があります。データの取扱いは<a href="{{ route('legal.privacy') }}">プライバシーポリシー</a>をご確認ください。</p>
@@ -55,6 +44,6 @@
         <p>本規約を改定する場合は、重要な変更と適用日をサービス上で告知します。改定後の利用条件に同意できない場合は、適用日前に利用を終了してください。</p>
 
         <h2>12. お問い合わせ</h2>
-        <p>本規約については、<a href="mailto:{{ config('opsdeck.support_email') }}">{{ config('opsdeck.support_email') }}</a>までお問い合わせください。販売者情報は<a href="{{ route('legal.commercial-transactions') }}">特定商取引法に基づく表記</a>をご確認ください。</p>
+        <p>本規約については、<a href="mailto:{{ config('opsdeck.support_email') }}">{{ config('opsdeck.support_email') }}</a>までお問い合わせください。</p>
     </article>
 </x-layouts.app>

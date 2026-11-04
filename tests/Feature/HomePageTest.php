@@ -20,15 +20,16 @@ class HomePageTest extends TestCase
             ->assertSee('見つける。見直す。')
             ->assertSee('IT運用の見える化から、費用の見直しへ')
             ->assertDontSee('費用と時間の改善へ')
-            ->assertSee('FreeはCSV/TXT、PremiumはXLSXから取り込めます。古いExcel形式（.xls）とGoogle Sheets連携は1.0では対象外です。')
-            ->assertSee('更新通知、セキュリティ対応へ広げられます。')
-            ->assertDontSee('更新通知、レポートへ広げられます。')
-            ->assertSee('CSV/TXTの実データ取込（登録上限まで）')
+            ->assertSee('CSV/TXTとExcel（.xlsx）に対応しています。古いExcel形式（.xls）とGoogle Sheets連携は現在対象外です。')
+            ->assertSee('期限と確認漏れを見つける')
+            ->assertSee('対応の根拠と結果を残す')
+            ->assertSee('月額0円')
+            ->assertSee('AI列マッピング候補（GPT-6 Luna・1日3回/組織）')
             ->assertSee('プレビューし、列の対応と新規・更新・確認待ち・エラーを確認できます。')
-            ->assertSee('月額9,800円（税別）')
-            ->assertSee('Stripe Checkoutでお支払い総額を表示します')
-            ->assertSee('社員20名・端末50台・SaaS10件まで')
             ->assertSee('社員200名・端末500台・SaaS100件まで')
+            ->assertSee('プランによる機能制限や追加料金はありません。現在提供中の機能を無料で利用できます。')
+            ->assertDontSee('Premium')
+            ->assertDontSee('Stripe Checkout')
             ->assertSee('削減を保証するものではありません')
             ->assertDontSee('導入効果レポート')
             ->assertSee('MDM／EDR')
@@ -48,7 +49,7 @@ class HomePageTest extends TestCase
             ->assertSee(route('login'))
             ->assertSee(route('demo.show'))
             ->assertSee(route('help.index'))
-            ->assertSee(route('legal.commercial-transactions'));
+            ->assertDontSee('特定商取引法に基づく表記');
     }
 
     public function test_guest_sees_work_time_feature_only_when_it_is_released(): void

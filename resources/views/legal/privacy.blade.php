@@ -2,7 +2,7 @@
     <article class="card" aria-labelledby="privacy-title">
         <h1 id="privacy-title">プライバシーポリシー</h1>
         <p class="muted">最終更新日：{{ config('opsdeck.privacy_policy_last_updated') }}</p>
-        <p>運営者：{{ config('opsdeck.commercial_information.seller_name') ?: '未設定（特定商取引法に基づく表記をご確認ください）' }}</p>
+        <p>運営者：{{ config('opsdeck.commercial_information.seller_name') ?: '未設定' }}</p>
 
         <h2>1. 対象と取得する情報</h2>
         <p>本ポリシーは、OpsDeckのアカウント利用者および、利用企業から預かる情報の取扱いについて定めます。</p>
@@ -26,11 +26,7 @@
         <h2>4. 外部サービスへの提供・委託</h2>
         <p>機能を利用した場合に限り、処理に必要な情報を外部サービスへ送信または保存することがあります。各社での取扱い・保存期間は、各社の規約・プライバシー情報もご確認ください。</p>
         <ul>
-            @if (config('opsdeck.billing.enabled'))
-                <li>Stripe：Premiumの申込、請求、契約状態の確認に利用します。カード情報の入力・決済はStripeが提供する画面で行います。</li>
-            @else
-                <li>Stripe：現在は課金機能を停止しており、決済情報をStripeへ送信しません。</li>
-            @endif
+            <li>Stripe：現在は課金機能を停止しており、決済情報をStripeへ送信しません。</li>
             <li>Resend：メール配信に利用する設定の場合、宛先メールアドレスと送信するメール内容を取り扱います。</li>
             <li>Google Sheets：連携機能を利用した場合、利用者が選択したファイル・シートの情報を読み取り専用で取得します。</li>
             <li>OpenAI：組織でAI列マッピングを有効にして利用した場合、候補作成に必要な列名、対象データ種別、OpsDeckの候補項目を送信します。取込ファイルの行データやファイル全体は送信しません。列名に氏名等を含めないよう、送信前にご確認ください。</li>

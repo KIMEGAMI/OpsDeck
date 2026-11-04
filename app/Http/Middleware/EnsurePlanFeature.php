@@ -19,7 +19,7 @@ class EnsurePlanFeature
     {
         $organization = $request->attributes->get('currentOrganization');
         abort_unless($organization instanceof Organization, Response::HTTP_FORBIDDEN);
-        app(PlanFeatureService::class)->assertAvailable($organization, $feature, 'この機能はPremiumプランで利用できます。契約プランをご確認ください。');
+        app(PlanFeatureService::class)->assertAvailable($organization, $feature, 'この機能は現在利用できません。');
 
         return $next($request);
     }
