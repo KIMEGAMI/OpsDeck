@@ -13,11 +13,14 @@ use App\Models\QuestionnaireAnswer;
 use App\Models\QuestionnaireQuestion;
 use App\Models\SecurityControl;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class QuestionnaireAnswerControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_can_register_an_answer_for_a_question_in_the_current_organization(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

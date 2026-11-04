@@ -11,15 +11,18 @@ class GoogleLoginControllerTest extends TestCase
 {
     use RefreshDatabase;
 
+    private const TEST_APPLICATION_ORIGIN = 'https://opsdeck.example.test';
+
     protected function setUp(): void
     {
         parent::setUp();
 
         config([
+            'app.url' => self::TEST_APPLICATION_ORIGIN,
             'services.google.client_id' => 'google-client-id',
             'services.google.client_secret' => 'google-client-secret',
             'services.google.login_enabled' => true,
-            'services.google.login_redirect_uri' => 'https://opsdeck.example.test/auth/google/callback',
+            'services.google.login_redirect_uri' => self::TEST_APPLICATION_ORIGIN.'/auth/google/callback',
             'services.google.login_scopes' => ['openid'],
             'services.google.authorization_endpoint' => 'https://accounts.google.com/o/oauth2/v2/auth',
             'services.google.token_endpoint' => 'https://oauth2.googleapis.com/token',
@@ -28,9 +31,41 @@ class GoogleLoginControllerTest extends TestCase
         ]);
     }
 
+    public function test_oauth_redirect_returns_503_when_callback_origin_does_not_match_application(): void
+    {
+        config([
+            'app.url' => 'http://localhost:8007',
+            'services.google.login_redirect_uri' => 'http://127.0.0.1:8006/auth/google/callback',
+        ]);
+        Http::preventStrayRequests();
+
+        $this->get($this->routeAtOrigin('http://localhost:8007', 'login.google.redirect'))
+            ->assertServiceUnavailable();
+
+        Http::assertNothingSent();
+    }
+
+    public function test_oauth_callback_returns_503_when_callback_origin_does_not_match_application(): void
+    {
+        config([
+            'app.url' => 'http://localhost:8007',
+            'services.google.login_redirect_uri' => 'http://127.0.0.1:8006/auth/google/callback',
+        ]);
+        Http::preventStrayRequests();
+
+        $this->withSession([
+            'google_login_oauth_state' => ['value' => 'valid-state', 'mode' => 'login'],
+        ])->get($this->routeAtOrigin('http://localhost:8007', 'login.google.callback', [
+            'state' => 'valid-state',
+            'code' => 'authorization-code',
+        ]))->assertServiceUnavailable();
+
+        Http::assertNothingSent();
+    }
+
     public function test_guest_redirect_includes_oauth_state_and_login_scope(): void
     {
-        $response = $this->get(route('login.google.redirect'));
+        $response = $this->get($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'login.google.redirect'));
         $location = (string) $response->headers->get('Location');
         $query = [];
         parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
@@ -68,7 +103,10 @@ class GoogleLoginControllerTest extends TestCase
 
         $response = $this->withSession([
             'google_login_oauth_state' => ['value' => 'valid-state', 'mode' => 'login'],
-        ])->get(route('login.google.callback', ['state' => 'valid-state', 'code' => 'authorization-code']));
+        ])->get($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'login.google.callback', [
+            'state' => 'valid-state',
+            'code' => 'authorization-code',
+        ]));
 
         $response->assertRedirectToRoute('dashboard');
         $this->assertAuthenticatedAs($user);
@@ -89,7 +127,10 @@ class GoogleLoginControllerTest extends TestCase
 
         $response = $this->withSession([
             'google_login_oauth_state' => ['value' => 'valid-state', 'mode' => 'login'],
-        ])->get(route('login.google.callback', ['state' => 'valid-state', 'code' => 'authorization-code']));
+        ])->get($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'login.google.callback', [
+            'state' => 'valid-state',
+            'code' => 'authorization-code',
+        ]));
 
         $response->assertRedirectToRoute('login')
             ->assertSessionHas('status', '初回利用時はメールアドレスとパスワードでログインし、個人設定からGoogleアカウントを連携してください。');
@@ -111,7 +152,10 @@ class GoogleLoginControllerTest extends TestCase
 
         $response = $this->withSession([
             'google_login_oauth_state' => ['value' => 'valid-state', 'mode' => 'login'],
-        ])->get(route('login.google.callback', ['state' => 'valid-state', 'code' => 'authorization-code']));
+        ])->get($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'login.google.callback', [
+            'state' => 'valid-state',
+            'code' => 'authorization-code',
+        ]));
 
         $response->assertRedirectToRoute('login');
         $this->assertGuest();
@@ -126,7 +170,7 @@ class GoogleLoginControllerTest extends TestCase
             'https://openidconnect.googleapis.com/v1/userinfo' => Http::response(['sub' => 'new-google-subject']),
         ]);
 
-        $startResponse = $this->actingAs($user)->post(route('settings.google-login.connect'), [
+        $startResponse = $this->actingAs($user)->post($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'settings.google-login.connect'), [
             'current_password' => 'password',
         ]);
         $location = (string) $startResponse->headers->get('Location');
@@ -140,7 +184,7 @@ class GoogleLoginControllerTest extends TestCase
                 && (int) ($state['user_id'] ?? 0) === (int) $user->getKey();
         });
 
-        $callbackResponse = $this->get(route('login.google.callback', [
+        $callbackResponse = $this->get($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'login.google.callback', [
             'state' => $query['state'],
             'code' => 'authorization-code',
         ]));
@@ -161,14 +205,14 @@ class GoogleLoginControllerTest extends TestCase
             'https://openidconnect.googleapis.com/v1/userinfo' => Http::response(['sub' => 'google-subject-in-use']),
         ]);
 
-        $startResponse = $this->actingAs($user)->post(route('settings.google-login.connect'), [
+        $startResponse = $this->actingAs($user)->post($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'settings.google-login.connect'), [
             'current_password' => 'password',
         ]);
         $query = [];
         parse_str((string) parse_url((string) $startResponse->headers->get('Location'), PHP_URL_QUERY), $query);
 
         $startResponse->assertRedirect();
-        $this->get(route('login.google.callback', [
+        $this->get($this->routeAtOrigin(self::TEST_APPLICATION_ORIGIN, 'login.google.callback', [
             'state' => $query['state'],
             'code' => 'authorization-code',
         ]))->assertRedirectToRoute('settings.profile');
@@ -188,5 +232,15 @@ class GoogleLoginControllerTest extends TestCase
 
         $response->assertSessionHasErrors('current_password');
         $this->assertNull($user->refresh()->google_id);
+    }
+
+    /**
+     * Build a named test URL with an explicit request origin.
+     *
+     * @param  array<string, int|string>  $parameters
+     */
+    private function routeAtOrigin(string $origin, string $routeName, array $parameters = []): string
+    {
+        return rtrim($origin, '/').route($routeName, $parameters, false);
     }
 }

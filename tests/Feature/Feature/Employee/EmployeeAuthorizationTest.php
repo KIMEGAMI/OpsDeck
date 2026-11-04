@@ -16,12 +16,15 @@ use App\Models\SaasAssignment;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class EmployeeAuthorizationTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_cannot_create_employee_beyond_plan_limit(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -35,7 +38,7 @@ class EmployeeAuthorizationTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->post('/employees', ['name' => '上限超過社員', 'employment_status' => 'active'])
             ->assertOk()
-            ->assertSee('プラン変更は組織Ownerのみ行えます。Ownerに相談してください。')
+            ->assertSee('利用上限を超えた場合は、不要な登録データを整理してください。')
             ->assertDontSee(route('billing.index'));
 
         $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
@@ -58,7 +61,7 @@ class EmployeeAuthorizationTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->post('/employees', ['name' => '上限超過社員', 'employment_status' => 'active'])
             ->assertOk()
-            ->assertSee('料金プランと上限を確認する')
+            ->assertSee('無料公開と利用上限を確認する')
             ->assertSee('href="'.route('billing.index').'"', false);
 
         $this->assertSame(1, Employee::query()->where('organization_id', $organization->id)->count());
@@ -371,10 +374,10 @@ class EmployeeAuthorizationTest extends TestCase
             'name' => '登録対象がない退職者',
             'employment_status' => config('opsdeck.employee_status.retired'),
         ]);
-        $premiumOnlySecurityControl = SecurityControl::query()->create([
+        $freePlanSecurityControl = SecurityControl::query()->create([
             'organization_id' => $organization->id,
             'control_code' => 'FREE-OFFBOARD-1',
-            'title' => 'Freeでは表示しないセキュリティ項目',
+            'title' => '退職時の確認対象',
             'category' => 'access_control',
             'description' => 'Premium限定項目',
             'status' => 'unknown',
@@ -386,10 +389,11 @@ class EmployeeAuthorizationTest extends TestCase
             ->get(route('employees.show', $employee))
             ->assertOk()
             ->assertSee('退職時の確認')
-            ->assertSee('OpsDeck上の登録では、未処理として残る項目はありません。')
+            ->assertSee('1件の確認が必要です。')
+            ->assertSee($freePlanSecurityControl->title)
+            ->assertSee(route('security-controls.show', $freePlanSecurityControl), false)
             ->assertSee('外部サービスのアカウント停止や権限移管が完了したかは')
-            ->assertDontSee($premiumOnlySecurityControl->title)
-            ->assertDontSee(route('security-controls.show', $premiumOnlySecurityControl));
+            ->assertDontSee('OpsDeck上の登録では、未処理として残る項目はありません。');
     }
 
     public function test_offboarding_checklist_includes_opsdeck_membership_and_pending_invitation_actions(): void

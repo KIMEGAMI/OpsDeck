@@ -21,11 +21,14 @@ class AiMappingControllerFlowTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_mapping_page_shows_only_the_current_organizations_estimated_monthly_ai_usage(): void
+    public function test_mapping_page_shows_only_the_current_organizations_daily_ai_usage(): void
     {
         Http::preventStrayRequests();
         config([
-            'opsdeck.ai.monthly_budget_jpy.premium' => 500,
+            'opsdeck.ai.enabled' => true,
+            'opsdeck.ai.provider' => 'openai',
+            'opsdeck.ai.monthly_budget_jpy.free' => 500,
+            'opsdeck.ai.daily_request_limit' => 3,
             'opsdeck.ai.usd_to_jpy_rate' => 150,
             'opsdeck.ai.api_key' => bin2hex(random_bytes(32)),
         ]);
@@ -59,6 +62,8 @@ class AiMappingControllerFlowTest extends TestCase
             'estimated_cost_usd' => 1,
             'estimated_cost_jpy' => 150,
             'success' => true,
+            'provider_request_attempted' => true,
+            'provider_requested_at' => now(),
         ]);
         AiUsageLog::query()->create([
             'organization_id' => $otherOrganization->id,
@@ -87,18 +92,22 @@ class AiMappingControllerFlowTest extends TestCase
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.mapping', $batch));
 
-        $response->assertViewHas('aiMappingMonthlyUsage', [
+        $response->assertViewHas('aiMappingUsageSummary', [
             'budget_jpy' => 500,
+            'cost_tracking_available' => true,
             'spent_jpy' => 150,
             'reserved_jpy' => 75,
             'remaining_jpy' => 275,
+            'daily_request_limit' => 3,
+            'requests_used' => 1,
+            'requests_pending' => 1,
+            'requests_remaining' => 1,
         ])->assertViewHas('aiMappingServiceConfigured', true);
 
-        $response->assertSee('今月のAI利用状況（概算）')
-            ->assertSee('利用済み 150円')
-            ->assertSee('処理中 75円')
-            ->assertSee('残り目安 275円')
-            ->assertSee('上限 500円');
+        $response->assertSee('本日のAI候補利用：1回／3回')
+            ->assertSee('GPT-6 Lunaのみを使用')
+            ->assertDontSee('費用の概算')
+            ->assertDontSee('上限 500円');
     }
 
     public function test_user_can_correct_ai_column_suggestion_before_mapping_is_saved(): void

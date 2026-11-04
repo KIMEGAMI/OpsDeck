@@ -178,7 +178,7 @@ class ImportBatchController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('view', $organization);
-        $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携は現在提供していません。');
         $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->first();
         if ($connection === null || $connection->revoked_at !== null || ! $connection->refresh_token) {
             return to_route('google-sheets.connection')->with('status', '先にGoogle Sheetsを接続してください。');
@@ -192,7 +192,7 @@ class ImportBatchController extends Controller
     {
         $organization = $this->organization($request);
         $this->authorize('manageOperationalData', $organization);
-        $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携は現在提供していません。');
         $connection = GoogleSheetConnection::query()->where('organization_id', $organization->id)->firstOrFail();
         $sheets = app(GoogleSheetsImportSource::class)->sheets($connection, $request->string('spreadsheet_id')->toString());
         abort_if($sheets === [], 422, 'Google Sheetsにシートがありません。');
@@ -214,7 +214,7 @@ class ImportBatchController extends Controller
     {
         $importBatch = $this->scopedBatch($this->organization($request), $importBatch);
         $this->authorize('update', $importBatch);
-        $this->assertFeatureAvailable($this->organization($request), 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($this->organization($request), 'google_sheets', 'Google Sheets連携は現在提供していません。');
         abort_unless($importBatch->status === 'sheet_selection' && $importBatch->source_type === 'google_sheets', 422, 'Google Sheetsのシート選択が必要なバッチではありません。');
         abort_unless(in_array($request->string('sheet_name')->toString(), $importBatch->available_sheets_json ?? [], true), 422, '選択したシートが存在しません。');
         GoogleSheetConnection::query()->where('organization_id', $importBatch->organization_id)->firstOrFail();
@@ -249,7 +249,7 @@ class ImportBatchController extends Controller
     {
         $importBatch = $this->scopedBatch($this->organization($request), $importBatch);
         $this->authorize('update', $importBatch);
-        $this->assertFeatureAvailable($this->organization($request), 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($this->organization($request), 'google_sheets', 'Google Sheets連携は現在提供していません。');
         abort_unless($importBatch->source_type === 'google_sheets' && $importBatch->status === 'completed' && $importBatch->source_external_id !== null && $importBatch->selected_sheet_name !== null, 422, '完了済みGoogle Sheets Importだけ再同期できます。');
         $mapping = $importBatch->mappings()->where('status', 'ready')->latest()->firstOrFail();
         $retryBatch = DB::transaction(function () use ($importBatch, $request): ImportBatch {
@@ -308,7 +308,7 @@ class ImportBatchController extends Controller
         }
         $sourceFileSha256 = app(ImportSourceIntegrityService::class)->hashUploadedFile($file);
         if (strtolower($file->getClientOriginalExtension()) === 'xlsx') {
-            $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
+            $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューは現在利用できません。');
         }
         try {
             return app(OrganizationStorageQuotaService::class)->storeWithinQuota(
@@ -490,7 +490,7 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('update', $importBatch);
-        $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューは現在利用できません。');
         abort_unless($importBatch->status === 'sheet_selection' && $importBatch->source_type === 'xlsx', 422, 'シート選択が必要なXLSXバッチではありません。');
         abort_unless(in_array($request->string('sheet_name')->toString(), $importBatch->available_sheets_json ?? [], true), 422, '選択したシートが存在しません。');
         DB::transaction(function () use ($importBatch, $request): void {
@@ -514,7 +514,7 @@ class ImportBatchController extends Controller
         $organization = $this->organization($request);
         $importBatch = $this->scopedBatch($organization, $importBatch);
         $this->authorize('create', [ImportBatch::class, $organization]);
-        $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
+        $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューは現在利用できません。');
         abort_unless(
             $importBatch->source_type === 'xlsx'
                 && $importBatch->source_file_path !== null
@@ -599,12 +599,15 @@ class ImportBatchController extends Controller
         $aiMappingFeedbackToken = null;
         $aiMappingPlanAvailable = app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping');
         $aiMappingOrganizationEnabled = (bool) $organization->ai_enabled;
-        $aiMappingMonthlyUsage = app(AiUsageBudgetService::class)->monthlySummary($organization);
+        $aiMappingUsageSummary = app(AiUsageBudgetService::class)->usageSummary($organization);
         $aiApiKey = config('opsdeck.ai.api_key');
+        $aiUsdToJpyRate = config('opsdeck.ai.usd_to_jpy_rate');
         $aiMappingServiceConfigured = (bool) config('opsdeck.ai.enabled')
             && config('opsdeck.ai.provider') === 'openai'
             && is_string($aiApiKey)
-            && trim($aiApiKey) !== '';
+            && trim($aiApiKey) !== ''
+            && is_numeric($aiUsdToJpyRate)
+            && (float) $aiUsdToJpyRate > 0;
         $aiTargetType = $request->string('ai_target_type')->toString();
         $suggestedTargetType = $request->string('target_type')->toString();
         if (! in_array($suggestedTargetType, $targetTypes, true)) {
@@ -718,7 +721,7 @@ class ImportBatchController extends Controller
                 ->all()];
         })->all();
 
-        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'mappingFieldOptions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'aiMappingFeedbackToken', 'normalizationSuggestions', 'normalizationRuleOptions', 'normalizationTargetType', 'profiles', 'selectedProfile', 'initialColumnMap', 'valueMappingFields', 'hasDifferentLayoutProfile', 'targetTypesWithDifferentLayoutProfiles', 'aiMappingPlanAvailable', 'aiMappingOrganizationEnabled', 'aiMappingServiceConfigured', 'aiMappingMonthlyUsage'));
+        return view('imports.mapping', compact('importBatch', 'targetTypes', 'suggestions', 'mappingFieldOptions', 'aiTargetType', 'suggestedTargetType', 'aiSuggestions', 'aiMappingFeedbackToken', 'normalizationSuggestions', 'normalizationRuleOptions', 'normalizationTargetType', 'profiles', 'selectedProfile', 'initialColumnMap', 'valueMappingFields', 'hasDifferentLayoutProfile', 'targetTypesWithDifferentLayoutProfiles', 'aiMappingPlanAvailable', 'aiMappingOrganizationEnabled', 'aiMappingServiceConfigured', 'aiMappingUsageSummary'));
     }
 
     public function saveMapping(StoreImportMappingRequest $request, ImportBatch $importBatch): RedirectResponse
@@ -1283,9 +1286,9 @@ class ImportBatchController extends Controller
     private function assertImportSourceFeatureAvailable(Organization $organization, string $sourceType): void
     {
         if ($sourceType === 'xlsx') {
-            $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューはPremiumプランで利用できます。');
+            $this->assertFeatureAvailable($organization, 'xlsx_preview', 'XLSXプレビューは現在利用できません。');
         } elseif ($sourceType === 'google_sheets') {
-            $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携はPremiumプランで利用できます。');
+            $this->assertFeatureAvailable($organization, 'google_sheets', 'Google Sheets連携は現在提供していません。');
         }
     }
 

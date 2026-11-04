@@ -64,13 +64,13 @@
                 <ol class="feature-guide-steps">
                     <li>メニューの「運用」から「Excelなどの取込」を開き、「管理表を取り込む前に確認する」を選びます。</li>
                     <li>取込名を付け、社員・端末・契約などの種類を選びます。元の表は残して、取込用のコピーを使います。</li>
-                    <li>FreeではCSV/TXT、PremiumではXLSXを選べます。Google Sheets連携と古いExcel形式（.xls）は1.0では対象外です。</li>
+                    <li>CSV/TXTとExcel（.xlsx）を選べます。Google Sheets連携と古いExcel形式（.xls）は現在対象外です。</li>
                     <li>列名がある行とデータの開始行を確認し、「内容を確認する」を押します。この時点では会社のデータは登録・変更されません。</li>
-                    <li>プレビューで列の対応、新規・更新・確認待ち・エラーを見ます。Premiumでは列名の対応候補をAIに提案させることもできます。候補は自動確定されないため、確認・修正して保存します。</li>
+                    <li>プレビューで列の対応、新規・更新・確認待ち・エラーを見ます。GPT-6 Lunaに列名の対応候補を提案させることもできます（1組織あたり1日3回まで）。候補は自動確定されないため、確認・修正して保存します。</li>
                     <li>内容に問題がなければ取込を実行し、「データの取込履歴」から結果を確認します。</li>
                 </ol>
                 <p><a href="{{ route('imports.create') }}">管理表の取込画面を開く</a> ／ <a href="{{ route('imports.index') }}">取込履歴を見る</a></p>
-                <p class="feature-guide-note">CSVはExcelの表を保存できるファイル形式です。FreeでExcelを使う場合は、コピーした表をCSV UTF-8で保存してください。まず試すときはサンプルの「取込なしでプレビュー」を使い、見本ファイルを実データとして登録しないでください。</p>
+                <p class="feature-guide-note">CSVはExcelの表を保存できるファイル形式です。XLSXを使わずに取り込む場合は、元のExcelを残し、コピーした表をCSV UTF-8で保存してください。まず試すときはサンプルの「取込なしでプレビュー」を使い、見本ファイルを実データとして登録しないでください。</p>
             </div>
             <figure>
                 <img src="{{ asset('feature-guides/import-flow.svg') }}" alt="管理表の選択、内容のプレビュー、確認後の取込という流れのイメージ">
@@ -116,7 +116,7 @@
 
     <section id="cost-guide" class="card feature-guide-section" aria-labelledby="cost-guide-title">
         <h2 id="cost-guide-title">4. 費用を見直し、削減実績を記録する</h2>
-        <p class="feature-guide-note">削減候補の概算と削減実績の記録はPremiumです。Freeでは登録した契約の月額費用を確認できます。</p>
+        <p class="feature-guide-note">現在利用できる費用確認・削減候補の概算・削減実績の記録はすべて無料です。</p>
         <div class="feature-guide-content">
             <div>
                 <ol class="feature-guide-steps">
@@ -140,12 +140,12 @@
         <div class="feature-guide-content">
             <div>
                 <ol class="feature-guide-steps">
-                    <li>Premiumの「セキュリティ確認」で管理項目を登録し、対応状況と次回確認日を更新します。</li>
+                    <li>「セキュリティ確認」で管理項目を登録し、対応状況と次回確認日を更新します。</li>
                     <li>「書類・確認資料」にポリシーや証明資料を登録し、種別と有効期限を入力します。必要な資料は管理項目とあわせて確認します。</li>
                     <li>「質問票」で取引先から受け取った質問票を登録します。登録情報・証跡を確認しながら回答案を入力し、実際の運用状況を人が確認してから承認します。</li>
                     <li>期限や未承認の回答は、ダッシュボードの確認項目から見直します。</li>
                 </ol>
-                <p class="feature-guide-note">セキュリティ管理、証跡、質問票の機能はPremiumです。メニューに表示されない場合は、プランと組織の権限を確認してください。作成した回答案は、根拠と内容を人が確認してから承認してください。</p>
+                <p class="feature-guide-note">現在利用できるセキュリティ管理、証跡、質問票の機能は無料です。メニューに表示されない場合は、機能の公開状況と組織の権限を確認してください。作成した回答案は、根拠と内容を人が確認してから承認してください。</p>
                 @php($currentOrganization = request()->attributes->get('currentOrganization'))
                 @if ($currentOrganization && app(\App\Services\PlanFeatureService::class)->isAvailable($currentOrganization, 'security_controls'))
                     <p><a href="{{ route('security-controls.index') }}">セキュリティ確認を開く</a>
@@ -184,7 +184,7 @@
                         ／ <a href="{{ route('exports.index') }}">データの書き出し</a>
                     @endif
                 </p>
-                <p class="feature-guide-note">CSV書き出しはPremiumです。高度な導入効果レポートは1.0の公開対象外です。</p>
+                <p class="feature-guide-note">現在利用できるCSV書き出しは無料です。導入効果レポートは現在提供していません。</p>
             </div>
             <figure>
                 <img src="{{ asset('feature-guides/report-flow.svg') }}" alt="保存した一覧と週次まとめを確認し、権限のある管理者がCSVを書き出す流れ">
@@ -200,7 +200,7 @@
                 <ol class="feature-guide-steps">
                     <li>「組織」→「メンバー」を開き、招待する人のメールアドレスと権限を設定して招待します。</li>
                     <li>組織情報や費用試算の条件を変える場合は「組織設定」を開きます。組織の設定権限が必要です。</li>
-                    <li>プランの確認・変更は「プラン・お支払い」から行います。契約担当者のメニューに表示されます。</li>
+                    <li>無料公開と利用上限は、組織管理者のメニューにある「無料公開について」から確認できます。</li>
                     <li>週次まとめやお知らせメールの受信設定は、各画面の設定を確認します。</li>
                 </ol>
                 <p><a href="{{ route('settings.members') }}">メンバーを確認する</a>
@@ -209,13 +209,13 @@
                         ／ <a href="{{ route('settings.organization') }}">組織設定</a>
                     @endif
                     @if ($currentOrganization && request()->user()->can('manageBilling', $currentOrganization))
-                        ／ <a href="{{ route('billing.index') }}">プラン・お支払い</a>
+                        ／ <a href="{{ route('billing.index') }}">無料公開について</a>
                     @endif
                 </p>
             </div>
             <figure>
-                <img src="{{ asset('feature-guides/organization-flow.svg') }}" alt="組織のメンバー招待、役割設定、プラン確認のイメージ">
-                <figcaption>招待とプラン変更は、組織の担当者が権限を確認して行います。</figcaption>
+                <img src="{{ asset('feature-guides/organization-flow.svg') }}" alt="組織のメンバー招待、役割設定、利用上限確認のイメージ">
+                <figcaption>招待と組織設定は、担当者が権限を確認して行います。</figcaption>
             </figure>
         </div>
         <p class="feature-guide-note">OpsDeck運営用の「管理者」メニューは、運営管理者だけに表示されます。会社の組織管理メニューとは別の機能です。</p>

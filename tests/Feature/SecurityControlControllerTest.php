@@ -11,11 +11,14 @@ use App\Models\OrganizationMembership;
 use App\Models\SecurityControl;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class SecurityControlControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_security_control_screens_show_japanese_status_labels(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

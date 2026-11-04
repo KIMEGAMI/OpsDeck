@@ -22,6 +22,7 @@ use Illuminate\Bus\UniqueLock;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -36,6 +37,8 @@ use Tests\TestCase;
 
 class WeeklySummaryControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -64,21 +67,21 @@ class WeeklySummaryControllerTest extends TestCase
             ->assertSee(route('help.recovery', 'email'))
             ->assertSee('直近7日間に新しく起きたこと')
             ->assertSee('今も確認が必要な項目')
-            ->assertDontSee('ログイン時の追加確認が済んでいないクラウドサービスのアカウント')
+            ->assertSee('ログイン時の追加確認が済んでいないクラウドサービスのアカウント')
             ->assertSee('集計期間：')
             ->assertSee('取込に失敗した回数')
             ->assertSee(route('saas-services.index'))
-            ->assertDontSee(ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内の契約更新')
-            ->assertDontSee('未対応のセキュリティ管理項目')
-            ->assertDontSee('MFA未確認SaaSアカウント')
-            ->assertSee('無料プランでは、契約の更新期限やセキュリティ項目は表示していません。');
+            ->assertSee(ContractRenewalWindow::ALERT_WINDOW_DAYS.'日以内に確認が必要な契約期限')
+            ->assertSee('確認が済んでいないセキュリティ項目')
+            ->assertSee(route('reminders.renewals'))
+            ->assertSee(route('security-controls.index', ['attention' => 1]));
 
         $summary = app(WeeklySummaryBuilder::class)->build($organization->id);
         $this->actingAs($user)->withSession($session)
             ->get(route('imports.index', ['has_errors' => 1, 'created_after' => $summary['period_start'], 'created_before' => $summary['period_end']]))
             ->assertOk();
-        $this->actingAs($user)->withSession($session)->get(route('reminders.renewals'))->assertForbidden();
-        $this->actingAs($user)->withSession($session)->get(route('security-controls.index', ['attention' => 1]))->assertForbidden();
+        $this->actingAs($user)->withSession($session)->get(route('reminders.renewals'))->assertOk();
+        $this->actingAs($user)->withSession($session)->get(route('security-controls.index', ['attention' => 1]))->assertOk();
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->put(route('weekly-summary.preference'), ['weekly_summary_enabled' => '0'])->assertRedirect(route('weekly-summary.show'));
         $this->assertDatabaseHas('user_notification_preferences', ['user_id' => $user->id, 'organization_id' => $organization->id, 'weekly_summary_enabled' => 0]);
@@ -594,21 +597,21 @@ class WeeklySummaryControllerTest extends TestCase
         $this->assertStringContainsString(route('saas-services.index'), $html);
     }
 
-    public function test_free_plan_summary_excludes_premium_alert_counts_and_links(): void
+    public function test_free_plan_summary_includes_renewal_and_security_alert_support(): void
     {
         [, $organization] = $this->member();
 
         $summary = app(WeeklySummaryBuilder::class)->build($organization->id);
         $html = (new WeeklySummaryMail($organization, $summary))->render();
 
-        $this->assertFalse($summary['renewal_alerts_enabled']);
-        $this->assertFalse($summary['security_alerts_enabled']);
+        $this->assertTrue($summary['renewal_alerts_enabled']);
+        $this->assertTrue($summary['security_alerts_enabled']);
         $this->assertSame(0, $summary['renewals']);
         $this->assertSame(0, $summary['security_open']);
         $this->assertSame(0, $summary['mfa_unknown']);
-        $this->assertStringContainsString('無料プランでは、契約の更新期限やセキュリティ項目は表示していません。', $html);
-        $this->assertStringNotContainsString(route('reminders.renewals'), $html);
-        $this->assertStringNotContainsString(route('security-controls.index', ['attention' => 1]), $html);
+        $this->assertStringNotContainsString('無料プランでは、契約の更新期限やセキュリティ項目は表示していません。', $html);
+        $this->assertStringContainsString(route('reminders.renewals'), $html);
+        $this->assertStringContainsString(route('security-controls.index', ['attention' => 1]), $html);
     }
 
     public function test_weekly_summary_mail_uses_the_admin_sender_address(): void

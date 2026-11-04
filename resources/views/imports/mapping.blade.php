@@ -17,17 +17,15 @@
         <section aria-labelledby="ai-mapping-request-title">
             <h2 id="ai-mapping-request-title">AIに列の対応を提案してもらう（任意）</h2>
             @if (! $aiMappingPlanAvailable)
-                <p class="muted">AI候補はPremiumプランで利用できます。列名は手動で設定できます。<a href="{{ route('billing.index') }}">プランを確認する</a></p>
+                <p class="muted">AI候補は現在利用できません。列名は手動で設定できます。</p>
             @elseif (! $aiMappingOrganizationEnabled)
                 <p class="muted">この組織ではAIの提案を使えません。手動で設定できます。必要な場合は組織の管理者に相談してください。</p>
             @elseif (! $aiMappingServiceConfigured)
-                <p class="muted">AIサービスの接続設定がないため、今は候補を取得できません。手動で列を設定してください。</p>
+                <p class="muted">AI接続または費用設定がないため、今は候補を取得できません。手動で列を設定してください。</p>
             @else
                 <p class="muted">ボタンを押すと、取込元の列名・対象データ種別・候補項目だけを設定済みのAIサービスへ送信します。行データやファイル全体は送りません。列名にメールアドレス・電話番号らしき値があれば伏せますが、氏名などが含まれる場合は、先に列名を匿名化してください。</p>
-                <p class="muted">AI利用料は組織の月額上限に含まれます。送信せず、手動で列を設定することもできます。</p>
-                @if ($aiMappingMonthlyUsage !== null)
-                    <p class="muted">今月のAI利用状況（概算）：利用済み {{ number_format($aiMappingMonthlyUsage['spent_jpy']) }}円／処理中 {{ number_format($aiMappingMonthlyUsage['reserved_jpy']) }}円／残り目安 {{ number_format($aiMappingMonthlyUsage['remaining_jpy']) }}円（上限 {{ number_format($aiMappingMonthlyUsage['budget_jpy']) }}円）。実際の請求額とは異なる場合があります。</p>
-                @endif
+                <p class="muted">GPT-6 Lunaのみを使用し、1組織あたり1日{{ number_format($aiMappingUsageSummary['daily_request_limit']) }}回まで利用できます。利用料金はかかりません。送信せず、手動で列を設定することもできます。</p>
+                <p class="muted">本日のAI候補利用：{{ number_format($aiMappingUsageSummary['requests_used']) }}回／{{ number_format($aiMappingUsageSummary['daily_request_limit']) }}回（処理中 {{ number_format($aiMappingUsageSummary['requests_pending']) }}回、あと{{ number_format($aiMappingUsageSummary['requests_remaining']) }}回）。日付は組織のタイムゾーンで切り替わります。</p>
                 <form method="post" action="{{ route('imports.mapping.ai', $importBatch) }}">
                     @csrf
                     <input type="hidden" name="ai" value="1">

@@ -32,8 +32,8 @@ class PlanAccessServiceTest extends TestCase
         $this->assertSame(config('opsdeck.free_plan_code'), $planAccess->effectivePlanCode($organization));
         $this->assertSame(config('opsdeck.premium_plan_code'), $organization->plan_code);
         $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'));
-        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'xlsx_preview'));
-        $this->assertSame(20, collect(app(PlanUsageService::class)->forOrganization($organization))->firstWhere('key', 'employees')['limit']);
+        $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'xlsx_preview'));
+        $this->assertSame(200, collect(app(PlanUsageService::class)->forOrganization($organization))->firstWhere('key', 'employees')['limit']);
     }
 
     public function test_free_resource_limits_apply_after_grace_without_waiting_for_the_command(): void
@@ -55,23 +55,25 @@ class PlanAccessServiceTest extends TestCase
         $this->assertSame(config('opsdeck.free_plan_code'), app(PlanAccessService::class)->effectivePlanCode($organization));
     }
 
-    public function test_active_plan_is_not_downgraded_and_unknown_start_time_receives_grace(): void
+    public function test_active_legacy_plan_codes_receive_the_free_entitlements(): void
     {
+        config(['opsdeck.billing.enabled' => false]);
         $activeOrganization = $this->organization(['billing_status' => 'active', 'billing_past_due_since' => now()->subDays(8)]);
         $unknownStartOrganization = $this->organization(['billing_past_due_since' => null, 'stripe_last_event_created_at' => null]);
         $planAccess = app(PlanAccessService::class);
 
-        $this->assertSame(config('opsdeck.premium_plan_code'), $planAccess->effectivePlanCode($activeOrganization));
-        $this->assertSame(config('opsdeck.premium_plan_code'), $planAccess->effectivePlanCode($unknownStartOrganization));
+        $this->assertSame(config('opsdeck.free_plan_code'), $planAccess->effectivePlanCode($activeOrganization));
+        $this->assertSame(config('opsdeck.free_plan_code'), $planAccess->effectivePlanCode($unknownStartOrganization));
+        $this->assertTrue(app(PlanFeatureService::class)->isAvailable($activeOrganization, 'exports'));
     }
 
-    public function test_cancelled_premium_plan_does_not_grant_paid_features(): void
+    public function test_cancelled_legacy_plan_keeps_the_same_free_entitlements(): void
     {
         $organization = $this->organization(['billing_status' => 'cancelled']);
 
         $this->assertSame(config('opsdeck.free_plan_code'), app(PlanAccessService::class)->effectivePlanCode($organization));
         $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'import_execution'));
-        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
+        $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
     }
 
     public function test_free_only_mode_forces_premium_organizations_to_free_entitlements(): void
@@ -80,8 +82,8 @@ class PlanAccessServiceTest extends TestCase
         $organization = $this->organization(['billing_status' => 'active']);
 
         $this->assertSame(config('opsdeck.free_plan_code'), app(PlanAccessService::class)->effectivePlanCode($organization));
-        $this->assertFalse(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
-        $this->assertSame(20, collect(app(PlanUsageService::class)->forOrganization($organization))->firstWhere('key', 'employees')['limit']);
+        $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, 'exports'));
+        $this->assertSame(200, collect(app(PlanUsageService::class)->forOrganization($organization))->firstWhere('key', 'employees')['limit']);
     }
 
     /** @param array<string, mixed> $overrides */

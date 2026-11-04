@@ -63,7 +63,6 @@ Route::get('/', function () {
 Route::controller(LegalController::class)->group(function (): void {
     Route::get('/terms', 'terms')->name('legal.terms');
     Route::get('/privacy', 'privacy')->name('legal.privacy');
-    Route::get('/commercial-transactions', 'commercialTransactions')->name('legal.commercial-transactions');
 });
 Route::get('/help', [HelpController::class, 'index'])->name('help.index');
 Route::get('/demo', DemoController::class)->name('demo.show');

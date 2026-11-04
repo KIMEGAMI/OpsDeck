@@ -25,7 +25,7 @@ class TrustedProxyConfigurationTest extends TestCase
         config(['trustedproxy.proxies' => null]);
         $untrustedResponse = $this->withServerVariables(['REMOTE_ADDR' => '192.0.2.10'])
             ->withHeaders($headers)
-            ->get('/__tests/proxy-context');
+            ->get('http://localhost/__tests/proxy-context');
 
         $untrustedResponse
             ->assertOk()
@@ -34,7 +34,7 @@ class TrustedProxyConfigurationTest extends TestCase
         config(['trustedproxy.proxies' => ['192.0.2.10']]);
         $trustedResponse = $this->withServerVariables(['REMOTE_ADDR' => '192.0.2.10'])
             ->withHeaders($headers)
-            ->get('/__tests/proxy-context');
+            ->get('http://localhost/__tests/proxy-context');
 
         $trustedResponse
             ->assertOk()

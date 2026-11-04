@@ -14,4 +14,11 @@
             <button type="submit">ログアウト</button>
         </form>
     </section>
+    <script>
+        window.addEventListener('pageshow', (event) => {
+            if (event.persisted) {
+                window.location.reload();
+            }
+        });
+    </script>
 </x-layouts.app>

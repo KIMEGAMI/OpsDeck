@@ -11,6 +11,7 @@ use App\Services\DatabaseClientVersionDetector;
 use App\Services\DatabaseDumpBinaryLocator;
 use App\Services\DatabaseMigrationHealthService;
 use App\Services\DatabaseTlsConfiguration;
+use App\Services\GoogleLoginCallbackReadiness;
 use App\Services\PhpExtensionReadiness;
 use App\Services\QueueHealthService;
 use App\Services\R2UploadCommandOptions;
@@ -54,6 +55,12 @@ class OpsDeckDeploymentReadiness extends Command
     private const STRIPE_PRICE_CONNECT_TIMEOUT_SECONDS = 3;
 
     private const STRIPE_PRICE_TIMEOUT_SECONDS = 10;
+
+    private const STRIPE_PORTAL_CONFIGURATION_LIMIT = 1;
+
+    private const STRIPE_PORTAL_CANCELLATION_MODE = 'at_period_end';
+
+    private const STRIPE_PORTAL_CANCELLATION_PRORATION_BEHAVIOR = 'none';
 
     private const RESEND_DOMAIN_CONNECT_TIMEOUT_SECONDS = 3;
 
@@ -102,7 +109,7 @@ class OpsDeckDeploymentReadiness extends Command
     /** @var array<string, Builder> */
     private array $databaseSchemaBuilders = [];
 
-    public function handle(DatabaseDumpBinaryLocator $dumpBinaryLocator, DatabaseClientVersionDetector $clientVersionDetector, BackupHealthService $backupHealth, BackupRestoreHealthService $backupRestoreHealth, BackupRestoreTargetConfiguration $restoreTargetConfiguration, DatabaseTlsConfiguration $databaseTls, ResolvedDatabaseConfiguration $resolvedDatabaseConfiguration, PhpExtensionReadiness $phpExtensionReadiness, RuntimeDirectoryReadiness $runtimeDirectoryReadiness, DatabaseMigrationHealthService $migrationHealth, SchedulerHealthService $schedulerHealth, AiModelPricing $aiModelPricing): int
+    public function handle(DatabaseDumpBinaryLocator $dumpBinaryLocator, DatabaseClientVersionDetector $clientVersionDetector, BackupHealthService $backupHealth, BackupRestoreHealthService $backupRestoreHealth, BackupRestoreTargetConfiguration $restoreTargetConfiguration, DatabaseTlsConfiguration $databaseTls, ResolvedDatabaseConfiguration $resolvedDatabaseConfiguration, PhpExtensionReadiness $phpExtensionReadiness, RuntimeDirectoryReadiness $runtimeDirectoryReadiness, DatabaseMigrationHealthService $migrationHealth, SchedulerHealthService $schedulerHealth, AiModelPricing $aiModelPricing, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): int
     {
         $this->durableQueueReadiness = null;
         $this->sharedCacheReadiness = null;
@@ -192,12 +199,16 @@ class OpsDeckDeploymentReadiness extends Command
                 ? ($this->hasBuiltFrontendAssets() ? 'pass' : 'fail')
                 : 'not_applicable',
         ];
+        if (config('services.google.login_enabled') === true) {
+            $this->checks['google_login_callback'] = $googleLoginCallbackReadiness->matchesApplicationUrl() ? 'pass' : 'fail';
+        }
         $aiEnabled = config('opsdeck.ai.enabled') === true;
+        $aiUnavailableStatus = app()->environment('production') ? 'fail' : 'not_applicable';
         $this->checks['ai_mapping'] = ! $aiEnabled
-            ? 'not_applicable'
+            ? $aiUnavailableStatus
             : ($this->hasAiMappingConfiguration() ? 'pass' : 'fail');
         $this->checks['ai_cost'] = ! $aiEnabled
-            ? 'not_applicable'
+            ? $aiUnavailableStatus
             : ($this->hasAiCostConfiguration($aiModelPricing) ? 'pass' : 'fail');
         if (app()->environment('production') && config('opsdeck.storage_quotas.platform_limit_megabytes') === null) {
             $this->checks['platform_storage_capacity'] = 'fail';
@@ -316,12 +327,13 @@ class OpsDeckDeploymentReadiness extends Command
             $maximumRestoreTestAgeDays = max(1, (int) config('opsdeck.backup.restore_test_max_age_days'));
             $guidance = match ($check) {
                 'environment' => '環境変数 APP_ENV を production に設定する',
-                'release_scope' => '1.0対象外機能を無効にする: OPSDECK_RELEASE_STORAGE_ADDON=false、OPSDECK_RELEASE_GOOGLE_SHEETS=false、OPSDECK_RELEASE_IMPACT_REPORT=false、OPSDECK_RELEASE_QUESTIONNAIRE_AI_DRAFT=false、OPSDECK_RELEASE_REFERRALS=false、OPSDECK_RELEASE_WORK_TIME_TRACKING=false',
+                'release_scope' => '組織ごとの保存容量を固定し、追加容量販売を無効にしたうえで対象外機能を無効にする: OPSDECK_RELEASE_GOOGLE_SHEETS=false、OPSDECK_RELEASE_IMPACT_REPORT=false、OPSDECK_RELEASE_QUESTIONNAIRE_AI_DRAFT=false、OPSDECK_RELEASE_REFERRALS=false、OPSDECK_RELEASE_WORK_TIME_TRACKING=false',
                 'app_key' => 'Laravelの暗号方式に合う APP_KEY を安全に生成して設定する',
                 'debug' => '環境変数 APP_DEBUG を false に設定する',
                 'https_url' => '環境変数 APP_URL に https:// から始まる公開URLを設定する',
                 'hsts' => 'OPSDECK_SECURITY_HSTS_MAX_AGE_SECONDS に正の秒数を設定する',
                 'session_cookie_security' => 'SESSION_SECURE_COOKIE=true、SESSION_HTTP_ONLY=true、SESSION_SAME_SITE=lax を設定する',
+                'google_login_callback' => 'APP_URLとGOOGLE_LOGIN_REDIRECT_URIのscheme・host・portを一致させ、戻り先を/auth/google/callbackにする。Google Cloud Consoleにも同一URIを登録する',
                 'private_file_storage' => 'Import/Evidenceを非公開ディスクへ保存し、R2ではOPSDECK_STORAGE_KEY / SECRET / REGION / BUCKET / ENDPOINTを設定する。S3はvisibility=privateとバケットの公開拒否、SFTPは非公開権限を設定する',
                 'production_logging' => '本番ログをwarning以上にし、daily/monthlyの保存期間を設定するか、stderr/syslog等の監視可能な出力先へ送る',
                 'frontend_assets' => '本番公開前に npm run build を実行し、public/build/manifest.json と参照されるCSS・JavaScript一式を配置する。開発用 public/hot ファイルは本番へ置かない',
@@ -346,11 +358,11 @@ class OpsDeckDeploymentReadiness extends Command
                 'scheduler_heartbeat' => '本番サーバーで毎分 php artisan schedule:run をプロセスマネージャー／cronに設定し、heartbeatを確認する',
                 'queue' => '永続Queueの設定とjobsテーブルを確認し、QUEUE_FAILED_DRIVER=database-uuids / failed_jobsがメインDBにあること、Queue workerの稼働を確認する',
                 'cache_lock' => '共有Cacheの接続、DB利用時はcache/cache_locksテーブルを確認し、一時ロックの取得・解放ができることを確認する',
-                'mail' => 'Resend SMTPを使う場合は、既存のMAIL_MAILER=smtp、MAIL_HOST=smtp.resend.com、MAIL_PORT=587、MAIL_SCHEME=smtp、MAIL_USERNAME=resend、MAIL_PASSWORD、MAIL_FROM_ADDRESS、MAIL_FROM_NAME、CONTACT_TO_ADDRESSを設定する。問い合わせ先CONTACT_TO_ADDRESSは送信元と分ける。メール送信の再試行間隔MAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する。このSMTP確認は設定値の確認であり、実際の配信成功や重複排除を保証しない。API方式を選ぶ場合のみ、冪等性設定とドメイン確認用APIキーが必要',
+                'mail' => 'Resendを使う場合は、既存のMAIL_MAILER=smtp、MAIL_HOST=smtp.resend.com、MAIL_PORT=587、MAIL_SCHEME=smtp、MAIL_USERNAME=resend、MAIL_PASSWORD、MAIL_FROM_ADDRESS、MAIL_FROM_NAME、CONTACT_TO_ADDRESSを設定する。問い合わせ先CONTACT_TO_ADDRESSは送信元と分ける。メール送信の再試行間隔MAIL_DELIVERY_JOB_BACKOFF_SECONDSも確認する。OpsDeckの本番メール確認では送信元ドメインの状態も検証するため、送信方式にかかわらずRESEND_DOMAIN_CHECK_API_KEYが必要。',
                 'failure_alert' => 'OPSDECK_PLATFORM_ADMIN_EMAILSに有効な管理者メールを設定し、共有Cacheとメール送信設定を確認する',
-                'stripe' => 'OPSDECK_STRIPE_ENVIRONMENT=liveを設定し、OPSDECK_STRIPE_LIVE_SECRET_KEY / OPSDECK_STRIPE_LIVE_PRICE_PREMIUM / OPSDECK_STRIPE_LIVE_WEBHOOK_SECRETを本番モードの値にする。追加容量を公開する場合はOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBも設定する',
+                'stripe' => 'Premium課金を公開するためOPSDECK_BILLING_ENABLED=trueを設定し、OPSDECK_STRIPE_ENVIRONMENT=live、OPSDECK_STRIPE_LIVE_SECRET_KEY / OPSDECK_STRIPE_LIVE_PRICE_PREMIUM / OPSDECK_STRIPE_LIVE_WEBHOOK_SECRETを本番モードの値にする。追加容量にはOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBも設定する',
                 'ai_mapping' => 'OPSDECK_AI_ENABLED=true、OPSDECK_AI_PROVIDER=openai、OPENAI_API_KEY と OPENAI_API_ENDPOINT=https://api.openai.com/v1/responses を設定してください。この確認は外部APIへ接続しません。AI障害時は手動マッピングを利用できます',
-                'ai_cost' => 'OPSDECK_AI_USD_TO_JPY_RATE と OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS を設定し、利用モデルの入力・出力単価をAI事業者の最新料金表に合わせる',
+                'ai_cost' => 'OPSDECK_AI_ENABLED=true、OPSDECK_AI_USD_TO_JPY_RATE と OPSDECK_AI_MODEL_PRICES_PER_MILLION_TOKENS を設定し、利用モデルの入力・出力単価をAI事業者の最新料金表に合わせる',
                 'commercial_information' => 'OPSDECK_SELLER_NAME / OPSDECK_SELLER_ADDRESS / OPSDECK_SELLER_PHONE / OPSDECK_SELLER_REPRESENTATIVE に正確な販売者情報を設定する',
                 'platform_storage_capacity' => '他サービスと共有するディスク容量・バックアップ・運用予備を考慮し、OPSDECK_PLATFORM_STORAGE_LIMIT_MIB にOpsDeck専用の上限MiBを設定する',
                 default => null,
@@ -1293,7 +1305,11 @@ class OpsDeckDeploymentReadiness extends Command
 
     private function hasRequiredReleaseScope(): bool
     {
-        foreach (['google_sheets', 'impact_report', 'questionnaire_ai_draft', 'referrals', 'storage_addon', 'work_time_tracking'] as $feature) {
+        if (config('opsdeck.release_features.storage_addon') !== false) {
+            return false;
+        }
+
+        foreach (['google_sheets', 'impact_report', 'questionnaire_ai_draft', 'referrals', 'work_time_tracking'] as $feature) {
             if (config('opsdeck.release_features.'.$feature) === true) {
                 return false;
             }
@@ -1957,18 +1973,50 @@ class OpsDeckDeploymentReadiness extends Command
             return 'stripe_price_api_rejected_request';
         }
 
+        $premiumPriceTaxBehavior = $stripePrice->json('tax_behavior');
         $priceIsReady = $stripePrice->json('id') === $price
             && $stripePrice->json('active') === true
             && $stripePrice->json('type') === 'recurring'
             && $stripePrice->json('billing_scheme') === 'per_unit'
             && $stripePrice->json('currency') === 'jpy'
             && $stripePrice->json('unit_amount') === (int) config('opsdeck.plans.premium.monthly_price_jpy')
-            && $stripePrice->json('tax_behavior') === 'exclusive'
+            && in_array($premiumPriceTaxBehavior, ['exclusive', 'unspecified', null], true)
             && $stripePrice->json('recurring.interval') === 'month'
             && (int) $stripePrice->json('recurring.interval_count') === 1;
 
         if (! $priceIsReady) {
             return 'premium_price_configuration_mismatch';
+        }
+
+        try {
+            $portalConfigurations = Http::withBasicAuth($secret, '')
+                ->connectTimeout(self::STRIPE_PRICE_CONNECT_TIMEOUT_SECONDS)
+                ->timeout(self::STRIPE_PRICE_TIMEOUT_SECONDS)
+                ->get('https://api.stripe.com/v1/billing_portal/configurations', [
+                    'active' => 'true',
+                    'is_default' => 'true',
+                    'limit' => self::STRIPE_PORTAL_CONFIGURATION_LIMIT,
+                ]);
+        } catch (Throwable) {
+            return 'stripe_customer_portal_configuration_unavailable';
+        }
+
+        if (! $portalConfigurations->successful()) {
+            return 'stripe_customer_portal_configuration_api_rejected_request';
+        }
+
+        $defaultPortalConfiguration = $portalConfigurations->json('data.0');
+        $cancellationConfiguration = data_get($defaultPortalConfiguration, 'features.subscription_cancel');
+        if (! is_array($defaultPortalConfiguration)
+            || $portalConfigurations->json('has_more') === true
+            || ($defaultPortalConfiguration['active'] ?? null) !== true
+            || ($defaultPortalConfiguration['is_default'] ?? null) !== true
+            || ($defaultPortalConfiguration['livemode'] ?? null) !== true
+            || ! is_array($cancellationConfiguration)
+            || ($cancellationConfiguration['enabled'] ?? null) !== true
+            || ($cancellationConfiguration['mode'] ?? null) !== self::STRIPE_PORTAL_CANCELLATION_MODE
+            || ($cancellationConfiguration['proration_behavior'] ?? null) !== self::STRIPE_PORTAL_CANCELLATION_PRORATION_BEHAVIOR) {
+            return 'stripe_customer_portal_cancellation_configuration_mismatch';
         }
 
         if ($storageAddonEnabled) {
@@ -2029,6 +2077,11 @@ class OpsDeckDeploymentReadiness extends Command
             return 'stripe_tax_settings_inactive_or_tax_code_missing';
         }
 
+        $defaultTaxBehavior = $taxSettings->json('defaults.tax_behavior');
+        if (! $this->hasExclusiveEffectiveTaxBehavior($premiumPriceTaxBehavior, $defaultTaxBehavior)) {
+            return 'stripe_tax_behavior_not_exclusive';
+        }
+
         if ($storageAddonEnabled
             && ! (is_string($storageAddonProductTaxCode) && trim($storageAddonProductTaxCode) !== '')
             && ! $hasDefaultTaxCode) {
@@ -2058,6 +2111,10 @@ class OpsDeckDeploymentReadiness extends Command
                 'Premium Priceが有効な月額JPY %s円（税別）になっているか確認してください。',
                 number_format((int) config('opsdeck.plans.premium.monthly_price_jpy')),
             ),
+            'stripe_customer_portal_configuration_unavailable' => 'Stripe Customer Portal設定を読み取れませんでした。ネットワークを確認してください。',
+            'stripe_customer_portal_configuration_api_rejected_request' => 'Stripe Customer Portal設定の読取りが拒否されました。Stripe APIキーの権限とモードを確認してください。',
+            'stripe_customer_portal_cancellation_configuration_mismatch' => 'Stripe DashboardのCustomer Portal既定設定で、解約を有効化し「期間末に解約」「按分なし」にしてください。',
+            'stripe_tax_behavior_not_exclusive' => 'Premium Priceの税区分、またはStripe Taxの既定税区分を外税（exclusive）にしてください。Priceがunspecifiedの場合はStripe Taxの既定値が使われます。',
             'storage_addon_capacity_limit_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBに1社あたりの追加容量上限（最大48GiB）を設定してください。全社合計はOPSDECK_PLATFORM_STORAGE_LIMIT_MIBの枠内で制御されます。',
             'storage_addon_price_configuration_incomplete' => 'OPSDECK_STORAGE_ADDON_MAX_GIBを設定する場合は、現在のStripeモードに対応するOPSDECK_STRIPE_TEST_PRICE_STORAGE_ADDON_GIBまたはOPSDECK_STRIPE_LIVE_PRICE_STORAGE_ADDON_GIBを設定してください。値は表示しません。',
             'storage_addon_price_api_unavailable' => '追加容量用PriceをStripe APIで確認できませんでした。ネットワークとAPI利用可否を確認してください。',
@@ -2072,5 +2129,15 @@ class OpsDeckDeploymentReadiness extends Command
             'japan_tax_registration_unavailable_or_inactive' => 'Stripeで日本の有効な税務登録を確認できませんでした。Tax設定とAPI権限を確認してください。',
             default => '設定内容を確認してください。秘密値やAPI応答本文は表示しません。',
         };
+    }
+
+    private function hasExclusiveEffectiveTaxBehavior(mixed $priceTaxBehavior, mixed $defaultTaxBehavior): bool
+    {
+        if ($priceTaxBehavior === 'exclusive') {
+            return true;
+        }
+
+        return in_array($priceTaxBehavior, ['unspecified', null], true)
+            && $defaultTaxBehavior === 'exclusive';
     }
 }

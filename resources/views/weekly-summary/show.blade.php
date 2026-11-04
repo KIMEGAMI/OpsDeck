@@ -10,7 +10,7 @@
         </dl>
         <h2>今も確認が必要な項目</h2>
         @if (! $summary['renewal_alerts_enabled'] && ! $summary['security_alerts_enabled'])
-            <p class="muted">無料プランでは、契約の更新期限やセキュリティ項目は表示していません。</p>
+            <p class="muted">現在利用できる範囲では、確認が必要な項目はありません。</p>
         @endif
         <dl>
             @if ($summary['renewal_alerts_enabled'])

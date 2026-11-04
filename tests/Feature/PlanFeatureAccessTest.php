@@ -6,107 +6,73 @@ use App\Enums\MembershipRole;
 use App\Enums\MembershipStatus;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
-use App\Models\Questionnaire;
-use App\Models\QuestionnaireQuestion;
 use App\Models\User;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Storage;
+use App\Services\PlanFeatureService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class PlanFeatureAccessTest extends TestCase
 {
-    public function test_free_plan_cannot_open_premium_pages_by_direct_url(): void
+    use RefreshDatabase;
+
+    public function test_all_plan_prices_are_zero_and_the_free_entitlements_match_legacy_premium(): void
+    {
+        config(['opsdeck.billing.enabled' => false]);
+        $freePlan = config('opsdeck.plans.free');
+        $legacyPlan = config('opsdeck.plans.premium');
+
+        foreach (config('opsdeck.plans') as $plan) {
+            $this->assertSame(0, $plan['monthly_price_jpy']);
+        }
+
+        $this->assertSame(0, config('opsdeck.storage_quotas.storage_addon_monthly_price_jpy'));
+        $this->assertSame($legacyPlan['limits'], $freePlan['limits']);
+        $this->assertSame($legacyPlan['capabilities'], $freePlan['capabilities']);
+        $this->assertFalse((bool) config('opsdeck.billing.enabled'));
+        $this->assertSame(3, config('opsdeck.ai.daily_request_limit'));
+        $this->assertSame(['fast' => 'gpt-6-luna', 'standard' => 'gpt-6-luna', 'deep' => 'gpt-6-luna'], config('opsdeck.ai.models'));
+    }
+
+    public function test_free_organization_can_open_currently_available_feature_pages(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member();
-        $premiumRoutes = [
+        $session = ['current_organization_id' => $organization->id];
+
+        foreach ([
             route('exports.index'),
             route('exports.download', 'employees'),
             route('security-controls.index'),
             route('evidence.index'),
             route('questionnaires.index'),
             route('impact-report.show'),
-            route('impact-report.download'),
-        ];
-
-        foreach ($premiumRoutes as $url) {
-            $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get($url)->assertForbidden();
+        ] as $url) {
+            $this->actingAs($user)->withSession($session)->get($url)->assertOk();
         }
-
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->get(route('dashboard'))
-            ->assertOk()
-            ->assertDontSee(route('reminders.renewals'), false)
-            ->assertDontSee(route('security-controls.index'), false)
-            ->assertDontSee(route('evidence.index'), false)
-            ->assertDontSee(route('questionnaires.index'), false)
-            ->assertDontSee(route('exports.index'), false)
-            ->assertDontSee(route('impact-report.show'), false);
     }
 
-    public function test_free_import_upgrade_path_respects_billing_owner_permission(): void
+    public function test_import_page_offers_xlsx_without_paid_upgrade_copy(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
-        [$owner, $organization] = $this->member();
-
-        $this->actingAs($owner)
-            ->withSession(['current_organization_id' => $organization->id])
-            ->get(route('imports.create'))
-            ->assertOk()
-            ->assertSee('FreeでもCSV/TXTから実データを登録できます。社員20名、資産50件、SaaSサービス10件まで登録できます。')
-            ->assertSee('Free / Premiumの違いを見る')
-            ->assertSee(route('billing.index'), false)
-            ->assertDontSee('組織Ownerにご相談ください。');
-
-        $operator = User::factory()->create(['email' => 'free-operator-'.Str::uuid().'@example.test']);
-        OrganizationMembership::query()->create([
-            'organization_id' => $organization->id,
-            'user_id' => $operator->id,
-            'role' => MembershipRole::Operator,
-            'status' => MembershipStatus::Active,
-            'joined_at' => now(),
-        ]);
-
-        $this->actingAs($operator)
-            ->withSession(['current_organization_id' => $organization->id])
-            ->get(route('imports.create'))
-            ->assertOk()
-            ->assertSee('FreeでもCSV/TXTから実データを登録できます。')
-            ->assertSee('Premium機能の契約については組織Ownerにご相談ください。')
-            ->assertDontSee(route('billing.index'), false);
-    }
-
-    public function test_free_plan_cannot_create_premium_resources_by_direct_post(): void
-    {
-        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
-        Storage::fake(config('opsdeck.evidence.disk'));
         [$user, $organization] = $this->member();
-        $questionnaire = Questionnaire::query()->create(['organization_id' => $organization->id, 'title' => 'Existing', 'status' => 'draft', 'created_by' => $user->id]);
-        $question = QuestionnaireQuestion::query()->create(['questionnaire_id' => $questionnaire->id, 'question_text' => 'Existing question', 'answer_type' => 'text', 'sort_order' => 1]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('security-controls.store'), ['control_code' => 'MFA', 'title' => 'MFA', 'category' => 'access', 'description' => 'Control', 'status' => 'unknown'])
-            ->assertForbidden();
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('evidence.store'), ['title' => 'Evidence', 'evidence_type' => 'policy', 'file' => UploadedFile::fake()->create('policy.pdf', 20, 'application/pdf')])
-            ->assertForbidden();
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('questionnaires.store'), ['title' => 'New questionnaire', 'status' => 'draft'])
-            ->assertForbidden();
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('questionnaire-questions.store'), ['questionnaire_id' => $questionnaire->id, 'question_text' => 'New question', 'answer_type' => 'text', 'sort_order' => 2])
-            ->assertForbidden();
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
-            ->post(route('questionnaire-answers.store'), ['question_id' => $question->id, 'answer_text' => 'Answer', 'answer_status' => 'draft', 'source_type' => 'FACT'])
-            ->assertForbidden();
+            ->get(route('imports.create'))
+            ->assertOk()
+            ->assertSee('CSVファイル / Excelファイル（XLSX）')
+            ->assertSee('使える形式：CSV / TXT / Excel（.xlsx）')
+            ->assertDontSee('Premium');
+    }
 
-        $this->assertDatabaseMissing('security_controls', ['organization_id' => $organization->id, 'control_code' => 'MFA']);
-        $this->assertDatabaseMissing('evidence', ['organization_id' => $organization->id, 'title' => 'Evidence']);
-        $this->assertDatabaseMissing('questionnaires', ['organization_id' => $organization->id, 'title' => 'New questionnaire']);
-        $this->assertDatabaseMissing('questionnaire_questions', ['questionnaire_id' => $questionnaire->id, 'question_text' => 'New question']);
-        $this->assertDatabaseMissing('questionnaire_answers', ['question_id' => $question->id]);
-        $this->assertSame([], Storage::disk(config('opsdeck.evidence.disk'))->allFiles('evidence/'.$organization->id));
+    public function test_free_plan_features_are_available_without_a_paid_plan_code(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [, $organization] = $this->member();
+
+        foreach (['xlsx_preview', 'import_execution', 'ai_column_mapping', 'renewal_alerts', 'savings_opportunities', 'realized_savings', 'security_controls', 'evidence', 'questionnaires', 'exports', 'impact_report'] as $feature) {
+            $this->assertTrue(app(PlanFeatureService::class)->isAvailable($organization, $feature), $feature);
+        }
     }
 
     /** @return array{0: User, 1: Organization} */
@@ -114,8 +80,20 @@ class PlanFeatureAccessTest extends TestCase
     {
         $suffix = Str::lower(Str::random(8));
         $user = User::factory()->create(['email' => 'free-feature-'.Str::uuid().'@example.test']);
-        $organization = Organization::query()->create(['name' => 'Free Features '.$suffix, 'slug' => 'free-features-'.$suffix, 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.free_plan_code'), 'billing_status' => config('opsdeck.default_billing_status')]);
-        OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => MembershipRole::Owner, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
+        $organization = Organization::query()->create([
+            'name' => 'Free Features '.$suffix,
+            'slug' => 'free-features-'.$suffix,
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.free_plan_code'),
+            'billing_status' => config('opsdeck.default_billing_status'),
+        ]);
+        OrganizationMembership::query()->create([
+            'organization_id' => $organization->id,
+            'user_id' => $user->id,
+            'role' => MembershipRole::Owner,
+            'status' => MembershipStatus::Active,
+            'joined_at' => now(),
+        ]);
 
         return [$user, $organization];
     }

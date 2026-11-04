@@ -41,7 +41,7 @@
                     <x-nav-link :href="route('settings.organization')" :active="request()->routeIs('settings.organization')">組織設定</x-nav-link>
                 @endif
                 @if (request()->user()->can('manageBilling', request()->attributes->get('currentOrganization')))
-                    <x-nav-link :href="route('billing.index')" :active="request()->routeIs('billing.index')">プラン・お支払い</x-nav-link>
+                    <x-nav-link :href="route('billing.index')" :active="request()->routeIs('billing.index')">無料公開について</x-nav-link>
                 @endif
             </div>
         @endif

@@ -8,9 +8,12 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\StripeWebhookEvent;
 use App\Models\User;
+use App\Services\StorageAddonCapacityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as ClientRequest;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -20,6 +23,20 @@ class BillingControllerTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+            'opsdeck.plans.premium.monthly_price_jpy' => 9800,
+            'opsdeck.storage_quotas.storage_addon_monthly_price_jpy' => 100,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
+        ]);
+    }
+
     public function test_free_only_mode_hides_paid_offers_and_blocks_all_stripe_mutations(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -27,6 +44,7 @@ class BillingControllerTest extends TestCase
         $organization->update(['stripe_customer_id' => 'cus_free_mode_test']);
         config([
             'opsdeck.billing.enabled' => false,
+            'opsdeck.release_features.storage_addon' => false,
             'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
             'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
             'services.stripe.secret' => 'sk_test_free_mode',
@@ -38,14 +56,15 @@ class BillingControllerTest extends TestCase
 
         $this->get('/')
             ->assertOk()
-            ->assertSee('現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
-            ->assertDontSee('Premiumに申し込む')
-            ->assertDontSee('9,800円');
+            ->assertSee('OpsDeckの機能を、すべて無料で公開中')
+            ->assertSee('月額0円')
+            ->assertDontSee('Premium')
+            ->assertDontSee('Stripe Checkout');
 
         $this->actingAs($user)->withSession($session)
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('月額0円のFreeのみ')
+            ->assertSee('現在、月額0円で公開しています')
             ->assertDontSee('9,800円')
             ->assertDontSee('Stripe Checkoutを開始')
             ->assertDontSee('Customer Portalを開く');
@@ -133,12 +152,20 @@ class BillingControllerTest extends TestCase
             ], 200),
             'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
             'https://api.stripe.com/v1/customers' => Http::response(['id' => $customerId], 200),
-            'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
+            'https://api.stripe.com/v1/checkout/sessions?*' => Http::response(['has_more' => false, 'data' => []], 200),
+            'https://api.stripe.com/v1/checkout/sessions' => Http::response([
+                'id' => 'cs_initial_owner',
+                'url' => 'https://checkout.stripe.test/session',
+                'expires_at' => now()->addHours(24)->timestamp,
+            ], 200),
         ]);
 
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->post(route('billing.checkout'));
         $response->assertRedirect('https://checkout.stripe.test/session');
         $this->assertSame($customerId, $organization->refresh()->stripe_customer_id);
+        $this->assertSame(0, $organization->storage_addon_checkout_reserved_gib);
+        $this->assertSame('cs_initial_owner', $organization->storage_addon_checkout_session_id);
+        $this->assertTrue($organization->storage_addon_checkout_reservation_expires_at->isFuture());
         Http::assertSent(fn ($request): bool => $request->url() === 'https://api.stripe.com/v1/checkout/sessions'
             && $request['line_items[0][price]'] === 'price_test'
             && $request['automatic_tax[enabled]'] === 'true'
@@ -151,6 +178,56 @@ class BillingControllerTest extends TestCase
         Http::assertSent(fn ($request): bool => $request->url() === 'https://api.stripe.com/v1/tax/settings');
         Http::assertNotSent(fn ($request): bool => str_starts_with($request->url(), 'https://api.stripe.com/v1/tax/registrations'));
         Http::assertSent(fn ($request): bool => ! str_contains($request->body(), 'sk_test_secret'));
+    }
+
+    public function test_pending_checkout_reserves_global_capacity_before_a_second_company_can_subscribe(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$firstUser, $firstOrganization] = $this->member(MembershipRole::Owner);
+        [$secondUser, $secondOrganization] = $this->member(MembershipRole::Owner);
+        $premiumBaseQuotaMegabytes = (int) config('opsdeck.storage_quotas.plan_limit_megabytes.'.config('opsdeck.premium_plan_code'));
+        config([
+            'opsdeck.release_features.storage_addon' => true,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => $premiumBaseQuotaMegabytes,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'services.stripe.secret' => 'sk_test_secret',
+            'services.stripe.prices.premium' => 'price_test',
+        ]);
+        Http::fake([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
+            'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_first_checkout'], 200),
+            'https://api.stripe.com/v1/checkout/sessions?*' => Http::response(['has_more' => false, 'data' => []], 200),
+            'https://api.stripe.com/v1/checkout/sessions' => Http::response([
+                'id' => 'cs_first_checkout',
+                'url' => 'https://checkout.stripe.test/first',
+                'expires_at' => now()->addHours(24)->timestamp,
+            ], 200),
+        ]);
+
+        $this->actingAs($firstUser)
+            ->withSession(['current_organization_id' => $firstOrganization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 0])
+            ->assertRedirect('https://checkout.stripe.test/first');
+
+        $this->actingAs($secondUser)
+            ->withSession(['current_organization_id' => $secondOrganization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 0])
+            ->assertServiceUnavailable();
+
+        $this->assertSame(0, $firstOrganization->refresh()->storage_addon_checkout_reserved_gib);
+        $this->assertSame('cs_first_checkout', $firstOrganization->storage_addon_checkout_session_id);
+        $this->assertNull($secondOrganization->refresh()->stripe_customer_id);
+        Http::assertSentCount(6);
     }
 
     public function test_owner_can_select_storage_addon_for_the_initial_premium_checkout(): void
@@ -188,13 +265,29 @@ class BillingControllerTest extends TestCase
             ], 200),
             'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
             'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_test'], 200),
-            'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
+            'https://api.stripe.com/v1/checkout/sessions?*' => Http::response(['has_more' => false, 'data' => []], 200),
+            'https://api.stripe.com/v1/checkout/sessions' => function (ClientRequest $request) use ($organization) {
+                $reservedOrganization = $organization->fresh();
+                $this->assertSame(1, DB::transactionLevel());
+                $this->assertSame(2, $reservedOrganization->storage_addon_checkout_reserved_gib);
+                $this->assertNull($reservedOrganization->storage_addon_checkout_session_id);
+
+                return Http::response([
+                    'id' => 'cs_storage_addon_checkout',
+                    'url' => 'https://checkout.stripe.test/session',
+                    'expires_at' => now()->addHours(24)->timestamp,
+                ], 200);
+            },
         ]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('billing.checkout'), ['storage_addon_gib' => 2])
             ->assertRedirect('https://checkout.stripe.test/session');
 
+        $reservedOrganization = $organization->fresh();
+        $this->assertSame(2, $reservedOrganization->storage_addon_checkout_reserved_gib);
+        $this->assertSame('cs_storage_addon_checkout', $reservedOrganization->storage_addon_checkout_session_id);
+        $this->assertTrue($reservedOrganization->storage_addon_checkout_reservation_expires_at->isFuture());
         Http::assertSent(fn ($request): bool => $request->url() === 'https://api.stripe.com/v1/checkout/sessions'
             && $request['line_items[0][price]'] === 'price_test'
             && $request['line_items[0][quantity]'] === 1
@@ -222,6 +315,136 @@ class BillingControllerTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_initial_checkout_rejects_zero_addon_when_platform_cannot_reserve_the_premium_base_quota(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $premiumBaseQuotaMegabytes = (int) config('opsdeck.storage_quotas.plan_limit_megabytes.'.config('opsdeck.premium_plan_code'));
+        config([
+            'opsdeck.release_features.storage_addon' => true,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => $premiumBaseQuotaMegabytes - 1,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'services.stripe.prices.premium' => 'price_test',
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        Http::preventStrayRequests();
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertSee('保存容量の空き状況を確認できないため、Premiumの新規申込みを一時停止しています。')
+            ->assertDontSee('Stripe Checkoutを開始');
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 0])
+            ->assertServiceUnavailable();
+
+        Http::assertNothingSent();
+    }
+
+    public function test_billing_page_calculates_premium_capacity_only_once(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        $capacityService = \Mockery::mock(StorageAddonCapacityService::class);
+        $capacityService->shouldReceive('maximumQuantity')->twice()->andReturn(5);
+        $capacityService->shouldReceive('maximumCheckoutQuantity')
+            ->once()
+            ->with(\Mockery::type(Organization::class))
+            ->andReturn(null);
+        $this->app->instance(StorageAddonCapacityService::class, $capacityService);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertSee('保存容量の空き状況を確認できないため、Premiumの新規申込みを一時停止しています。');
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('billing.index'))
+            ->assertOk()
+            ->assertSee('保存容量の空き状況を確認できないため、Premiumの新規申込みを一時停止しています。');
+    }
+
+    public function test_billing_capacity_display_cache_expires_after_its_short_ttl(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        $capacityService = \Mockery::mock(StorageAddonCapacityService::class);
+        $capacityService->shouldReceive('maximumQuantity')->times(3)->andReturn(5);
+        $capacityService->shouldReceive('maximumCheckoutQuantity')
+            ->twice()
+            ->with(\Mockery::type(Organization::class))
+            ->andReturn(5, 4);
+        $this->app->instance(StorageAddonCapacityService::class, $capacityService);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($user)->withSession($session)->get(route('billing.index'))->assertOk();
+        $this->actingAs($user)->withSession($session)->get(route('billing.index'))->assertOk();
+
+        $this->travel(16)->seconds();
+
+        $this->actingAs($user)->withSession($session)->get(route('billing.index'))->assertOk();
+    }
+
+    public function test_checkout_rechecks_capacity_instead_of_using_the_billing_display_cache(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        Http::preventStrayRequests();
+        $capacityService = \Mockery::mock(StorageAddonCapacityService::class);
+        $capacityService->shouldReceive('maximumQuantity')->once()->andReturn(5);
+        $capacityService->shouldReceive('maximumCheckoutQuantity')
+            ->twice()
+            ->with(\Mockery::type(Organization::class))
+            ->andReturn(5, 0);
+        $this->app->instance(StorageAddonCapacityService::class, $capacityService);
+        $session = ['current_organization_id' => $organization->id];
+
+        $this->actingAs($user)->withSession($session)
+            ->get(route('billing.index'))
+            ->assertOk();
+
+        $this->actingAs($user)->withSession($session)
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 1])
+            ->assertSessionHasErrors('storage_addon_gib');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_initial_checkout_calculates_premium_capacity_only_once(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config([
+            'opsdeck.billing.enabled' => true,
+            'opsdeck.release_features.storage_addon' => true,
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        Http::preventStrayRequests();
+        $capacityService = \Mockery::mock(StorageAddonCapacityService::class);
+        $capacityService->shouldReceive('maximumCheckoutQuantity')
+            ->once()
+            ->with(\Mockery::type(Organization::class))
+            ->andReturn(null);
+        $this->app->instance(StorageAddonCapacityService::class, $capacityService);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 0])
+            ->assertServiceUnavailable();
+
+        Http::assertNothingSent();
+    }
+
     public function test_checkout_accepts_unspecified_price_tax_behavior_when_account_default_is_exclusive(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
@@ -243,6 +466,7 @@ class BillingControllerTest extends TestCase
             ], 200),
             'https://api.stripe.com/v1/tax/registrations*' => Http::response(['has_more' => false, 'data' => [['id' => 'taxreg_japan', 'country' => 'JP', 'status' => 'active']]], 200),
             'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_test'], 200),
+            'https://api.stripe.com/v1/checkout/sessions?*' => Http::response(['has_more' => false, 'data' => []], 200),
             'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
         ]);
 
@@ -306,6 +530,7 @@ class BillingControllerTest extends TestCase
             ], 200),
             'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
             'https://api.stripe.com/v1/customers' => Http::response(['id' => 'cus_'.Str::uuid()], 200),
+            'https://api.stripe.com/v1/checkout/sessions?*' => Http::response(['has_more' => false, 'data' => []], 200),
             'https://api.stripe.com/v1/checkout/sessions' => Http::response(['url' => 'https://checkout.stripe.test/session'], 200),
         ]);
 
@@ -319,7 +544,7 @@ class BillingControllerTest extends TestCase
             ->post(route('billing.checkout'))
             ->assertTooManyRequests();
 
-        Http::assertSentCount(4);
+        Http::assertSentCount(6);
         Http::assertNotSent(fn ($request): bool => str_starts_with($request->url(), 'https://api.stripe.com/v1/tax/registrations'));
     }
 
@@ -355,7 +580,8 @@ class BillingControllerTest extends TestCase
             'services.stripe.prices.premium' => 'price_test',
         ]);
         $checkoutIdempotencyKeys = [];
-        Http::fake(function (ClientRequest $request) use (&$checkoutIdempotencyKeys) {
+        $openSession = null;
+        Http::fake(function (ClientRequest $request) use (&$checkoutIdempotencyKeys, &$openSession, $organization) {
             if (str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')) {
                 return Http::response([
                     'active' => true,
@@ -377,10 +603,31 @@ class BillingControllerTest extends TestCase
                 return Http::response(['has_more' => false, 'data' => [['id' => 'taxreg_japan', 'country' => 'JP', 'status' => 'active']]], 200);
             }
 
+            if ($request->method() === 'GET' && str_starts_with($request->url(), 'https://api.stripe.com/v1/checkout/sessions?')) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+                return Http::response([
+                    'has_more' => false,
+                    'data' => ($query['status'] ?? null) === 'open' && $openSession !== null ? [$openSession] : [],
+                ], 200);
+            }
+
             if ($request->url() === 'https://api.stripe.com/v1/checkout/sessions') {
                 $checkoutIdempotencyKeys[] = $request->header('Idempotency-Key')[0] ?? null;
+                $openSession = [
+                    'id' => 'cs_reused',
+                    'status' => 'open',
+                    'url' => 'https://checkout.stripe.test/session',
+                    'mode' => 'subscription',
+                    'metadata' => [
+                        'organization_id' => (string) $organization->id,
+                        'opsdeck_checkout_fingerprint' => isset($request['metadata[opsdeck_checkout_fingerprint]'])
+                            ? $request['metadata[opsdeck_checkout_fingerprint]']
+                            : 'legacy',
+                    ],
+                ];
 
-                return Http::response(['url' => 'https://checkout.stripe.test/session'], 200);
+                return Http::response($openSession, 200);
             }
 
             return Http::response([], 404);
@@ -393,9 +640,180 @@ class BillingControllerTest extends TestCase
                 ->assertRedirect('https://checkout.stripe.test/session');
         }
 
-        $this->assertCount(2, $checkoutIdempotencyKeys);
+        $this->assertCount(1, $checkoutIdempotencyKeys);
         $this->assertNotNull($checkoutIdempotencyKeys[0]);
-        $this->assertSame($checkoutIdempotencyKeys[0], $checkoutIdempotencyKeys[1]);
+    }
+
+    public function test_checkout_expires_a_different_open_selection_before_creating_a_new_session(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['stripe_customer_id' => 'cus_existing']);
+        config([
+            'opsdeck.billing.checkout_attempts_per_minute' => 2,
+            'opsdeck.release_features.storage_addon' => true,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'services.stripe.secret' => 'sk_test_secret',
+            'services.stripe.prices.premium' => 'price_test',
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        $openSession = null;
+        $createdCheckoutRequests = [];
+        $expiredSessionIds = [];
+        Http::fake(function (ClientRequest $request) use ($organization, &$openSession, &$createdCheckoutRequests, &$expiredSessionIds) {
+            if (str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')) {
+                return Http::response([
+                    'active' => true,
+                    'type' => 'recurring',
+                    'billing_scheme' => 'per_unit',
+                    'currency' => 'jpy',
+                    'unit_amount' => 9800,
+                    'tax_behavior' => 'exclusive',
+                    'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                    'recurring' => ['interval' => 'month', 'interval_count' => 1],
+                ], 200);
+            }
+
+            if (str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_storage_test')) {
+                return Http::response([
+                    'id' => 'price_storage_test',
+                    'active' => true,
+                    'type' => 'recurring',
+                    'billing_scheme' => 'per_unit',
+                    'currency' => 'jpy',
+                    'unit_amount' => 100,
+                    'tax_behavior' => 'exclusive',
+                    'product' => ['id' => 'prod_storage_test', 'tax_code' => 'txcd_test_service'],
+                    'recurring' => ['interval' => 'month', 'interval_count' => 1],
+                ], 200);
+            }
+
+            if ($request->url() === 'https://api.stripe.com/v1/tax/settings') {
+                return Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200);
+            }
+
+            if ($request->method() === 'GET' && str_starts_with($request->url(), 'https://api.stripe.com/v1/checkout/sessions?')) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+                return Http::response([
+                    'has_more' => false,
+                    'data' => ($query['status'] ?? null) === 'open' && $openSession !== null ? [$openSession] : [],
+                ], 200);
+            }
+
+            if ($request->method() === 'POST' && preg_match('#/v1/checkout/sessions/(cs_[^/]+)/expire$#', $request->url(), $matches) === 1) {
+                $expiredSessionIds[] = $matches[1];
+                $openSession = null;
+
+                return Http::response(['id' => $matches[1], 'status' => 'expired'], 200);
+            }
+
+            if ($request->method() === 'POST' && $request->url() === 'https://api.stripe.com/v1/checkout/sessions') {
+                $createdCheckoutRequests[] = $request;
+                $sessionId = 'cs_'.count($createdCheckoutRequests);
+                $openSession = [
+                    'id' => $sessionId,
+                    'status' => 'open',
+                    'url' => 'https://checkout.stripe.test/'.$sessionId,
+                    'mode' => 'subscription',
+                    'metadata' => [
+                        'organization_id' => (string) $organization->id,
+                        'opsdeck_checkout_fingerprint' => isset($request['metadata[opsdeck_checkout_fingerprint]'])
+                            ? $request['metadata[opsdeck_checkout_fingerprint]']
+                            : 'legacy',
+                    ],
+                ];
+
+                return Http::response($openSession, 200);
+            }
+
+            return Http::response([], 404);
+        });
+
+        $firstResponse = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 1]);
+        $firstResponse->assertRedirect('https://checkout.stripe.test/cs_1');
+
+        $secondResponse = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 2]);
+        $secondResponse->assertRedirect('https://checkout.stripe.test/cs_2');
+
+        $this->assertCount(2, $createdCheckoutRequests);
+        $this->assertSame(['cs_1'], $expiredSessionIds);
+        $this->assertSame(2, $createdCheckoutRequests[1]['line_items[1][quantity]']);
+    }
+
+    public function test_checkout_waits_for_a_recent_completed_session_webhook_before_starting_another(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $lastStripeEventCreatedAt = now()->timestamp;
+        $organization->forceFill([
+            'created_at' => now()->subDays(2),
+            'stripe_customer_id' => 'cus_existing',
+            'stripe_last_event_created_at' => $lastStripeEventCreatedAt,
+        ])->save();
+        config([
+            'opsdeck.billing.checkout_attempts_per_minute' => 2,
+            'services.stripe.secret' => 'sk_test_secret',
+            'services.stripe.prices.premium' => 'price_test',
+        ]);
+        $checkoutSessionListStatuses = [];
+        Http::fake(function (ClientRequest $request) use ($organization, $lastStripeEventCreatedAt, &$checkoutSessionListStatuses) {
+            if (str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')) {
+                return Http::response([
+                    'active' => true,
+                    'type' => 'recurring',
+                    'billing_scheme' => 'per_unit',
+                    'currency' => 'jpy',
+                    'unit_amount' => 9800,
+                    'tax_behavior' => 'exclusive',
+                    'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                    'recurring' => ['interval' => 'month', 'interval_count' => 1],
+                ], 200);
+            }
+
+            if ($request->url() === 'https://api.stripe.com/v1/tax/settings') {
+                return Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200);
+            }
+
+            if ($request->method() === 'GET' && str_starts_with($request->url(), 'https://api.stripe.com/v1/checkout/sessions?')) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+                $checkoutSessionListStatuses[] = $query['status'] ?? null;
+                $sessionCreatedAt = $lastStripeEventCreatedAt - 60;
+                $isRecentCompletedSession = count($checkoutSessionListStatuses) === 2
+                    && ($query['status'] ?? null) === 'complete'
+                    && isset($query['created']['gte'])
+                    && (int) $query['created']['gte'] <= $sessionCreatedAt;
+
+                return Http::response([
+                    'has_more' => false,
+                    'data' => $isRecentCompletedSession ? [[
+                        'id' => 'cs_recently_completed',
+                        'mode' => 'subscription',
+                        'created' => $sessionCreatedAt,
+                        'subscription' => 'sub_pending_webhook',
+                        'metadata' => ['organization_id' => (string) $organization->id],
+                    ]] : [],
+                ], 200);
+            }
+
+            return Http::response([], 404);
+        });
+
+        $response = $this->followingRedirects()
+            ->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'));
+
+        $response->assertOk()
+            ->assertSee('別の決済手続きが進行中、または決済完了通知を確認しています。');
+        $this->assertSame(['open', 'complete'], $checkoutSessionListStatuses);
+        Http::assertNotSent(fn (ClientRequest $request): bool => $request->method() === 'POST'
+            && $request->url() === 'https://api.stripe.com/v1/checkout/sessions');
     }
 
     public function test_checkout_fails_closed_when_stripe_price_does_not_match_the_advertised_monthly_price(): void
@@ -506,7 +924,7 @@ class BillingControllerTest extends TestCase
         Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
     }
 
-    public function test_checkout_fails_closed_when_only_account_default_tax_code_is_set(): void
+    public function test_checkout_fails_closed_when_product_tax_code_is_missing_even_if_account_default_is_set(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
         config(['services.stripe.secret' => 'sk_test_secret', 'services.stripe.prices.premium' => 'price_test']);
@@ -526,6 +944,48 @@ class BillingControllerTest extends TestCase
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->post(route('billing.checkout'))
+            ->assertServiceUnavailable();
+
+        $this->assertNull($organization->refresh()->stripe_customer_id);
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v1/customers') || str_contains($request->url(), '/v1/checkout/sessions'));
+    }
+
+    public function test_checkout_fails_closed_when_storage_addon_product_tax_code_is_missing_even_if_account_default_is_set(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        config([
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'services.stripe.secret' => 'sk_test_secret',
+            'services.stripe.prices.premium' => 'price_test',
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+        ]);
+        Http::fake([
+            'https://api.stripe.com/v1/prices/price_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 9800,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+            'https://api.stripe.com/v1/prices/price_storage_test*' => Http::response([
+                'active' => true,
+                'type' => 'recurring',
+                'billing_scheme' => 'per_unit',
+                'currency' => 'jpy',
+                'unit_amount' => 100,
+                'tax_behavior' => 'exclusive',
+                'product' => ['id' => 'prod_storage_test', 'tax_code' => null],
+                'recurring' => ['interval' => 'month', 'interval_count' => 1],
+            ], 200),
+            'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 1])
             ->assertServiceUnavailable();
 
         $this->assertNull($organization->refresh()->stripe_customer_id);
@@ -603,6 +1063,7 @@ class BillingControllerTest extends TestCase
                 'recurring' => ['interval' => 'month', 'interval_count' => 1],
             ], 200),
             'https://api.stripe.com/v1/tax/settings' => Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200),
+            'https://api.stripe.com/v1/checkout/sessions?*' => Http::response(['has_more' => false, 'data' => []], 200),
             'https://api.stripe.com/v1/checkout/sessions' => Http::response([
                 'error' => [
                     'type' => 'invalid_request_error',
@@ -701,6 +1162,72 @@ class BillingControllerTest extends TestCase
             'event_key' => 'billing_checkout_started',
         ]);
         Http::assertSent(fn ($request): bool => str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test'));
+    }
+
+    public function test_checkout_creation_timeout_keeps_capacity_reserved_before_the_external_request(): void
+    {
+        [$user, $organization] = $this->member(MembershipRole::Owner);
+        $organization->update(['stripe_customer_id' => 'cus_existing_'.Str::uuid()]);
+        config([
+            'opsdeck.release_features.storage_addon' => true,
+            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
+            'services.stripe.secret' => 'sk_test_secret',
+            'services.stripe.prices.premium' => 'price_test',
+            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+            'services.stripe.environment' => 'test',
+        ]);
+        Http::fake(function (ClientRequest $request) use ($organization) {
+            if ($request->method() === 'GET' && str_starts_with($request->url(), 'https://api.stripe.com/v1/prices/price_test')) {
+                return Http::response([
+                    'active' => true,
+                    'type' => 'recurring',
+                    'billing_scheme' => 'per_unit',
+                    'currency' => 'jpy',
+                    'unit_amount' => 9800,
+                    'tax_behavior' => 'exclusive',
+                    'product' => ['id' => 'prod_test', 'tax_code' => 'txcd_test_service'],
+                    'recurring' => ['interval' => 'month', 'interval_count' => 1],
+                ], 200);
+            }
+
+            if ($request->method() === 'GET' && $request->url() === 'https://api.stripe.com/v1/tax/settings') {
+                return Http::response(['status' => 'active', 'defaults' => ['tax_code' => 'txcd_test_default']], 200);
+            }
+
+            if ($request->method() === 'GET' && str_contains($request->url(), '/v1/checkout/sessions')) {
+                $this->assertPlatformStorageQuotaLockAvailable();
+
+                return Http::response(['has_more' => false, 'data' => []], 200);
+            }
+
+            if ($request->method() === 'POST' && $request->url() === 'https://api.stripe.com/v1/checkout/sessions') {
+                $this->assertPlatformStorageQuotaLockAvailable();
+
+                $reservedOrganization = $organization->fresh();
+                $this->assertSame(1, DB::transactionLevel());
+                $this->assertSame(0, $reservedOrganization->storage_addon_checkout_reserved_gib);
+                $this->assertNull($reservedOrganization->storage_addon_checkout_session_id);
+
+                throw new ConnectionException('PRIVATE_STRIPE_TIMEOUT');
+            }
+
+            return Http::response([], 500);
+        });
+
+        $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->post(route('billing.checkout'), ['storage_addon_gib' => 0]);
+
+        $response->assertServiceUnavailable()
+            ->assertDontSee('PRIVATE_STRIPE_TIMEOUT');
+        $reservedOrganization = $organization->fresh();
+        $this->assertSame(0, $reservedOrganization->storage_addon_checkout_reserved_gib);
+        $this->assertNull($reservedOrganization->storage_addon_checkout_session_id);
+        $this->assertTrue($reservedOrganization->storage_addon_checkout_reservation_expires_at->isFuture());
+        $this->assertDatabaseMissing('product_events', [
+            'organization_id' => $organization->id,
+            'event_key' => 'billing_checkout_started',
+        ]);
     }
 
     public function test_customer_portal_connection_failure_shows_safe_recovery_instructions(): void
@@ -925,21 +1452,19 @@ class BillingControllerTest extends TestCase
             ->assertSeeInOrder(['XLSXプレビュー', '利用可', '—']);
     }
 
-    public function test_free_member_can_choose_storage_addon_quantity_for_premium_checkout(): void
+    public function test_billing_page_does_not_link_to_removed_commercial_transactions_page(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
         config([
-            'opsdeck.storage_quotas.platform_limit_megabytes' => 1000000,
-            'opsdeck.storage_quotas.storage_addon_max_gib' => 5,
-            'services.stripe.prices.storage_addon_gib' => 'price_storage_test',
+            'opsdeck.release_features.storage_addon' => false,
+            'opsdeck.storage_quotas.storage_addon_max_gib' => null,
         ]);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('name="storage_addon_gib"', false)
-            ->assertSee('1GiB（追加 月額100円・税別）', false)
-            ->assertSee('選択した追加料金はPremiumの初回請求から加算され');
+            ->assertSee('利用規約')
+            ->assertDontSee('特定商取引法に基づく表記');
     }
 
     public function test_billing_page_labels_cover_every_configured_plan_capability(): void
@@ -1201,7 +1726,7 @@ class BillingControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('billing.index'))
             ->assertOk()
-            ->assertSee('追加容量の申込みは現在準備中です。')
+            ->assertSee('共有保存枠とStripe設定を確認できるまで変更できません。')
             ->assertDontSee(route('billing.storage-addon.update'), false);
 
         Http::assertNothingSent();
@@ -1263,7 +1788,7 @@ class BillingControllerTest extends TestCase
             ->get(route('billing.index'))
             ->assertOk()
             ->assertSee('月額100円（税別）')
-            ->assertSee('3.0GiB')
+            ->assertSee('6.0GiB')
             ->assertSee('data-storage-addon-quantity', false)
             ->assertSee('data-storage-addon-capacity-warning', false);
     }
@@ -1371,5 +1896,12 @@ class BillingControllerTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => $role, 'status' => MembershipStatus::Active, 'joined_at' => now()]);
 
         return [$user, $organization];
+    }
+
+    private function assertPlatformStorageQuotaLockAvailable(): void
+    {
+        $lock = Cache::lock('opsdeck:platform-storage-quota', 10);
+        $this->assertTrue($lock->get(), 'Stripe requests must not hold the shared storage quota lock.');
+        $lock->release();
     }
 }

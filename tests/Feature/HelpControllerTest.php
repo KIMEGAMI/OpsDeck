@@ -6,13 +6,6 @@ use Tests\TestCase;
 
 class HelpControllerTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        config(['opsdeck.billing.enabled' => true]);
-    }
-
     public function test_help_page_is_public_and_contains_scope_guidance(): void
     {
         config(['opsdeck.release_features.google_sheets' => false]);
@@ -53,11 +46,12 @@ class HelpControllerTest extends TestCase
             ->assertSee('AI補助を使うと、どのデータが外部へ送られますか？')
             ->assertSee('取込データの行、ファイル全体、シート全体は送信しません')
             ->assertSee('氏名などは自動判定できない')
-            ->assertSee('FreeプランではAI候補を利用できないため送信しません')
+            ->assertSee('AI候補は1組織あたり1日3回までです')
             ->assertSee(route('onboarding.index'))
             ->assertSee(route('imports.create'))
-            ->assertSee('無料プラン（Free）でもCSV/TXTを取り込めます')
-            ->assertSee('社員・端末・SaaSサービスの登録数はFreeの上限まで')
+            ->assertSee('現在提供している機能はすべて無料で利用できます')
+            ->assertSee('CSV/TXTとXLSXを利用でき')
+            ->assertSee('プランによる機能差や追加料金はありません')
             ->assertSee('概算は実際の削減額ではなく')
             ->assertSee('セキュリティの確認項目を検索でき')
             ->assertSee(route('costs.dashboard'))
@@ -69,10 +63,9 @@ class HelpControllerTest extends TestCase
             ->assertSee('mailto:support@kimegami.jp')
             ->assertSee('info@kimegami.jp')
             ->assertSee('配信停止')
-            ->assertSee('無料プラン（Free）と有料プラン（Premium）の違い')
-            ->assertSee('Premiumの適用税額を含むお支払い総額')
+            ->assertSee('無料公開中の機能と登録上限')
+            ->assertSee('利用料金')
             ->assertSee('help-plan-table-scroll', false)
-            ->assertSee('data-label="月額"', false)
             ->assertSee('data-label="登録上限"', false)
             ->assertSee('data-label="主な機能"', false);
 
@@ -93,25 +86,23 @@ class HelpControllerTest extends TestCase
                 ->assertSee(route('help.recovery', $type));
         }
 
-        foreach (config('opsdeck.plans') as $plan) {
-            $response->assertSee($plan['label']);
-            foreach ($plan['features'] as $feature) {
-                $response->assertSee($feature);
-            }
+        foreach (config('opsdeck.plans.free.features') as $feature) {
+            $response->assertSee($feature);
         }
 
-        $response->assertSee('月額'.number_format((int) config('opsdeck.plans.premium.monthly_price_jpy')).'円（税別）')
-            ->assertSee('社員'.number_format((int) config('opsdeck.plans.free.limits.employees')).'名');
+        $response->assertSee('月額0円')
+            ->assertSee('社員'.number_format((int) config('opsdeck.plans.free.limits.employees')).'名')
+            ->assertDontSee('Premium')
+            ->assertDontSee('Stripe Checkout');
     }
 
-    public function test_free_only_mode_hides_premium_pricing_from_the_help_page(): void
+    public function test_help_page_only_shows_free_pricing_and_features(): void
     {
-        config(['opsdeck.billing.enabled' => false]);
-
         $this->get(route('help.index'))
             ->assertOk()
-            ->assertSee('無料プラン（Free）の登録上限')
-            ->assertSee('現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。')
-            ->assertDontSee('月額9,800円（税別）');
+            ->assertSee('月額0円')
+            ->assertSee('OpsDeckから新しい有料契約や追加容量を申し込むことはできません。')
+            ->assertDontSee('Premium')
+            ->assertDontSee('Stripe Checkout');
     }
 }

@@ -44,7 +44,11 @@
         <section class="dashboard-panel" aria-labelledby="google-login-title">
             <h2 id="google-login-title">Googleログイン</h2>
             @if ($user->google_id !== null)
-                <p>Googleアカウントは連携済みです。このアカウントでGoogleログインできます。</p>
+                @if ($googleLoginAvailable)
+                    <p>Googleアカウントは連携済みです。このアカウントでGoogleログインできます。</p>
+                @else
+                    <p class="muted">Googleアカウントは連携済みですが、Googleログインは現在利用できません。メールアドレスとパスワードでログインしてください。</p>
+                @endif
                 <form method="post" action="{{ route('settings.google-login.disconnect') }}">
                     @csrf
                     <label for="google_disconnect_current_password">本人確認のため、現在のパスワードを入力してください。</label>
@@ -55,13 +59,15 @@
                 <p class="muted">最初に既存アカウントへログインしてGoogleを連携すると、次回からGoogleログインを使えます。</p>
                 @if (! $user->hasVerifiedEmail())
                     <p class="muted">Googleを連携するには、先にメール認証を完了してください。</p>
-                @elseif (config('services.google.login_enabled'))
+                @elseif ($googleLoginAvailable)
                     <form method="post" action="{{ route('settings.google-login.connect') }}">
                         @csrf
                         <label for="google_connect_current_password">本人確認のため、現在のパスワードを入力してください。</label>
                         <x-password-input id="google_connect_current_password" name="current_password" label="現在のパスワード" autocomplete="current-password" toggleLabel="現在のパスワード" />
                         <button type="submit">Googleアカウントを連携</button>
                     </form>
+                @elseif ($googleLoginEnabled)
+                    <p class="muted">Googleログインは現在利用できません。メールアドレスとパスワードでログインしてください。</p>
                 @else
                     <p class="muted">Google OAuthの環境設定が完了すると連携できます。</p>
                 @endif

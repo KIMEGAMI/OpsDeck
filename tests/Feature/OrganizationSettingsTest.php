@@ -12,12 +12,15 @@ use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\SaasService;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OrganizationSettingsTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -61,7 +64,7 @@ class OrganizationSettingsTest extends TestCase
         $this->assertStringNotContainsString('3200', json_encode($auditLog->toArray()));
     }
 
-    public function test_free_plan_cannot_enable_ai_mapping(): void
+    public function test_free_plan_can_enable_ai_mapping(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
 
@@ -70,9 +73,10 @@ class OrganizationSettingsTest extends TestCase
                 'timezone' => $organization->timezone,
                 'ai_enabled' => true,
             ])
-            ->assertSessionHasErrors('ai_enabled');
+            ->assertRedirect(route('settings.organization'))
+            ->assertSessionHasNoErrors();
 
-        $this->assertFalse($organization->refresh()->ai_enabled);
+        $this->assertTrue($organization->refresh()->ai_enabled);
     }
 
     public function test_viewer_cannot_update_organization_settings(): void
@@ -107,7 +111,7 @@ class OrganizationSettingsTest extends TestCase
 
         $response = $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('settings.organization'));
 
-        $response->assertOk()->assertSee('プラン利用状況')->assertSee('利用率')->assertSee('20</td>', false);
+        $response->assertOk()->assertSee('プラン利用状況')->assertSee('利用率')->assertSee('200</td>', false);
     }
 
     public function test_owner_can_check_company_file_storage_usage_from_organization_settings(): void
@@ -119,7 +123,7 @@ class OrganizationSettingsTest extends TestCase
             'source_type' => 'csv',
             'source_name' => '社員名簿',
             'source_file_path' => 'imports/storage-usage-check.csv',
-            'source_file_size_bytes' => 10 * 1024 * 1024,
+            'source_file_size_bytes' => 100 * 1024 * 1024,
             'status' => 'completed',
         ]);
 
@@ -127,24 +131,22 @@ class OrganizationSettingsTest extends TestCase
             ->get(route('settings.organization'))
             ->assertOk()
             ->assertSee('会社の保存容量')
-            ->assertSee('現在 10.0 MiB ／ 上限 100 MiB（10%）')
-            ->assertSee('あと約 90.0 MiB 保存できます。');
+            ->assertSee('現在 0.1 GiB ／ 上限 5 GiB（2%）')
+            ->assertSee('あと約 4.9 GiB 保存できます。');
     }
 
-    public function test_ai_monthly_budget_displays_the_configured_amount_as_an_fx_estimate(): void
+    public function test_ai_settings_show_the_free_luna_daily_limit_without_customer_pricing(): void
     {
         [$user, $organization] = $this->member(MembershipRole::Owner);
         $organization->update(['plan_code' => config('opsdeck.premium_plan_code')]);
-        Config::set('opsdeck.ai.monthly_budget_jpy.premium', 725);
-        Config::set('opsdeck.ai.usd_to_jpy_rate', 150.5);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('settings.organization'))
             ->assertOk()
-            ->assertSee('725円相当の推定上限')
-            ->assertSee('この円額は設定レートで換算した目安です。', false)
-            ->assertSee('実際の円換算額は為替や決済条件で変わることがあります。', false)
-            ->assertDontSee('500円相当の推定上限');
+            ->assertSee('GPT-6 Lunaのみを使用')
+            ->assertSee('1日3回まで')
+            ->assertSee('利用者への追加料金はありません')
+            ->assertDontSee('円相当の上限');
     }
 
     public function test_plan_usage_shows_warning_when_limit_is_reached(): void

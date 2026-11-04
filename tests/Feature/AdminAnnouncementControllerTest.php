@@ -13,6 +13,7 @@ use App\Models\UserNotificationPreference;
 use App\Services\AnnouncementRecipientQuery;
 use Illuminate\Bus\UniqueLock;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
@@ -27,6 +28,8 @@ use Tests\TestCase;
 
 class AdminAnnouncementControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -363,7 +366,16 @@ class AdminAnnouncementControllerTest extends TestCase
         OrganizationMembership::query()->create(['organization_id' => $organization->id, 'user_id' => $user->id, 'role' => 'viewer', 'status' => 'active', 'joined_at' => now()]);
         Announcement::query()->create(['title' => '重要なお知らせ', 'body' => '全利用者に表示されます。', 'published_at' => now()->subMinute()]);
 
-        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])->get(route('dashboard'))->assertOk()->assertSee('重要なお知らせ')->assertSee('全利用者に表示されます。');
+        $response = $this->actingAs($user)
+            ->withSession(['current_organization_id' => $organization->id])
+            ->get(route('dashboard'));
+
+        $response->assertOk()
+            ->assertSee('重要なお知らせ')
+            ->assertSeeInOrder(['全利用者に表示されます。', '規約とプライバシー', 'プライバシーポリシー', '利用規約'])
+            ->assertSee(route('legal.privacy'), false)
+            ->assertSee(route('legal.terms'), false)
+            ->assertDontSee('特定商取引法に基づく表記');
     }
 
     public function test_admin_can_target_announcement_and_user_can_mark_it_read(): void

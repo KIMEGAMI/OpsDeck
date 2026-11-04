@@ -8,11 +8,14 @@ use App\Models\Asset;
 use App\Models\Organization;
 use App\Models\OrganizationMembership;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class AssetPaginationTest extends TestCase
 {
+    use RefreshDatabase;
+
     private const ASSET_COUNT = 500;
 
     private const PAGE_SIZE = 100;

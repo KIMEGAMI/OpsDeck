@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ config('app.name') }}</title>
+    <meta name="theme-color" content="#102a43">
+    <link rel="icon" type="image/svg+xml" href="{{ asset('favicon.svg') }}">
+    <link rel="alternate icon" type="image/x-icon" href="{{ asset('favicon.ico') }}">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     <style>
         :root { --interactive-target-min-height: 2.75rem; color-scheme: light; font-family: system-ui, sans-serif; background: #f4f7fb; color: #172033; }
@@ -60,6 +63,9 @@
         .dashboard-announcements { margin-top: 1rem; }
         .dashboard-announcements .card { max-height: 22rem; overflow-y: auto; }
         .dashboard-announcements article + article { border-top: 1px solid #d9e2ec; margin-top: 1rem; padding-top: 1rem; }
+        .dashboard-legal-footer { margin: 1.5rem 0 0; padding: 1rem 0; border-top: 2px solid #bcccdc; color: #334e68; }
+        .dashboard-legal-footer nav { display: flex; flex-wrap: wrap; gap: .75rem 1.25rem; }
+        .dashboard-legal-footer a { min-height: var(--interactive-target-min-height); display: inline-flex; align-items: center; }
         @media (max-width: 64rem) { .dashboard-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
         @media (max-width: 48rem) { header { padding: .85rem 1rem; } .nav-row { flex-wrap: wrap; } .desktop-navigation { display: none; } .mobile-navigation { display: block; flex: 1; min-width: 0; } .mobile-navigation > summary { display: flex; width: fit-content; min-height: var(--interactive-target-min-height); align-items: center; cursor: pointer; padding: .45rem .7rem; border: 1px solid #9fb3c8; border-radius: .25rem; color: #ffffff; font-weight: 700; } .mobile-navigation[open] > .app-navigation { display: flex; flex-direction: column; align-items: flex-start; gap: .75rem; } .mobile-navigation[open] .nav-section { flex-direction: column; align-items: flex-start; } .nav-section-admin { margin-left: 0; } .app-navigation { gap: .6rem; } .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric-card { padding: .75rem; } .metric-value { font-size: clamp(1rem, 4vw, 1.4rem); overflow-wrap: anywhere; } .dashboard-columns, .dashboard-links { grid-template-columns: 1fr; } }
         @media (max-width: 48rem) {
@@ -102,17 +108,19 @@
                 @endif
             @endguest
             @auth
-                <div class="desktop-navigation">
-                    @include('components.navigation')
-                </div>
-                <details class="mobile-navigation">
-                    <summary><span class="menu-summary-label--closed">メニューを開く</span><span class="menu-summary-label--open">メニューを閉じる</span></summary>
-                    @include('components.navigation')
-                </details>
-                <form method="post" action="{{ route('logout') }}">
-                    @csrf
-                    <button type="submit">ログアウト</button>
-                </form>
+                @unless (request()->routeIs('verification.notice'))
+                    <div class="desktop-navigation">
+                        @include('components.navigation')
+                    </div>
+                    <details class="mobile-navigation">
+                        <summary><span class="menu-summary-label--closed">メニューを開く</span><span class="menu-summary-label--open">メニューを閉じる</span></summary>
+                        @include('components.navigation')
+                    </details>
+                    <form method="post" action="{{ route('logout') }}">
+                        @csrf
+                        <button type="submit">ログアウト</button>
+                    </form>
+                @endunless
             @endauth
         </div>
     </header>
@@ -127,9 +135,9 @@
                 @if ($errors->has('plan_limit'))
                     @php($currentOrganization = request()->attributes->get('currentOrganization'))
                     @if ($currentOrganization instanceof \App\Models\Organization && auth()->user()?->can('manageBilling', $currentOrganization))
-                        <p><a href="{{ route('billing.index') }}">料金プランと上限を確認する</a></p>
+                        <p><a href="{{ route('billing.index') }}">無料公開と利用上限を確認する</a></p>
                     @else
-                        <p class="muted">プラン変更は組織Ownerのみ行えます。Ownerに相談してください。</p>
+                        <p class="muted">利用上限を超えた場合は、不要な登録データを整理してください。</p>
                     @endif
                 @endif
             </div>

@@ -71,7 +71,7 @@
                 <p class="muted">シートの選択は、会社のデータを管理する担当者に依頼してください。</p>
             @endif
         @elseif ($importBatch->status === 'sheet_selection')
-            <p class="muted">この形式の取込はPremiumプランで利用できます。<a href="{{ route('billing.index') }}">プランを確認する</a></p>
+            <p class="muted">この形式の取込は現在利用できません。</p>
         @endif
         @if ($workbookImports->count() > 1)
             <section aria-labelledby="workbook-imports-title">
@@ -224,7 +224,7 @@
                 <p class="muted">取込の実行は、会社のデータを管理する担当者に依頼してください。</p>
             @endif
         @elseif ($importBatch->status === 'ready')
-            <p class="muted">このプランでは会社の情報へ反映できません。<a href="{{ route('billing.index') }}">プランを確認する</a></p>
+            <p class="muted">この取込は現在実行できません。利用できる形式を確認してください。</p>
         @endif
         @if ($importBatch->status === 'completed')
             @if ($importBatch->inserted_rows + $importBatch->updated_rows > 0)

@@ -196,7 +196,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         config(['services.stripe.webhook_secret' => 'whsec_test']);
         $subscriptionId = 'sub_test_'.Str::uuid();
-        $organization = Organization::query()->create(['name' => 'Stripe '.Str::random(8), 'slug' => 'stripe-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => 'inactive', 'stripe_subscription_id' => $subscriptionId]);
+        $organization = Organization::query()->create(['name' => 'Stripe '.Str::random(8), 'slug' => 'stripe-'.Str::lower(Str::random(8)), 'timezone' => config('opsdeck.default_timezone'), 'plan_code' => config('opsdeck.default_plan_code'), 'billing_status' => 'inactive', 'stripe_customer_id' => 'cus_'.Str::uuid(), 'stripe_subscription_id' => $subscriptionId]);
         $eventId = 'evt_test_'.Str::uuid();
         $payload = json_encode(['id' => $eventId, 'type' => 'invoice.payment_failed', 'created' => now()->timestamp, 'data' => ['object' => ['subscription' => $subscriptionId, 'customer' => $organization->stripe_customer_id, 'metadata' => ['organization_id' => (string) $organization->id]]]], JSON_THROW_ON_ERROR);
         $timestamp = now()->timestamp;
@@ -313,6 +313,42 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertSame(json_decode($payload, true, 512, JSON_THROW_ON_ERROR)['data']['object']['id'], $organization->stripe_subscription_id);
     }
 
+    public function test_webhook_does_not_apply_another_service_customer_event_to_matching_organization_metadata(): void
+    {
+        config(['services.stripe.webhook_secret' => 'whsec_test', 'services.stripe.prices.premium' => 'price_premium_test']);
+        $organization = Organization::query()->create([
+            'name' => 'Stripe Tenant Isolation '.Str::random(8),
+            'slug' => 'stripe-tenant-isolation-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => config('opsdeck.default_plan_code'),
+            'billing_status' => 'inactive',
+            'stripe_customer_id' => 'cus_opsdeck_'.Str::uuid(),
+        ]);
+        $eventId = 'evt_foreign_customer_'.Str::uuid();
+
+        $this->postSignedStripeEvent([
+            'id' => $eventId,
+            'type' => 'customer.subscription.updated',
+            'created' => now()->timestamp,
+            'data' => ['object' => [
+                'id' => 'sub_other_service_'.Str::uuid(),
+                'customer' => 'cus_other_service_'.Str::uuid(),
+                'status' => 'active',
+                'items' => ['data' => [['price' => ['id' => 'price_premium_test']]]],
+                'metadata' => ['organization_id' => (string) $organization->id],
+            ]],
+        ])->assertNoContent();
+
+        $organization->refresh();
+        $this->assertSame(config('opsdeck.default_plan_code'), $organization->plan_code);
+        $this->assertSame('inactive', $organization->billing_status);
+        $this->assertNull($organization->stripe_subscription_id);
+        $this->assertDatabaseHas('stripe_webhook_events', [
+            'stripe_event_id' => $eventId,
+            'organization_id' => null,
+        ]);
+    }
+
     public function test_subscription_event_keeps_premium_when_an_addon_item_precedes_the_plan_item(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -369,6 +405,9 @@ class StripeWebhookControllerTest extends TestCase
             'storage_addon_gib' => 1,
             'storage_addon_pending_gib' => 3,
             'storage_addon_effective_at' => now()->addMonth(),
+            'storage_addon_checkout_reserved_gib' => 3,
+            'storage_addon_checkout_reservation_expires_at' => now()->addHours(25),
+            'storage_addon_checkout_session_id' => 'cs_storage_addon_pending',
         ]);
 
         $this->postSignedStripeEvent([
@@ -419,6 +458,58 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertSame(3, $organization->storage_addon_gib);
         $this->assertNull($organization->storage_addon_pending_gib);
         $this->assertNull($organization->storage_addon_effective_at);
+        $this->assertNull($organization->storage_addon_checkout_reserved_gib);
+        $this->assertNull($organization->storage_addon_checkout_reservation_expires_at);
+        $this->assertNull($organization->storage_addon_checkout_session_id);
+    }
+
+    public function test_expired_checkout_clears_only_its_matching_capacity_reservation(): void
+    {
+        config(['services.stripe.webhook_secret' => 'whsec_test']);
+        $organization = Organization::query()->create([
+            'name' => 'Stripe Expired Checkout '.Str::random(8),
+            'slug' => 'stripe-expired-checkout-'.Str::lower(Str::random(8)),
+            'timezone' => config('opsdeck.default_timezone'),
+            'plan_code' => 'free',
+            'billing_status' => 'inactive',
+            'stripe_customer_id' => 'cus_expired_checkout_'.Str::uuid(),
+            'storage_addon_checkout_reserved_gib' => 2,
+            'storage_addon_checkout_reservation_expires_at' => now()->addHours(25),
+            'storage_addon_checkout_session_id' => 'cs_current_checkout',
+        ]);
+
+        $this->postSignedStripeEvent([
+            'id' => 'evt_expired_old_checkout_'.Str::uuid(),
+            'type' => 'checkout.session.expired',
+            'created' => now()->timestamp,
+            'data' => ['object' => [
+                'id' => 'cs_old_checkout',
+                'customer' => $organization->stripe_customer_id,
+                'client_reference_id' => (string) $organization->id,
+                'metadata' => ['organization_id' => (string) $organization->id],
+                'status' => 'expired',
+            ]],
+        ])->assertNoContent();
+        $this->assertSame(2, $organization->refresh()->storage_addon_checkout_reserved_gib);
+        $this->assertSame('cs_current_checkout', $organization->storage_addon_checkout_session_id);
+
+        $this->postSignedStripeEvent([
+            'id' => 'evt_expired_current_checkout_'.Str::uuid(),
+            'type' => 'checkout.session.expired',
+            'created' => now()->timestamp,
+            'data' => ['object' => [
+                'id' => 'cs_current_checkout',
+                'customer' => $organization->stripe_customer_id,
+                'client_reference_id' => (string) $organization->id,
+                'metadata' => ['organization_id' => (string) $organization->id],
+                'status' => 'expired',
+            ]],
+        ])->assertNoContent();
+
+        $organization->refresh();
+        $this->assertNull($organization->storage_addon_checkout_reserved_gib);
+        $this->assertNull($organization->storage_addon_checkout_reservation_expires_at);
+        $this->assertNull($organization->storage_addon_checkout_session_id);
     }
 
     public function test_unrelated_paid_invoice_does_not_clear_a_future_storage_addon_change(): void
@@ -525,7 +616,7 @@ class StripeWebhookControllerTest extends TestCase
         $organization->refresh();
         $this->assertSame(1, $organization->storage_addon_gib);
         $this->assertSame(3, $organization->storage_addon_pending_gib);
-        $this->assertSame('3 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
     }
 
     public function test_unknown_subscription_price_does_not_grant_a_plan(): void
@@ -709,7 +800,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertNull($organization->storage_addon_pending_gib);
         $this->assertNull($organization->storage_addon_effective_at);
         $storageQuota = app(OrganizationStorageQuotaService::class)->summary($organization);
-        $this->assertSame('100 MiB', $storageQuota['limit_display']);
+        $this->assertSame('5 GiB', $storageQuota['limit_display']);
         $this->assertSame(0, $storageQuota['addon_gib']);
         $this->assertTrue(Storage::disk($diskName)->exists($existingFilePath));
         $this->assertDatabaseHas('evidence', ['id' => $evidence->id]);
@@ -760,7 +851,7 @@ class StripeWebhookControllerTest extends TestCase
         $this->assertSame('premium', $organization->plan_code);
         $this->assertTrue($organization->billing_cancel_at_period_end);
         $this->assertSame($periodEnd, $organization->billing_cancel_at?->timestamp);
-        $this->assertSame('4 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
 
         $this->postSignedStripeEvent([
             'id' => 'evt_cancel_reversed_'.Str::uuid(),
@@ -782,7 +873,7 @@ class StripeWebhookControllerTest extends TestCase
         $organization->refresh();
         $this->assertFalse($organization->billing_cancel_at_period_end);
         $this->assertNull($organization->billing_cancel_at);
-        $this->assertSame('4 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
+        $this->assertSame('5 GiB', app(OrganizationStorageQuotaService::class)->summary($organization)['limit_display']);
     }
 
     public function test_older_or_previous_subscription_events_do_not_revert_current_state(): void

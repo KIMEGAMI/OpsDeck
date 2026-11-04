@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\ContractMonthlyCostCalculator;
 use App\Services\DatabaseMigrationHealthService;
 use App\Services\ImportFailureMetrics;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
@@ -20,11 +21,7 @@ use Tests\TestCase;
 
 class AdminDashboardTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-        $this->artisan('migrate:fresh', ['--force' => true])->assertExitCode(0);
-    }
+    use RefreshDatabase;
 
     public function test_platform_admin_can_view_aggregate_dashboard(): void
     {
@@ -153,7 +150,7 @@ class AdminDashboardTest extends TestCase
             ->assertSee('入力tokens')
             ->assertSee('100,000')
             ->assertSee('$0.020000')
-            ->assertSee('PremiumのAI月額上限（1組織）：500円')
+            ->assertSee('無料公開のAI運営上限（1組織・月額）：500円相当')
             ->assertSee('OpenAI API側の利用枠・レート制限は別に適用され')
             ->assertSee('換算レートが未設定です。', false)
             ->assertSee('OPSDECK_AI_USD_TO_JPY_RATE')
@@ -165,7 +162,7 @@ class AdminDashboardTest extends TestCase
         AiUsageLog::query()->where('model', 'gpt-6-luna')->update(['estimated_cost_jpy' => 3.01]);
         $this->actingAs($user)->get(route('admin.ai-cost'))
             ->assertOk()
-            ->assertSee('現在の上限換算：約$3.3223/月（1 USD = 150.50円）。', false)
+            ->assertSee('現在の運営上限換算：約$3.3223/月（1 USD = 150.50円）。', false)
             ->assertSee('利用可否の判定はこの換算額とモデル単価を使います。', false);
         $this->actingAs($user)->get(route('admin.dashboard'))
             ->assertOk()
@@ -421,6 +418,7 @@ class AdminDashboardTest extends TestCase
         File::put($backupDirectory.DIRECTORY_SEPARATOR.'database.sql', 'backup');
         File::put($backupDirectory.DIRECTORY_SEPARATOR.'manifest.json', json_encode(['created_at' => now()->toIso8601String(), 'database' => ['driver' => 'mysql', 'file' => 'database.sql'], 'evidence_files' => []], JSON_THROW_ON_ERROR));
         config(['opsdeck.backup.path' => $backupRoot, 'opsdeck.storage_quotas.platform_limit_megabytes' => 1]);
+        config(['opsdeck.release_features.storage_addon' => true]);
         DB::table('storage_addon_reconciliation_runs')->insert([
             'status' => 'mismatch',
             'organizations_checked' => 1,

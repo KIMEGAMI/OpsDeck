@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Auth;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\GoogleAccountSettingsRequest;
 use App\Models\User;
+use App\Services\GoogleLoginCallbackReadiness;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\RedirectResponse;
@@ -23,17 +24,17 @@ class GoogleLoginController extends Controller
 
     private const GOOGLE_SUBJECT_MAX_LENGTH = 255;
 
-    public function redirect(Request $request): RedirectResponse
+    public function redirect(Request $request, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): RedirectResponse
     {
-        return $this->beginGoogleFlow($request, 'login');
+        return $this->beginGoogleFlow($request, 'login', $googleLoginCallbackReadiness);
     }
 
-    public function connect(GoogleAccountSettingsRequest $request): RedirectResponse
+    public function connect(GoogleAccountSettingsRequest $request, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): RedirectResponse
     {
-        return $this->beginGoogleFlow($request, 'link');
+        return $this->beginGoogleFlow($request, 'link', $googleLoginCallbackReadiness);
     }
 
-    public function callback(Request $request): RedirectResponse
+    public function callback(Request $request, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): RedirectResponse
     {
         $oauthState = $request->session()->pull(self::GOOGLE_STATE_SESSION_KEY);
         $expectedState = is_array($oauthState) ? ($oauthState['value'] ?? null) : null;
@@ -68,7 +69,11 @@ class GoogleLoginController extends Controller
             return to_route($this->flowRoute($flowMode))->with('status', 'Googleログインをキャンセルしました。');
         }
 
-        abort_unless(config('services.google.login_enabled'), 503, 'Googleログインが設定されていません。');
+        abort_unless(
+            config('services.google.login_enabled') === true && $googleLoginCallbackReadiness->matchesRequestUrl($request),
+            503,
+            'Googleログインは現在利用できません。管理者にお問い合わせください。',
+        );
 
         $authorizationCode = $request->query('code');
         abort_unless(is_string($authorizationCode) && trim($authorizationCode) !== '', 422, 'Googleの認証コードがありません。');
@@ -135,9 +140,13 @@ class GoogleLoginController extends Controller
         return redirect()->intended(route('dashboard'));
     }
 
-    private function beginGoogleFlow(Request $request, string $flowMode): RedirectResponse
+    private function beginGoogleFlow(Request $request, string $flowMode, GoogleLoginCallbackReadiness $googleLoginCallbackReadiness): RedirectResponse
     {
-        abort_unless(config('services.google.login_enabled'), 503, 'Googleログインが設定されていません。');
+        abort_unless(
+            config('services.google.login_enabled') === true && $googleLoginCallbackReadiness->matchesRequestUrl($request),
+            503,
+            'Googleログインは現在利用できません。管理者にお問い合わせください。',
+        );
 
         $state = Str::random(self::GOOGLE_STATE_LENGTH);
         $stateData = [

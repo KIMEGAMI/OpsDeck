@@ -196,10 +196,8 @@ remote_deploy() {
     if ! "$php_bin" "$release_path/artisan" view:cache --no-interaction >/dev/null 2>&1; then
         fail "The new release view cache could not be created."
     fi
-    if [[ "$has_previous_release" != true ]]; then
-        if ! "$php_bin" "$release_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
-            fail "The initial pre-migration production database backup failed; the active release was not switched."
-        fi
+    if ! "$php_bin" "$release_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
+        fail "The pre-migration production database backup failed; the active release was not switched."
     fi
     if ! "$php_bin" "$release_path/artisan" migrate --force --no-interaction >/dev/null 2>&1; then
         fail "The production database migration failed; the active release was not switched."
@@ -208,12 +206,12 @@ remote_deploy() {
         if ! "$php_bin" "$release_path/artisan" opsdeck:scheduler:heartbeat --no-interaction >/dev/null 2>&1; then
             fail "The initial scheduler heartbeat could not be recorded; the active release was not switched."
         fi
-        if ! "$php_bin" "$release_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
-            fail "The initial production database backup failed; the active release was not switched."
-        fi
-        if ! "$php_bin" "$release_path/artisan" opsdeck:backup:restore-test --no-interaction >/dev/null 2>&1; then
-            fail "The initial backup restore test failed; the active release was not switched."
-        fi
+    fi
+    if ! "$php_bin" "$release_path/artisan" opsdeck:backup --no-interaction >/dev/null 2>&1; then
+        fail "The post-migration production database backup failed; the active release was not switched."
+    fi
+    if ! "$php_bin" "$release_path/artisan" opsdeck:backup:restore-test --no-interaction >/dev/null 2>&1; then
+        fail "The post-migration backup restore test failed; the active release was not switched."
     fi
     if [[ "$has_previous_release" == true ]]; then
         if ! readiness_output="$("$php_bin" "$release_path/artisan" opsdeck:deployment-check --json --no-interaction 2>/dev/null)"; then

@@ -6,13 +6,19 @@ use App\Http\Controllers\Controller;
 use Illuminate\Foundation\Auth\EmailVerificationRequest;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\View\View;
+use Illuminate\Http\Response;
 
 class EmailVerificationController extends Controller
 {
-    public function notice(): View
+    public function notice(Request $request): RedirectResponse|Response
     {
-        return view('auth.verify-email');
+        if ($request->user()?->hasVerifiedEmail()) {
+            return to_route('dashboard');
+        }
+
+        return response()
+            ->view('auth.verify-email')
+            ->header('Cache-Control', 'private, no-store');
     }
 
     public function verify(EmailVerificationRequest $request): RedirectResponse

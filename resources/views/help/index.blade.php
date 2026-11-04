@@ -10,7 +10,7 @@
                 <li><a href="#help-excel-csv-title">Excelを取り込む</a></li>
                 <li><a href="#help-savings-title">費用削減を見る</a></li>
                 <li><a href="#help-recovery-title">困ったとき</a></li>
-                <li><a href="#help-plans-title">料金と登録上限</a></li>
+                <li><a href="#help-plans-title">無料公開と登録上限</a></li>
             </ul>
         </nav>
         <section aria-labelledby="help-start-title">
@@ -19,8 +19,8 @@
                 <li><a href="{{ route('demo.show') }}">読み取り専用デモ</a>で、登録前に画面や取込例を確認できます。入力・保存・送信はありません。</li>
                 <li><a href="{{ route('onboarding.index') }}">導入チェックリスト</a>から、組織設定と必要な初期登録を順番に進めます。</li>
                 <li><a href="{{ route('imports.create') }}">データ取込</a>を開き、社員・端末などのサンプルプレビューで、必要な列を確認します。</li>
-                <li>実際のデータを使うときは、元のExcelを残したままコピーを作ります。CSVは表の内容を保存するファイル形式です。コピーから必要なシートをCSV、または対応プランのXLSXとして別名保存します。</li>
-                <li>取込前の確認画面で、列の対応と「新規・更新・確認待ち・エラー」を確認します。確認画面を見るだけでは業務データは登録・更新されません。無料プラン（Free）でもCSV/TXTから登録でき、社員・資産・SaaSの登録数は各上限までです。XLSXは有料プラン（Premium）で利用できます。Google Sheets連携は1.0の対象外です。</li>
+                <li>実際のデータを使うときは、元のExcelを残したままコピーを作ります。CSVは表の内容を保存するファイル形式です。コピーから必要なシートをCSV、またはXLSXとして別名保存します。</li>
+                <li>取込前の確認画面で、列の対応と「新規・更新・確認待ち・エラー」を確認します。確認画面を見るだけでは業務データは登録・更新されません。CSV/TXTとXLSXを利用でき、社員・資産・SaaSの登録数は各上限までです。Google Sheets連携は現在提供していません。</li>
             </ol>
             <p class="muted">サンプルCSVは実データではありません。サンプル行を「データ取込」すると会社の情報として登録されるため、動作確認には「サンプルプレビュー」を使ってください。</p>
         </section>
@@ -34,7 +34,7 @@
                 <li>「現在のシートだけが保存される」という確認が出たら、選んだシートが正しいことを確認して続けます。CSVには書式や数式ではなく、セルに表示されている値が保存されます。</li>
                 <li>OpsDeckで保存したCSVを選び、「内容を確認する」を押します。列や新規・更新・エラーを確認し、問題がなければ取込を実行します。</li>
             </ol>
-            <p>複数シートを取り込む場合は、CSVではシートごとに保存します。PremiumではXLSXファイルを選び、取り込むシートを画面で指定できます。</p>
+            <p>複数シートを取り込む場合は、CSVではシートごとに保存します。XLSXファイルでは、取り込むシートを画面で指定できます。</p>
             <p><a href="https://support.microsoft.com/en-us/excel/save-a-workbook-to-text-format-txt-or-csv">MicrosoftのCSV保存手順</a></p>
         </section>
         <section aria-labelledby="help-savings-title">
@@ -52,41 +52,29 @@
             </ul>
         </section>
         <section aria-labelledby="help-plans-title">
-            @if (config('opsdeck.billing.enabled'))
-                <h2 id="help-plans-title">無料プラン（Free）と有料プラン（Premium）の違い</h2>
-            @else
-                <h2 id="help-plans-title">無料プラン（Free）の登録上限</h2>
-            @endif
+            <h2 id="help-plans-title">無料公開中の機能と登録上限</h2>
+            <p>現在提供している機能はすべて無料で利用できます。プランによる機能差や追加料金はありません。</p>
             <div class="table-scroll help-plan-table-scroll">
-                <table aria-label="無料プランと有料プランの比較">
+                <table aria-label="無料公開中のOpsDeckの登録上限">
                     <thead>
-                        <tr><th scope="col">プラン</th><th scope="col">月額</th><th scope="col">登録上限</th><th scope="col">主な機能</th></tr>
+                        <tr><th scope="col">利用料金</th><th scope="col">登録上限</th><th scope="col">主な機能</th></tr>
                     </thead>
                     <tbody>
-                        @foreach ($plans as $planCode => $plan)
-                            @if ($planCode === config('opsdeck.free_plan_code') || config('opsdeck.billing.enabled'))
-                            <tr>
-                                <th scope="row">{{ $plan['label'] }}</th>
-                                <td data-label="月額">{{ $plan['monthly_price_jpy'] === 0 ? '無料' : '月額'.number_format((int) $plan['monthly_price_jpy']).'円（税別）' }}</td>
-                                <td data-label="登録上限">社員{{ number_format((int) $plan['limits']['employees']) }}名・端末{{ number_format((int) $plan['limits']['assets']) }}台・クラウドサービス{{ number_format((int) $plan['limits']['saas_services']) }}件・管理者{{ number_format((int) $plan['limits']['administrators']) }}名</td>
-                                <td data-label="主な機能">
-                                    <ul>
-                                        @foreach ($plan['features'] as $feature)
-                                            <li>{{ $feature }}</li>
-                                        @endforeach
-                                    </ul>
-                                </td>
-                            </tr>
-                            @endif
-                        @endforeach
+                        <tr>
+                            <th scope="row">月額0円</th>
+                            <td data-label="登録上限">社員{{ number_format((int) $plans['free']['limits']['employees']) }}名・端末{{ number_format((int) $plans['free']['limits']['assets']) }}台・クラウドサービス{{ number_format((int) $plans['free']['limits']['saas_services']) }}件・管理者{{ number_format((int) $plans['free']['limits']['administrators']) }}名</td>
+                            <td data-label="主な機能">
+                                <ul>
+                                    @foreach ($plans['free']['features'] as $feature)
+                                        <li>{{ $feature }}</li>
+                                    @endforeach
+                                </ul>
+                            </td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
-            @if (config('opsdeck.billing.enabled'))
-                <p class="muted">Premiumの適用税額を含むお支払い総額は、申込前にStripe Checkoutで確認できます。</p>
-            @else
-                <p class="muted">現在はFreeプランのみ提供しています。Premiumの新規申込みとStripe決済は停止中です。</p>
-            @endif
+            <p class="muted">OpsDeckから新しい有料契約や追加容量を申し込むことはできません。過去に登録したStripe契約が残っている場合、契約状態や請求はStripe側で確認するか、<a href="mailto:{{ config('opsdeck.support_email') }}">サポートへお問い合わせください</a>。Google Sheets連携など、現在提供していない機能は利用対象外です。</p>
         </section>
         @foreach ($faqs as $faq)
             <details class="help-faq">

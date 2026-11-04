@@ -209,6 +209,20 @@ class StripeWebhookController extends Controller
         if ($organization === null) {
             return;
         }
+        if ($event['type'] === 'checkout.session.expired') {
+            $expiredSessionId = data_get($event, 'data.object.id');
+            if (is_string($expiredSessionId)
+                && is_string($organization->storage_addon_checkout_session_id)
+                && hash_equals($organization->storage_addon_checkout_session_id, $expiredSessionId)) {
+                $organization->forceFill([
+                    'storage_addon_checkout_reserved_gib' => null,
+                    'storage_addon_checkout_reservation_expires_at' => null,
+                    'storage_addon_checkout_session_id' => null,
+                ])->save();
+            }
+
+            return;
+        }
         $eventCreatedAt = $event['created'];
         $isInvoiceEvent = in_array($event['type'], ['invoice.paid', 'invoice.payment_failed'], true);
         $subscriptionId = $isInvoiceEvent
@@ -306,6 +320,9 @@ class StripeWebhookController extends Controller
                     $attributes['storage_addon_gib'] = $storageAddonQuantity;
                     $attributes['storage_addon_pending_gib'] = null;
                     $attributes['storage_addon_effective_at'] = null;
+                    $attributes['storage_addon_checkout_reserved_gib'] = null;
+                    $attributes['storage_addon_checkout_reservation_expires_at'] = null;
+                    $attributes['storage_addon_checkout_session_id'] = null;
                 }
             }
             if ($event['type'] === 'customer.subscription.deleted') {
@@ -320,6 +337,9 @@ class StripeWebhookController extends Controller
                 $attributes['storage_addon_gib'] = 0;
                 $attributes['storage_addon_pending_gib'] = null;
                 $attributes['storage_addon_effective_at'] = null;
+                $attributes['storage_addon_checkout_reserved_gib'] = null;
+                $attributes['storage_addon_checkout_reservation_expires_at'] = null;
+                $attributes['storage_addon_checkout_session_id'] = null;
             }
             $organization->update($attributes);
             if ($status === 'active' && $organization->plan_code !== config('opsdeck.default_plan_code')) {
@@ -376,8 +396,10 @@ class StripeWebhookController extends Controller
     {
         $organizationId = data_get($event, 'data.object.metadata.organization_id') ?? data_get($event, 'data.object.client_reference_id');
         $customerId = data_get($event, 'data.object.customer');
-        if (is_numeric($organizationId)) {
-            $organizationQuery = Organization::query()->whereKey((int) $organizationId);
+        if (is_numeric($organizationId) && is_string($customerId) && $customerId !== '') {
+            $organizationQuery = Organization::query()
+                ->whereKey((int) $organizationId)
+                ->where('stripe_customer_id', $customerId);
         } elseif (is_string($customerId)) {
             $organizationQuery = Organization::query()->where('stripe_customer_id', $customerId);
         } else {

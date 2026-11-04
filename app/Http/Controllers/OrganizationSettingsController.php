@@ -35,7 +35,7 @@ class OrganizationSettingsController extends Controller
         $this->authorize('update', $organization);
         $attributes = $request->validated();
         if (($attributes['ai_enabled'] ?? false) && ! app(PlanFeatureService::class)->isAvailable($organization, 'ai_column_mapping')) {
-            return back()->withErrors(['ai_enabled' => 'AI列マッピング候補はPremiumプランで利用できます。']);
+            return back()->withErrors(['ai_enabled' => '現在のプランではAI列マッピング候補を利用できません。']);
         }
 
         DB::transaction(function () use ($request, $organization, $attributes): void {

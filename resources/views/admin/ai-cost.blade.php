@@ -3,10 +3,10 @@
         <h1 id="ai-cost-title">AI原価</h1>
         <p><a href="{{ route('admin.dashboard') }}">運営管理へ戻る</a></p>
         <p class="muted">USD原価は記録トークン数と設定モデル料金による推定です。JPYはOPSDECK_AI_USD_TO_JPY_RATE設定時のみ換算します。価格が未登録のモデルは原価を0とせず、件数を別表示します。</p>
-        <p>PremiumのAI月額上限（1組織）：{{ number_format($premiumAiMonthlyBudgetJpy) }}円</p>
+        <p>無料公開のAI運営上限（1組織・月額）：{{ number_format($aiMonthlyBudgetJpy) }}円相当</p>
         <p class="muted">この金額はOpsDeckが組織ごとに制御するAI原価上限です。OpenAI API側の利用枠・レート制限は別に適用され、契約やプロジェクト設定によって異なります。API側の制限に達した場合は、手動で列を設定してください。</p>
-        @if ($premiumAiMonthlyBudgetUsd !== null)
-            <p class="muted">現在の上限換算：約${{ number_format($premiumAiMonthlyBudgetUsd, 4) }}/月（1 USD = {{ number_format($usdToJpyRate, 2) }}円）。為替レートは設定値で、自動更新ではありません。利用可否の判定はこの換算額とモデル単価を使います。実際の原価は利用トークン数により異なり、円換算額は為替や決済条件で変わることがあります。</p>
+        @if ($aiMonthlyBudgetUsd !== null)
+            <p class="muted">現在の運営上限換算：約${{ number_format($aiMonthlyBudgetUsd, 4) }}/月（1 USD = {{ number_format($usdToJpyRate, 2) }}円）。為替レートは設定値で、自動更新ではありません。利用可否の判定はこの換算額とモデル単価を使います。実際の原価は利用トークン数により異なり、円換算額は為替や決済条件で変わることがあります。</p>
         @else
             <p class="muted" role="status">換算レートが未設定です。AI利用を有効にする場合は、環境変数 OPSDECK_AI_USD_TO_JPY_RATE を設定してください。未設定の間、AI列候補は利用できません。</p>
         @endif

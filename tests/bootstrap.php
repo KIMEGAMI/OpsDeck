@@ -3,6 +3,35 @@
 declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 
+$requestedDatabaseConnection = strtolower(trim((string) getenv('DB_CONNECTION')));
+$testDatabaseDriver = strtolower(trim((string) getenv('OPSDECK_TEST_DATABASE_DRIVER')));
+$databaseConnection = 'sqlite';
+
+if ($testDatabaseDriver !== '') {
+    $isSupportedTestDatabaseDriver = in_array($testDatabaseDriver, ['mysql', 'mariadb'], true);
+    $isDedicatedGitHubActionsDatabase = getenv('GITHUB_ACTIONS') === 'true'
+        && $isSupportedTestDatabaseDriver
+        && $requestedDatabaseConnection === $testDatabaseDriver
+        && getenv('DB_HOST') === '127.0.0.1'
+        && getenv('OPSDECK_TEST_DATABASE_NAME') === 'opsdeck_test'
+        && getenv('DB_USERNAME') === 'opsdeck_test'
+        && getenv('DB_URL') === '';
+
+    if (! $isDedicatedGitHubActionsDatabase) {
+        throw new RuntimeException('External database tests require the dedicated GitHub Actions test database.');
+    }
+
+    $databaseConnection = $testDatabaseDriver;
+}
+
+$sqliteDatabasePath = $databaseConnection === 'sqlite'
+    ? sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-phpunit-'.bin2hex(random_bytes(16)).'.sqlite'
+    : ':memory:';
+
+if ($databaseConnection === 'sqlite' && ! touch($sqliteDatabasePath)) {
+    throw new RuntimeException('Unable to initialize isolated SQLite test database.');
+}
+
 $testEnvironment = [
     'APP_ENV' => 'testing',
     'APP_DEBUG' => 'false',
@@ -11,8 +40,9 @@ $testEnvironment = [
     'BCRYPT_ROUNDS' => '4',
     'BROADCAST_CONNECTION' => 'null',
     'CACHE_STORE' => 'array',
-    'DB_CONNECTION' => 'sqlite',
+    'DB_CONNECTION' => $databaseConnection,
     'DB_URL' => '',
+    'DB_SQLITE_DATABASE' => $sqliteDatabasePath,
     'MAIL_MAILER' => 'array',
     'MAIL_PASSWORD' => '',
     'QUEUE_CONNECTION' => 'sync',
@@ -44,28 +74,25 @@ foreach ($testEnvironment as $name => $value) {
     $_SERVER[$name] = $value;
 }
 
-$databaseConnection = strtolower((string) getenv('DB_CONNECTION'));
-
 if ($databaseConnection === 'sqlite') {
-    $databasePath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'opsdeck-phpunit-'.bin2hex(random_bytes(16)).'.sqlite';
-    if (! touch($databasePath)) {
-        throw new RuntimeException('Unable to initialize isolated SQLite test database.');
-    }
-
-    foreach (['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => $databasePath] as $name => $value) {
+    foreach ([
+        'DB_CONNECTION' => 'sqlite',
+        'DB_DATABASE' => $sqliteDatabasePath,
+        'DB_SQLITE_DATABASE' => $sqliteDatabasePath,
+    ] as $name => $value) {
         putenv($name.'='.$value);
         $_ENV[$name] = $value;
         $_SERVER[$name] = $value;
     }
 
-    register_shutdown_function(static function () use ($databasePath): void {
+    register_shutdown_function(static function () use ($sqliteDatabasePath): void {
         try {
             DB::purge('sqlite');
         } catch (Throwable) {
             // Tests should still finish if the database facade was never initialized.
         }
 
-        foreach ([$databasePath, $databasePath.'-wal', $databasePath.'-shm'] as $path) {
+        foreach ([$sqliteDatabasePath, $sqliteDatabasePath.'-wal', $sqliteDatabasePath.'-shm'] as $path) {
             if (is_file($path)) {
                 @unlink($path);
             }

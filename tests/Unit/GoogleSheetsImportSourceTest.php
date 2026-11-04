@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Models\GoogleSheetConnection;
 use App\Models\Organization;
 use App\Services\Import\GoogleSheetsImportSource;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -14,6 +15,8 @@ use Tests\TestCase;
 
 class GoogleSheetsImportSourceTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_it_reads_spreadsheets_sheets_and_values(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

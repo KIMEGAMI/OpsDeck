@@ -4,11 +4,14 @@ namespace Tests\Feature;
 
 use App\Models\SupportRequest;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class SupportRequestControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_platform_admin_sees_japanese_labels_for_support_request_statuses(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

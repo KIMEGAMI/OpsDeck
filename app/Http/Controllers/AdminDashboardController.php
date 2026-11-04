@@ -87,10 +87,10 @@ class AdminDashboardController extends Controller
         $configuredRate = config('opsdeck.ai.usd_to_jpy_rate');
         $usdToJpyRate = is_numeric($configuredRate) && (float) $configuredRate > 0 ? (float) $configuredRate : null;
         $usdToJpyRateConfigured = $usdToJpyRate !== null;
-        $premiumAiMonthlyBudgetJpy = (int) config('opsdeck.ai.monthly_budget_jpy.premium');
-        $premiumAiMonthlyBudgetUsd = $usdToJpyRate === null ? null : $premiumAiMonthlyBudgetJpy / $usdToJpyRate;
+        $aiMonthlyBudgetJpy = (int) config('opsdeck.ai.monthly_budget_jpy.free');
+        $aiMonthlyBudgetUsd = $usdToJpyRate === null ? null : $aiMonthlyBudgetJpy / $usdToJpyRate;
 
-        return view('admin.ai-cost', compact('usage', 'monthlyUsage', 'monthlyOrganizationUsage', 'monthStart', 'usdToJpyRate', 'usdToJpyRateConfigured', 'premiumAiMonthlyBudgetJpy', 'premiumAiMonthlyBudgetUsd'));
+        return view('admin.ai-cost', compact('usage', 'monthlyUsage', 'monthlyOrganizationUsage', 'monthStart', 'usdToJpyRate', 'usdToJpyRateConfigured', 'aiMonthlyBudgetJpy', 'aiMonthlyBudgetUsd'));
     }
 
     public function queueErrors(): View

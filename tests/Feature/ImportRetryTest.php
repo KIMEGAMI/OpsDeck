@@ -19,6 +19,7 @@ use App\Services\ImpactReportMetricsService;
 use App\Services\ImportBatchExecutionService;
 use App\Services\PrepareImportRetryService;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -26,6 +27,8 @@ use Tests\TestCase;
 
 class ImportRetryTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_failed_batch_is_cloned_for_retry_without_changing_history(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

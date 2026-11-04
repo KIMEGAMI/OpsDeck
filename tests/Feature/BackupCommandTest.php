@@ -543,6 +543,8 @@ class BackupCommandTest extends TestCase
     {
         $databasePath = storage_path('framework/testing-databases/'.Str::uuid().'.sqlite');
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
+        $backupDatabase = null;
+        $restoredDatabase = null;
         File::ensureDirectoryExists(dirname($databasePath));
         File::put($databasePath, '');
         config(['database.connections.sqlite.database' => $databasePath, 'opsdeck.backup.path' => $backupRoot]);
@@ -561,8 +563,15 @@ class BackupCommandTest extends TestCase
             $restoredValue = $restoredDatabase->query('SELECT value FROM backup_probe')->fetchColumn();
 
             $this->assertSame('committed-wal-value', $restoredValue);
+            $restoredDatabase = null;
             File::delete($backupDatabase);
+            $this->assertFileDoesNotExist($backupDatabase);
         } finally {
+            $restoredDatabase = null;
+            if (is_string($backupDatabase)) {
+                File::delete($backupDatabase);
+            }
+
             DB::purge('sqlite');
             File::deleteDirectory($backupRoot);
             File::delete($databasePath, $databasePath.'-wal', $databasePath.'-shm');
@@ -1170,38 +1179,42 @@ class BackupCommandTest extends TestCase
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
         config(['opsdeck.backup.path' => $backupRoot]);
 
-        $this->artisan('opsdeck:backup')->assertExitCode(0);
-        $directories = File::directories($backupRoot);
-        $manifestPath = $directories[0].DIRECTORY_SEPARATOR.'manifest.json';
-        $manifest = json_decode(File::get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
-        $manifest['evidence_files'][] = '../manifest.json';
-        $manifest['evidence_sha256'][] = hash('sha256', 'unexpected');
-        File::put($manifestPath, json_encode($manifest, JSON_THROW_ON_ERROR));
+        try {
+            $this->artisan('opsdeck:backup')->assertExitCode(0);
+            $directories = File::directories($backupRoot);
+            $manifestPath = $directories[0].DIRECTORY_SEPARATOR.'manifest.json';
+            $manifest = json_decode(File::get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+            $manifest['evidence_files'][] = '../manifest.json';
+            $manifest['evidence_sha256'][] = hash('sha256', 'unexpected');
+            File::put($manifestPath, json_encode($manifest, JSON_THROW_ON_ERROR));
 
-        $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(1);
-
-        File::deleteDirectory($backupRoot);
+            $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(1);
+        } finally {
+            File::deleteDirectory($backupRoot);
+        }
     }
 
     public function test_backup_verify_accepts_legacy_manifest_without_checksums(): void
     {
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
-        Storage::fake('legacy-evidence-test');
-        config(['opsdeck.backup.path' => $backupRoot, 'opsdeck.evidence.disk' => 'legacy-evidence-test']);
+        try {
+            Storage::fake('legacy-evidence-test');
+            config(['opsdeck.backup.path' => $backupRoot, 'opsdeck.evidence.disk' => 'legacy-evidence-test']);
 
-        $this->artisan('opsdeck:backup')->assertExitCode(0);
-        $directories = File::directories($backupRoot);
-        app(BackupEncryptionService::class)->decryptFile($directories[0].DIRECTORY_SEPARATOR.'database.sqlite.enc', $directories[0].DIRECTORY_SEPARATOR.'database.sqlite');
-        File::delete($directories[0].DIRECTORY_SEPARATOR.'database.sqlite.enc');
-        $manifestPath = $directories[0].DIRECTORY_SEPARATOR.'manifest.json';
-        $manifest = json_decode(File::get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
-        $manifest['database']['file'] = 'database.sqlite';
-        unset($manifest['encryption'], $manifest['evidence_index_file'], $manifest['evidence_index_sha256'], $manifest['database_sha256'], $manifest['evidence_sha256'], $manifest['import_files'], $manifest['import_sha256'], $manifest['import_sources_index_file'], $manifest['import_sources_index_sha256'], $manifest['manifest_hmac_sha256']);
-        File::put($manifestPath, json_encode($manifest, JSON_THROW_ON_ERROR));
+            $this->artisan('opsdeck:backup')->assertExitCode(0);
+            $directories = File::directories($backupRoot);
+            app(BackupEncryptionService::class)->decryptFile($directories[0].DIRECTORY_SEPARATOR.'database.sqlite.enc', $directories[0].DIRECTORY_SEPARATOR.'database.sqlite');
+            File::delete($directories[0].DIRECTORY_SEPARATOR.'database.sqlite.enc');
+            $manifestPath = $directories[0].DIRECTORY_SEPARATOR.'manifest.json';
+            $manifest = json_decode(File::get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+            $manifest['database']['file'] = 'database.sqlite';
+            unset($manifest['encryption'], $manifest['evidence_index_file'], $manifest['evidence_index_sha256'], $manifest['database_sha256'], $manifest['evidence_sha256'], $manifest['import_files'], $manifest['import_sha256'], $manifest['import_sources_index_file'], $manifest['import_sources_index_sha256'], $manifest['manifest_hmac_sha256']);
+            File::put($manifestPath, json_encode($manifest, JSON_THROW_ON_ERROR));
 
-        $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(0);
-
-        File::deleteDirectory($backupRoot);
+            $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(0);
+        } finally {
+            File::deleteDirectory($backupRoot);
+        }
     }
 
     public function test_backup_verification_rejects_a_manifest_changed_without_its_authentication_key(): void
@@ -1228,12 +1241,15 @@ class BackupCommandTest extends TestCase
     public function test_backup_verify_rejects_malformed_manifest_without_throwing(): void
     {
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
-        File::ensureDirectoryExists($backupRoot);
-        File::put($backupRoot.DIRECTORY_SEPARATOR.'manifest.json', '{"database":null}');
 
-        $this->artisan('opsdeck:backup:verify', ['path' => $backupRoot])->assertExitCode(1);
+        try {
+            File::ensureDirectoryExists($backupRoot);
+            File::put($backupRoot.DIRECTORY_SEPARATOR.'manifest.json', '{"database":null}');
 
-        File::deleteDirectory($backupRoot);
+            $this->artisan('opsdeck:backup:verify', ['path' => $backupRoot])->assertExitCode(1);
+        } finally {
+            File::deleteDirectory($backupRoot);
+        }
     }
 
     public function test_backup_verify_rejects_unknown_database_driver(): void
@@ -1241,16 +1257,18 @@ class BackupCommandTest extends TestCase
         $backupRoot = storage_path('framework/testing-backups/'.Str::uuid());
         config(['opsdeck.backup.path' => $backupRoot]);
 
-        $this->artisan('opsdeck:backup')->assertExitCode(0);
-        $directories = File::directories($backupRoot);
-        $manifestPath = $directories[0].DIRECTORY_SEPARATOR.'manifest.json';
-        $manifest = json_decode(File::get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
-        $manifest['database']['driver'] = 'unknown';
-        File::put($manifestPath, json_encode($manifest, JSON_THROW_ON_ERROR));
+        try {
+            $this->artisan('opsdeck:backup')->assertExitCode(0);
+            $directories = File::directories($backupRoot);
+            $manifestPath = $directories[0].DIRECTORY_SEPARATOR.'manifest.json';
+            $manifest = json_decode(File::get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+            $manifest['database']['driver'] = 'unknown';
+            File::put($manifestPath, json_encode($manifest, JSON_THROW_ON_ERROR));
 
-        $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(1);
-
-        File::deleteDirectory($backupRoot);
+            $this->artisan('opsdeck:backup:verify', ['path' => $directories[0]])->assertExitCode(1);
+        } finally {
+            File::deleteDirectory($backupRoot);
+        }
     }
 
     private function assertPrivateBackupPath(string $path, bool $isDirectory): void

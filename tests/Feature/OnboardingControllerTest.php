@@ -14,11 +14,14 @@ use App\Models\OrganizationMembership;
 use App\Models\SaasService;
 use App\Models\SecurityControl;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class OnboardingControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -43,12 +46,10 @@ class OnboardingControllerTest extends TestCase
             ->assertSee(route('contracts.create'), false)
             ->assertSee('クラウドサービスを登録')
             ->assertSee(route('saas-services.create'), false)
-            ->assertSee('0/5 完了')
+            ->assertSee('0/7 完了')
             ->assertSee('これから')
-            ->assertSee('FreeでもCSV/TXTから実データを登録できます。')
-            ->assertSee('更新のお知らせ、セキュリティ管理項目')
-            ->assertDontSee('セキュリティの確認項目を1つ確認する')
-            ->assertDontSee('契約の更新期限を1件確認する')
+            ->assertSee('契約の更新期限を1件確認する')
+            ->assertSee('セキュリティの確認項目を1つ確認する')
             ->assertSee('会社の基本情報を確認する')
             ->assertSee('一緒に使う人を招待する')
             ->assertDontSee('完了として記録');
@@ -91,7 +92,7 @@ class OnboardingControllerTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
-            ->assertSee('0/5 完了')
+            ->assertSee('0/7 完了')
             ->assertSee('会社の基本情報を確認する');
 
         $this->assertDatabaseMissing('onboarding_steps', ['organization_id' => $organization->id, 'step_key' => 'organization_settings']);
@@ -136,7 +137,7 @@ class OnboardingControllerTest extends TestCase
 
         $employeeStep = collect($response->viewData('steps'))->firstWhere('key', 'employees_import');
         $this->assertFalse($employeeStep['completed']);
-        $response->assertSee('0/5 完了');
+        $response->assertSee('0/7 完了');
     }
 
     public function test_employee_data_without_a_completed_employee_import_does_not_complete_the_step(): void
@@ -148,7 +149,7 @@ class OnboardingControllerTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
-            ->assertSee('0/5 完了')
+            ->assertSee('0/7 完了')
             ->assertSee('社員名簿を確認して取り込む');
     }
 
@@ -169,7 +170,7 @@ class OnboardingControllerTest extends TestCase
 
         $employeeStep = collect($response->viewData('steps'))->firstWhere('key', 'employees_import');
         $this->assertFalse($employeeStep['completed']);
-        $response->assertSee('1/5 完了');
+        $response->assertSee('1/7 完了');
     }
 
     public function test_only_the_mapping_used_by_the_completed_batch_counts_toward_import_step(): void
@@ -187,7 +188,7 @@ class OnboardingControllerTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
-            ->assertSee('0/5 完了');
+            ->assertSee('0/7 完了');
     }
 
     public function test_completed_asset_import_with_asset_data_completes_only_the_asset_step(): void
@@ -203,7 +204,7 @@ class OnboardingControllerTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
-            ->assertSee('1/5 完了');
+            ->assertSee('1/7 完了');
     }
 
     public function test_admin_can_see_data_derived_completion_but_viewer_cannot_manage_checklist(): void
@@ -301,7 +302,7 @@ class OnboardingControllerTest extends TestCase
             ->withSession(['current_organization_id' => $organization->id])
             ->get(route('onboarding.index'))
             ->assertOk()
-            ->assertSee('1/5 完了')
+            ->assertSee('1/7 完了')
             ->assertSee('社員名簿を確認して取り込む');
 
         $this->assertDatabaseMissing('product_events', [
@@ -388,12 +389,27 @@ class OnboardingControllerTest extends TestCase
             'token_hash' => hash('sha256', Str::random(64)),
             'expires_at' => now()->addDays(config('opsdeck.invitation_expiry_days')),
         ]);
+        OnboardingStep::query()->create([
+            'organization_id' => $organization->id,
+            'step_key' => 'renewal_checked',
+            'completed_at' => now(),
+            'completed_by' => $user->id,
+        ]);
+        SecurityControl::query()->create([
+            'organization_id' => $organization->id,
+            'control_code' => 'FREE-ONBOARDING-SECURITY',
+            'title' => '導入時のセキュリティ確認',
+            'category' => 'access',
+            'description' => '初回確認',
+            'status' => 'unknown',
+            'last_reviewed_at' => now(),
+        ]);
 
         $this->actingAs($user)->withSession($session)
             ->get(route('onboarding.index'))
-            ->assertSee('5/5 完了')
-            ->assertSee('無料プラン（Free）の初期設定が完了')
-            ->assertDontSee('導入完了です。');
+            ->assertSee('7/7 完了')
+            ->assertSee('導入完了')
+            ->assertSee('日々の更新期限・コスト・セキュリティ状態を確認できます。');
 
         $this->assertDatabaseHas('product_events', [
             'organization_id' => $organization->id,

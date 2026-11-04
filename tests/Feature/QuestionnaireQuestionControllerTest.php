@@ -10,11 +10,14 @@ use App\Models\OrganizationMembership;
 use App\Models\Questionnaire;
 use App\Models\QuestionnaireQuestion;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class QuestionnaireQuestionControllerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_operator_can_create_a_question(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);

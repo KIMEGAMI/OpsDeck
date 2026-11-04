@@ -20,6 +20,7 @@ use App\Services\Import\GoogleSheetDiffPreviewPreparationService;
 use App\Services\Import\ImportMappingAnalysisService;
 use App\Services\Import\ImportPreviewPreparationService;
 use App\Services\ImportBatchExecutionService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -31,6 +32,8 @@ use Tests\TestCase;
 
 class GoogleSheetConnectionTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_release_scope_disables_google_sheets_routes_and_queued_preview_reads(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
@@ -169,25 +172,26 @@ class GoogleSheetConnectionTest extends TestCase
         $this->assertSame(0, Employee::query()->where('organization_id', $organization->id)->count());
     }
 
-    public function test_free_plan_cannot_open_google_sheets_import(): void
+    public function test_free_plan_can_open_google_sheets_but_needs_connection_settings(): void
     {
         $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
         [$user, $organization] = $this->member('free');
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('imports.google-sheets'))
-            ->assertForbidden();
+            ->assertRedirect(route('google-sheets.connection'));
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('google-sheets.connect'))
-            ->assertForbidden();
+            ->assertStatus(503);
 
         $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
             ->get(route('google-sheets.connection'))
             ->assertOk()
-            ->assertSee('Premiumプランで利用できます')
+            ->assertSee('Googleアカウントで接続する')
             ->assertSee(route('help.recovery', 'google_oauth'))
-            ->assertDontSee(route('google-sheets.connect'));
+            ->assertSee(route('google-sheets.connect'))
+            ->assertDontSee('Premium');
     }
 
     public function test_premium_member_sees_plain_language_google_connection_action(): void

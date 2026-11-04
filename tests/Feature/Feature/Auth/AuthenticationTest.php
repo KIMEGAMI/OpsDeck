@@ -35,6 +35,37 @@ class AuthenticationTest extends TestCase
             ->assertDontSee('aria-pressed', false);
     }
 
+    public function test_login_page_hides_google_login_even_when_callback_is_ready(): void
+    {
+        config([
+            'app.url' => 'https://opsdeck.example.test',
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'https://opsdeck.example.test/auth/google/callback',
+        ]);
+
+        $this->get('https://opsdeck.example.test/login')
+            ->assertOk()
+            ->assertDontSee('Google')
+            ->assertSee('メールアドレス')
+            ->assertSee('パスワード');
+    }
+
+    public function test_login_page_hides_google_login_when_callback_origin_does_not_match_application(): void
+    {
+        config([
+            'app.url' => 'http://localhost:8007',
+            'services.google.login_enabled' => true,
+            'services.google.login_redirect_uri' => 'http://127.0.0.1:8006/auth/google/callback',
+        ]);
+
+        $this->get('/login')
+            ->assertOk()
+            ->assertDontSee('Google')
+            ->assertSee('メールアドレス')
+            ->assertSee('パスワード')
+            ->assertSee(route('login.store'));
+    }
+
     public function test_authenticated_user_can_log_in_and_reach_dashboard(): void
     {
         $user = User::factory()->create(['email' => 'member@example.test']);

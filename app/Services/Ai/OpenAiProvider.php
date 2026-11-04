@@ -66,13 +66,13 @@ class OpenAiProvider implements AiProvider
             $response->throw();
         }
         if ($response->json('status') !== 'completed') {
-            throw new RuntimeException('AI provider response did not complete.');
+            throw new AiProviderResponseException(AiProviderResponseException::RESPONSE_INCOMPLETE);
         }
 
         $content = $this->outputText($response->json('output', []));
         $decoded = is_string($content) ? json_decode($content, true) : null;
         if (! is_array($decoded) || ! is_array($decoded['suggestions'] ?? null)) {
-            throw new RuntimeException('AI provider returned invalid JSON.');
+            throw new AiProviderResponseException(AiProviderResponseException::INVALID_JSON);
         }
 
         $suggestions = array_fill_keys($headers, ['field' => null, 'confidence' => 0.0, 'reason' => '安全に対応付けできませんでした。候補を確認してください。', 'requires_review' => true, 'question' => null]);
@@ -102,7 +102,7 @@ class OpenAiProvider implements AiProvider
 
         $usage = $response->json('usage');
         if (! is_array($usage)) {
-            throw new RuntimeException('AI provider returned invalid usage details.');
+            throw new AiProviderResponseException(AiProviderResponseException::INVALID_USAGE);
         }
 
         $inputTokens = $this->usageTokenCount($usage['input_tokens'] ?? null);
@@ -127,7 +127,7 @@ class OpenAiProvider implements AiProvider
         }
 
         if (! is_int($value) || $value < 0) {
-            throw new RuntimeException('AI provider returned invalid usage details.');
+            throw new AiProviderResponseException(AiProviderResponseException::INVALID_USAGE);
         }
 
         return $value;
