@@ -471,6 +471,7 @@ return [
         'legacy_disk' => env('OPSDECK_LEGACY_IMPORT_DISK', 'local'),
         'max_size_kilobytes' => (int) env('OPSDECK_IMPORT_MAX_SIZE_KILOBYTES', 5120),
         'max_rows' => max(1, (int) env('OPSDECK_IMPORT_MAX_ROWS', 20000)),
+        'registration_recent_limit' => 5,
         'max_columns' => $maximumImportColumns,
         'default_header_row_number' => 1,
         'max_header_row_number' => max(1, (int) env('OPSDECK_IMPORT_MAX_HEADER_ROW_NUMBER', 100)),

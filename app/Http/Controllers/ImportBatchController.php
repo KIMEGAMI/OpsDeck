@@ -127,8 +127,16 @@ class ImportBatchController extends Controller
             : 'employees';
 
         $storageQuota = app(OrganizationStorageQuotaService::class)->summary($organization);
+        $recentImportBatches = ImportBatch::query()
+            ->where('organization_id', $organization->id)
+            ->latest()
+            ->orderByDesc('id')
+            ->limit(config('opsdeck.import.registration_recent_limit'))
+            ->get();
+        $importBatchStatusLabels = config('opsdeck.import_batch_status_labels', []);
+        $importSourceTypeLabels = config('opsdeck.import_source_type_labels', []);
 
-        return view('imports.create', compact('organization', 'capabilities', 'canManageBilling', 'targetType', 'targetTypeLabel', 'diffSourceBatch', 'samplePreviewTargetType', 'storageQuota'));
+        return view('imports.create', compact('organization', 'capabilities', 'canManageBilling', 'targetType', 'targetTypeLabel', 'diffSourceBatch', 'samplePreviewTargetType', 'storageQuota', 'recentImportBatches', 'importBatchStatusLabels', 'importSourceTypeLabels'));
     }
 
     public function sample(Request $request, string $targetType): StreamedResponse

@@ -3,7 +3,7 @@
         <h1>データの取込履歴</h1>
         @can('create', [App\Models\ImportBatch::class, $organization])
             <p>
-                <a href="{{ route('imports.create') }}">管理表を取り込む前に確認する</a>
+                <a href="{{ route('imports.create') }}">Excel・CSVファイルを登録する</a>
                 @if ($capabilities['google_sheets']) | <a href="{{ route('imports.google-sheets') }}">Googleスプレッドシートから取り込む</a>@endif
                 | <a href="{{ route('help.recovery', 'import') }}">取り込みに困ったとき</a>
             </p>

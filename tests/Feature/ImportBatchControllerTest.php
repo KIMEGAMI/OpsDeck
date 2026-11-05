@@ -715,11 +715,22 @@ class ImportBatchControllerTest extends TestCase
             ->assertSee('取込履歴・元ファイル・行ごとの確認結果は、あとで見直したり取込を取り消したりできるよう、期限を設けず保存します。')
             ->assertSee('業務に不要な個人情報は含めないでください。')
             ->assertSeeInOrder([
-                '元のExcelは残したままにします。',
-                '取込なしでプレビュー',
+                'Excel・CSVファイルを登録する',
                 'あとで履歴から探すための名前',
-                '内容を確認する（まだ登録しません）',
+                'CSVファイル / Excelファイル（XLSX）',
+                'ファイルを登録して内容を確認する',
+                '登録したファイルの状態',
+                '使い方とサンプル',
+                'まずは3つだけ',
+                '取込なしでプレビュー',
             ])
+            ->assertSeeInOrder([
+                'Excel・CSVファイルを登録する',
+                'id="import-upload-form"',
+                '登録したファイルの状態',
+            ], false)
+            ->assertSee('社員や資産など会社のデータに反映されるのは、内容と列の対応を確認してから「取込を実行」した後です。')
+            ->assertSee('登録したファイルはまだありません。上のフォームからファイルを登録できます。')
             ->assertSee('1. 表を選ぶ')
             ->assertSee('CSVファイル')
             ->assertSee('列の名前が書かれた最初の行')
@@ -733,7 +744,7 @@ class ImportBatchControllerTest extends TestCase
             ->assertSee('最後に取込を実行します。結果はいつでも履歴から確認できます。')
             ->assertSee('1回に確認できるのは最大20,000行')
             ->assertSee('列名が1行目にあり、そのすぐ下からデータが始まる表なら、ここは変更しなくて大丈夫です。')
-            ->assertSee('内容を確認する（まだ登録しません）')
+            ->assertSee('ファイルを登録して内容を確認する')
             ->assertSee('今使っている社員名簿。後で履歴を見たとき、何の表か分かる名前にしてください。')
             ->assertDontSee('2026年10月')
             ->assertDontSee('Excelファイルを使う場合')
@@ -1258,13 +1269,77 @@ class ImportBatchControllerTest extends TestCase
             ->get(route('imports.index', ['status' => 'preview']))
             ->assertOk()
             ->assertSee('データの取込履歴')
-            ->assertSee('管理表を取り込む前に確認する')
+            ->assertSee('Excel・CSVファイルを登録する')
             ->assertSee('取り込みに困ったとき')
             ->assertSee('history-preview')
             ->assertSee('CSVファイル')
             ->assertSee('プレビュー確認待ち')
             ->assertSee('>プレビュー確認待ち</option>', false)
             ->assertDontSee('>preview</option>', false);
+    }
+
+    public function test_import_registration_page_shows_recent_status_and_errors_for_the_current_organization(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+        [$user, $organization] = $this->member(MembershipRole::Operator);
+        [, $otherOrganization] = $this->member(MembershipRole::Operator);
+        $failedBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'xlsx',
+            'source_name' => '社員台帳_確認用',
+            'status' => 'failed',
+            'preview_error_rows' => 2,
+            'error_rows' => 1,
+        ]);
+        ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => '資産一覧_確認中',
+            'status' => 'preview',
+        ]);
+        foreach (['最近の登録A', '最近の登録B', '最近の登録C'] as $sourceName) {
+            ImportBatch::query()->create([
+                'organization_id' => $organization->id,
+                'source_type' => 'csv',
+                'source_name' => $sourceName,
+                'status' => 'preview',
+            ]);
+        }
+        $olderBatch = ImportBatch::query()->create([
+            'organization_id' => $organization->id,
+            'source_type' => 'csv',
+            'source_name' => '表示件数の上限より古い履歴',
+            'status' => 'preview',
+        ]);
+        $olderBatch->forceFill(['created_at' => now()->subDays(10)])->save();
+        ImportBatch::query()->create([
+            'organization_id' => $otherOrganization->id,
+            'source_type' => 'xlsx',
+            'source_name' => '他社のファイル名',
+            'status' => 'failed',
+            'preview_error_rows' => 9,
+        ]);
+
+        $this->actingAs($user)->withSession(['current_organization_id' => $organization->id])
+            ->get(route('imports.create'))
+            ->assertOk()
+            ->assertSeeInOrder([
+                'Excel・CSVファイルを登録する',
+                '登録したファイルの状態',
+                '最近の登録C',
+                '最近の登録B',
+                '最近の登録A',
+                '資産一覧_確認中',
+                '社員台帳_確認用',
+                '失敗',
+                '確認時のエラー：2行',
+                '取込時のエラー：1行',
+            ])
+            ->assertSee('Excelファイル（XLSX）')
+            ->assertSee(route('imports.show', $failedBatch), false)
+            ->assertSee(route('imports.index'))
+            ->assertDontSee('表示件数の上限より古い履歴')
+            ->assertDontSee('他社のファイル名');
     }
 
     public function test_import_history_pages_use_a_stable_order_when_creation_times_match(): void
@@ -2962,6 +3037,8 @@ class ImportBatchControllerTest extends TestCase
         $this->actingAs($user)->withSession(['current_organization_id' => $selectedOrganization->id])
             ->get(route('imports.index'))
             ->assertOk()
+            ->assertSee('取込履歴')
+            ->assertSee('<a href="'.route('imports.index').'"', false)
             ->assertDontSee('href="'.route('imports.create').'"', false);
         $this->actingAs($user)->withSession(['current_organization_id' => $selectedOrganization->id])
             ->get(route('imports.create'))

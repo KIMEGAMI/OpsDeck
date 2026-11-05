@@ -369,7 +369,7 @@ class OpsDeckBPlusAcceptanceTest extends TestCase
         $this->withSession($session)
             ->get(route('imports.create', ['target_type' => 'employees']))
             ->assertOk()
-            ->assertSee('まずファイルの内容を確認します。');
+            ->assertSee('ここではファイルを登録して内容を確認します。');
 
         $uploadResponse = $this->withSession($session)->post(route('imports.store'), [
             'target_type' => 'employees',
