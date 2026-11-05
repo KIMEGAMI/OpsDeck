@@ -26,7 +26,8 @@
                 <x-nav-link :href="route('evidence.index')" :active="request()->routeIs('evidence.*')">書類・確認資料</x-nav-link>
             @endif
             @php($currentOrganization = request()->attributes->get('currentOrganization'))
-            @if ($currentOrganization && request()->user()->can('create', [App\Models\ImportBatch::class, $currentOrganization]))
+            @php($currentMembership = request()->attributes->get('currentMembership'))
+            @if ($currentOrganization && $currentMembership?->organization_id === $currentOrganization->id && $currentMembership->role->canManageOperationalData())
                 <x-nav-link :href="route('imports.create')" :active="request()->routeIs('imports.*')">Excel・CSVを登録</x-nav-link>
             @else
                 <x-nav-link :href="route('imports.index')" :active="request()->routeIs('imports.*')">取込履歴</x-nav-link>
