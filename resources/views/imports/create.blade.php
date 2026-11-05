@@ -1,6 +1,6 @@
 <x-layouts.app>
     <section class="card">
-        <h1>{{ $diffSourceBatch !== null ? '前回ファイルとの違いを確認' : '管理表を取り込む前に確認' }}</h1>
+        <h1>{{ $diffSourceBatch !== null ? '前回ファイルとの違いを確認' : 'Excel・CSVファイルを登録する' }}</h1>
         <x-import-progress :current-step="1" />
         @if ($diffSourceBatch !== null)
             <p class="muted">完了済み「{{ $diffSourceBatch->source_name }}」の実行結果と新しいファイルを比較します。列マッピングを引き継ぎます。削除候補は表示のみで、業務データから自動削除しません。</p>
@@ -8,7 +8,7 @@
         @if ($targetType !== null)
             <p class="muted">導入チェックリスト：{{ $targetTypeLabel }}の表を事前確認します。確認の次に進んでも、対象は選択済みです。</p>
         @endif
-        <p class="muted">まずファイルの内容を確認します。この画面では会社のデータは登録・変更されません。元のExcelも変更しません。</p>
+        <p class="muted">ここではファイルを登録して内容を確認します。社員や資産など会社のデータに反映されるのは、内容と列の対応を確認してから「取込を実行」した後です。元のExcelも変更しません。</p>
         <p class="muted" role="note">取込履歴・元ファイル・行ごとの確認結果は、あとで見直したり取込を取り消したりできるよう、期限を設けず保存します。取り込む範囲を確認し、業務に不要な個人情報は含めないでください。</p>
         <x-storage-quota :quota="$storageQuota" />
         @unless ($capabilities['xlsx_preview'])
@@ -18,39 +18,6 @@
             <p class="muted">この機能は現在利用できません。利用できる機能をご利用ください。</p>
         @endunless
         <p class="muted">1回に確認できるのは最大{{ number_format(config('opsdeck.import.max_rows')) }}行、ファイルは最大{{ number_format(config('opsdeck.import.max_size_kilobytes')) }}KBです。上限を超えるときは、表を分けてください。</p>
-        <h2>まずは3つだけ</h2>
-        <ol>
-            <li>あとで分かる表の名前を付けます。</li>
-            <li>元の表を残したまま、取り込むファイルを選びます。</li>
-            <li>「内容を確認する」を押します。次の画面で確認するまで、会社のデータは変わりません。</li>
-        </ol>
-        <p><a href="#import-upload-form">入力欄へ進む</a></p>
-        <p class="muted">まだファイルがない場合は、見本を登録せずに操作を試せます。</p>
-        <p><a href="{{ route('imports.samples.preview', $samplePreviewTargetType) }}">{{ config('opsdeck.import_target_labels.'.$samplePreviewTargetType, '社員') }}のサンプルを登録せずに確認する</a></p>
-        <details>
-            <summary>Excel・社内管理表を取り込む詳しい手順とサンプル</summary>
-            <ol>
-                <li>元のExcelは残したままにします。取り込む表のコピーを用意してください。</li>
-                <li>表の名前とファイルを選び、列名とデータの行を指定して「内容を確認する」を押します。この時点では会社のデータは登録・変更されません。</li>
-                <li>内容を確認したら「取込内容の詳細」で、どの列を「社員名」「部署」などとして扱うか選びます。</li>
-                <li>新規登録・変更の候補を確認し、今回扱わない行のチェックを外します。重複候補は判断し、エラー行は元の表を直して確認し直します。</li>
-                @if ($capabilities['import_execution'])
-                    <li>最後に取込を実行します。結果はいつでも履歴から確認できます。</li>
-                @else
-                    <li>
-                        この機能は現在利用できません。画面に表示されている機能をご利用ください。
-                    </li>
-                @endif
-            </ol>
-            <p class="muted">会社ごとにExcelの列名や意味が異なるため、元ファイルは書き換えません。事前確認と履歴を残し、必要な項目に合わせて取り込みます。</p>
-            <h2>サンプルファイル</h2>
-            <p class="muted">列の名前や入力例を見るための見本です。実際の会社データは入っていません。まずは「取込なしでプレビュー」を選ぶと、会社のデータは変わりません。見本CSVを実データとして取込実行しないでください。</p>
-            <ul>
-                @foreach (['employees' => '社員', 'assets' => '資産', 'contracts' => '契約', 'saas_services' => 'SaaS'] as $sampleTargetType => $label)
-                    <li>{{ $label }}：<a href="{{ route('imports.samples.preview', $sampleTargetType) }}">取込なしでプレビュー</a> / <a href="{{ route('imports.samples.download', $sampleTargetType) }}">サンプルCSVをダウンロード</a></li>
-                @endforeach
-            </ul>
-        </details>
         <form id="import-upload-form" method="post" action="{{ route('imports.store') }}" enctype="multipart/form-data">
             @csrf
             @if ($diffSourceBatch !== null)<input type="hidden" name="diff_source_batch_id" value="{{ $diffSourceBatch->id }}">@endif
@@ -97,7 +64,7 @@
             @if ($capabilities['xlsx_preview'])
                 <p class="muted">Excelファイル（XLSX）の日付は「年-月-日」の形に整えます。「¥1,000」のような金額は、記号を外した数値として扱います。次の画面で日付と金額を確認してから取り込みます。</p>
             @endif
-            <button type="submit">内容を確認する（まだ登録しません）</button>
+            <button type="submit">ファイルを登録して内容を確認する</button>
         </form>
         <script>
             const headerStartInput = document.getElementById('header_row_number');
@@ -116,5 +83,63 @@
             headerStartInput.addEventListener('input', updateImportRowBounds);
             headerEndInput.addEventListener('input', updateImportRowBounds);
         </script>
+    </section>
+    <section class="card" aria-labelledby="recent-imports-heading">
+        <h2 id="recent-imports-heading">登録したファイルの状態</h2>
+        <p class="muted">最近登録したファイルの確認状況とエラーを表示します。詳しい原因は各ファイルの画面で確認できます。</p>
+        @if ($recentImportBatches->isNotEmpty())
+            <ul>
+                @foreach ($recentImportBatches as $batch)
+                    <li>
+                        <a href="{{ route('imports.show', $batch) }}">{{ $batch->source_name }}</a>
+                        （{{ $importSourceTypeLabels[$batch->source_type] ?? 'ファイル' }}・{{ $importBatchStatusLabels[$batch->status] ?? '状態を確認してください' }}）
+                        @if ($batch->preview_error_rows > 0)
+                            <span class="errors">確認時のエラー：{{ number_format($batch->preview_error_rows) }}行</span>
+                        @endif
+                        @if ($batch->error_rows > 0)
+                            <span class="errors">取込時のエラー：{{ number_format($batch->error_rows) }}行</span>
+                        @endif
+                        <span class="muted">{{ $batch->created_at->format('Y-m-d H:i') }}</span>
+                    </li>
+                @endforeach
+            </ul>
+        @else
+            <p>登録したファイルはまだありません。上のフォームからファイルを登録できます。</p>
+        @endif
+        <p><a href="{{ route('imports.index') }}">登録済みファイルをすべて見る（取込履歴）</a></p>
+    </section>
+    <section class="card" aria-labelledby="import-instructions-heading">
+        <h2 id="import-instructions-heading">使い方とサンプル</h2>
+        <h3>まずは3つだけ</h3>
+        <ol>
+            <li>あとで分かる表の名前を付けます。</li>
+            <li>元の表を残したまま、取り込むファイルを選びます。</li>
+            <li>「ファイルを登録して内容を確認する」を押します。会社のデータはまだ変わりません。</li>
+        </ol>
+        <p><a href="#import-upload-form">登録フォームに戻る</a></p>
+        <p class="muted">まだファイルがない場合は、見本を登録せずに操作を試せます。</p>
+        <p><a href="{{ route('imports.samples.preview', $samplePreviewTargetType) }}">{{ config('opsdeck.import_target_labels.'.$samplePreviewTargetType, '社員') }}のサンプルを登録せずに確認する</a></p>
+        <details>
+            <summary>Excel・社内管理表を取り込む詳しい手順とサンプル</summary>
+            <ol>
+                <li>元のExcelは残したままにします。取り込む表のコピーを用意してください。</li>
+                <li>表の名前とファイルを選び、列名とデータの行を指定して「ファイルを登録して内容を確認する」を押します。この時点では会社のデータは登録・変更されません。</li>
+                <li>内容を確認したら「取込内容の詳細」で、どの列を「社員名」「部署」などとして扱うか選びます。</li>
+                <li>新規登録・変更の候補を確認し、今回扱わない行のチェックを外します。重複候補は判断し、エラー行は元の表を直して確認し直します。</li>
+                @if ($capabilities['import_execution'])
+                    <li>最後に取込を実行します。結果はいつでも履歴から確認できます。</li>
+                @else
+                    <li>この機能は現在利用できません。画面に表示されている機能をご利用ください。</li>
+                @endif
+            </ol>
+            <p class="muted">会社ごとにExcelの列名や意味が異なるため、元ファイルは書き換えません。事前確認と履歴を残し、必要な項目に合わせて取り込みます。</p>
+            <h3>サンプルファイル</h3>
+            <p class="muted">列の名前や入力例を見るための見本です。実際の会社データは入っていません。まずは「取込なしでプレビュー」を選ぶと、会社のデータは変わりません。見本CSVを実データとして取込実行しないでください。</p>
+            <ul>
+                @foreach (['employees' => '社員', 'assets' => '資産', 'contracts' => '契約', 'saas_services' => 'SaaS'] as $sampleTargetType => $label)
+                    <li>{{ $label }}：<a href="{{ route('imports.samples.preview', $sampleTargetType) }}">取込なしでプレビュー</a> / <a href="{{ route('imports.samples.download', $sampleTargetType) }}">サンプルCSVをダウンロード</a></li>
+                @endforeach
+            </ul>
+        </details>
     </section>
 </x-layouts.app>

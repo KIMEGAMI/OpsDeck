@@ -25,7 +25,12 @@
             @if (request()->attributes->get('currentOrganization') && app(\App\Services\PlanFeatureService::class)->isAvailable(request()->attributes->get('currentOrganization'), 'evidence'))
                 <x-nav-link :href="route('evidence.index')" :active="request()->routeIs('evidence.*')">書類・確認資料</x-nav-link>
             @endif
-            <x-nav-link :href="route('imports.index')" :active="request()->routeIs('imports.*')">Excelなどの取込</x-nav-link>
+            @php($currentOrganization = request()->attributes->get('currentOrganization'))
+            @if ($currentOrganization && request()->user()->can('create', [App\Models\ImportBatch::class, $currentOrganization]))
+                <x-nav-link :href="route('imports.create')" :active="request()->routeIs('imports.*')">Excel・CSVを登録</x-nav-link>
+            @else
+                <x-nav-link :href="route('imports.index')" :active="request()->routeIs('imports.*')">取込履歴</x-nav-link>
+            @endif
             @if (request()->attributes->get('currentOrganization') && app(\App\Services\PlanFeatureService::class)->isAvailable(request()->attributes->get('currentOrganization'), 'questionnaires'))
                 <x-nav-link :href="route('questionnaires.index')" :active="request()->routeIs('questionnaires.*')">質問票</x-nav-link>
             @endif
